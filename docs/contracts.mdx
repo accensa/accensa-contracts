@@ -3,30 +3,47 @@ title: "Smart Contract Reference"
 description: "Soroban smart contracts for verifying receipts and executing refunds."
 ---
 
-Accensa relies on two purpose-built Soroban contracts deployed on the Stellar Testnet. 
+Accensa relies on two purpose-built Soroban contracts deployed on the Stellar Testnet.
 
-These contracts never touch the x402 payment path and are strictly non-custodial. They do not escrow funds between payers and merchants. 
+These contracts never touch the x402 payment path and are strictly non-custodial. They do not escrow funds between payers and merchants.
 
 ## ReceiptAnchor
 
 The `ReceiptAnchor` contract stores batch commitments of settled payments. It serves as an immutable, on-chain truth ledger for agent operators.
 
-### `anchor_batch`
-Writes a Merkle root representing a batch of payments to persistent storage.
+### `initialize`
+One-time setup binding the contract to the merchant address. Callable once; every later call fails with `AlreadyInitialized`.
 
 ```rust
-fn anchor_batch(env: Env, root: BytesN<32>, count: u32, period_start: u64, period_end: u64) -> u64
+fn initialize(env: Env, merchant: Address) -> Result<(), Error>
 ```
-- **Authentication:** Requires the merchant's signature (`require_auth(merchant)`).
-- **Emits:** `batch_anchored` event with the assigned `batch_id`.
+- **Authentication:** None (first caller sets the merchant; deploy and initialize in the same transaction).
+
+### `anchor_batch`
+Writes a Merkle root representing a batch of payments to persistent storage and returns the assigned batch id (sequential, starting at 1).
+
+```rust
+fn anchor_batch(env: Env, root: BytesN<32>, count: u32, period_start: u64, period_end: u64) -> Result<u64, Error>
+```
+- **Authentication:** Requires the merchant's signature (`require_auth`).
+- **Emits:** `anchored` event carrying the batch id and the stored `BatchRecord`.
 - **Returns:** The assigned `batch_id`.
 
-### `verify_receipt`
-A read-only convenience function for on-chain receipt verification. Note that the Accensa SDK performs the exact same verification locally off-chain to avoid RPC overhead.
+### `get_batch`
+Reads a stored batch commitment.
 
 ```rust
-fn verify_receipt(env: Env, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> bool
+fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error>
 ```
+- **Errors:** `BatchNotFound` if the id was never anchored.
+
+### `verify_receipt`
+A read-only convenience function for on-chain receipt verification. Proof siblings are combined with sorted-pair SHA-256 hashing (the lexicographically smaller hash goes first), so proofs carry no left/right position flags. Note that the Accensa SDK performs the exact same verification locally off-chain to avoid RPC overhead.
+
+```rust
+fn verify_receipt(env: Env, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> Result<bool, Error>
+```
+- **Errors:** `BatchNotFound` if the batch id does not exist.
 
 ---
 
@@ -34,11 +51,18 @@ fn verify_receipt(env: Env, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<3
 
 The `RefundVault` contract holds merchant float and executes refunds according to self-declared policy bounds.
 
-### `deposit`
-Transfers USDC from the merchant's wallet to the contract's float balance.
+### `initialize`
+One-time setup binding the vault to the merchant, the refund token (USDC SAC address), and the refund window in ledgers. A window of `0` disables expiry entirely.
 
 ```rust
-fn deposit(env: Env, amount: i128)
+fn initialize(env: Env, merchant: Address, token: Address, refund_window_ledgers: u32) -> Result<(), Error>
+```
+
+### `deposit`
+Transfers refund float from the merchant's wallet to the contract. `from` must equal the merchant address; anything else fails with `Unauthorized`.
+
+```rust
+fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error>
 ```
 - **Authentication:** Requires the merchant's signature.
 
@@ -46,8 +70,32 @@ fn deposit(env: Env, amount: i128)
 Executes a refund to a specified address, provided it occurs within the merchant's declared refund window.
 
 ```rust
-fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, paid_at_ledger: u32)
+fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, paid_at_ledger: u32) -> Result<(), Error>
 ```
 - **Authentication:** Requires the merchant's signature.
-- **Constraints:** Rejects the transaction if the `payment_ref` has already been refunded, or if the current ledger minus `paid_at_ledger` exceeds the initialized window policy.
-- **Emits:** `refunded` event.
+- **Constraints:** Fails with `AlreadyRefunded` if the `payment_ref` was refunded before, with `WindowExpired` if the current ledger exceeds `paid_at_ledger + window` (boundary ledger still refundable; skipped when the window is `0`), and with `InsufficientFloat` if the vault balance cannot cover `amount`.
+- **Emits:** `refunded` event carrying the payment reference and the stored `RefundRecord`.
+
+### `withdraw`
+Returns float from the vault to an address of the merchant's choosing.
+
+```rust
+fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error>
+```
+- **Authentication:** Requires the merchant's signature.
+- **Errors:** `InsufficientFloat` if the vault balance is below `amount`.
+
+### `set_refund_window`
+Updates the refund window policy. Applies to all refunds executed after the change.
+
+```rust
+fn set_refund_window(env: Env, ledgers: u32) -> Result<(), Error>
+```
+- **Authentication:** Requires the merchant's signature.
+
+### `get_refund`
+Looks up the refund record for a payment reference, if one exists.
+
+```rust
+fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord>
+```
