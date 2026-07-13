@@ -14,9 +14,9 @@ Accensa is the merchant back-office for x402 sellers on Stellar. This repository
 
 To build locally:
 
-1.  Ensure you have Rust and the `wasm32-unknown-unknown` target installed.
+1.  Ensure you have Rust and the `wasm32v1-none` target installed.
 2.  Install the `soroban-cli`.
-3.  Run `cargo build --target wasm32-unknown-unknown --release`.
+3.  Run `cargo build --target wasm32v1-none --release`.
 4.  Run tests: `cargo test`.
 
 ## Contributing
