@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Formatting check stub
+        run: echo "Waiting for code to run cargo fmt"
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests stub
+        run: echo "Waiting for code to run cargo test"
+
+  build-wasm:
+    name: build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wasm build stub
+        run: echo "Waiting for code to run cargo build --target wasm32-unknown-unknown"
