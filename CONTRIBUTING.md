@@ -1,20 +1,26 @@
 # Contributing to Accensa Contracts
 
-Thank you for your interest in contributing to Accensa! We are part of the Drips Wave program on Stellar.
+We welcome contributions from the community! Whether it's a bug fix, new feature, or documentation improvement for our Soroban smart contracts, your help is appreciated.
 
 ## Getting Started
 
-1.  Look for open issues tagged with \`complexity: 100\`, \`complexity: 150\`, or \`complexity: 200\`.
-2.  If an issue is unassigned, leave a comment asking to work on it.
-3.  Wait for the maintainer to assign it to you.
-4.  Fork the repo and create a branch for your feature: \`git checkout -b feat/your-feature-name\`.
+1. **Fork the repository** on GitHub.
+2. **Clone your fork** locally.
+3. **Create a new branch** for your feature or bug fix (`git checkout -b feature/my-new-feature`).
+4. **Make your changes** and test them thoroughly.
 
-## Pull Request Process
+## Submitting a Pull Request
 
-1.  Ensure all code runs successfully and passes CI.
-2.  Write clear, conventional commit messages (e.g. \`feat(contracts): add refund window parameter\`).
-3.  In your PR description, link the issue it resolves using \`Closes #123\`.
-4.  A maintainer will review your code. Once approved and merged, you earn points for the Wave based on the issue complexity!
+- Ensure your code follows the existing Rust style conventions.
+- Run all local build and test commands (e.g., `make build`, `cargo test`) before submitting.
+- Provide a clear and descriptive PR title and description.
+- Link to any relevant open issues.
 
-## Code Quality Standards
-- For Rust/Soroban: We enforce no \`unwrap()\` outside of tests, no floats, basis-points math, and the use of the \`soroban-sdk\` idioms. All functions must be fully tested.
+## Reporting Bugs
+
+If you find a bug, please open an issue on GitHub. Include as much detail as possible:
+- Steps to reproduce the issue.
+- Expected vs actual behavior.
+- Environment details (OS, Rust version, Stellar CLI version, etc.).
+
+Thank you for helping make Accensa better!
