@@ -7,26 +7,36 @@ on:
     branches: [ "main" ]
 
 jobs:
-  fmt:
-    name: fmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Formatting check stub
-        run: echo "Waiting for code to run cargo fmt"
-
   test:
-    name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Tests stub
-        run: echo "Waiting for code to run cargo test"
+      - uses: actions/checkout@v3
 
-  build-wasm:
-    name: build-wasm
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Wasm build stub
-        run: echo "Waiting for code to run cargo build --target wasm32-unknown-unknown"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target directory
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Run Tests
+        run: cargo test
