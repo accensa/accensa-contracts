@@ -10,7 +10,7 @@ DEPLOYER=$(stellar keys address deployer)
 echo "Deployer address: $DEPLOYER"
 
 echo "💎 Funding deployer..."
-stellar node fund $DEPLOYER --network testnet 2>/dev/null || true
+stellar keys fund deployer --network testnet || true
 
 echo "🚢 Deploying ReceiptAnchor..."
 ANCHOR_ID=$(stellar contract deploy --wasm target/wasm32v1-none/release/receipt_anchor.wasm --source deployer --network testnet)
