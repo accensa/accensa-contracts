@@ -88,11 +88,19 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        if env.storage().persistent().has(&DataKey::Refund(payment_ref.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Refund(payment_ref.clone()))
+        {
             return Err(Error::AlreadyRefunded);
         }
 
-        let window: u32 = env.storage().instance().get(&DataKey::RefundWindow).unwrap();
+        let window: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .unwrap();
         if window > 0 {
             let current_ledger = env.ledger().sequence();
             if current_ledger > paid_at_ledger + window {
@@ -118,14 +126,16 @@ impl RefundVault {
         env.storage()
             .persistent()
             .set(&DataKey::Refund(payment_ref.clone()), &record);
-            
+
         env.storage().instance().extend_ttl(100, 100000);
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Refund(payment_ref.clone()), 100, 100000);
 
-        env.events()
-            .publish((soroban_sdk::symbol_short!("refunded"), payment_ref), record);
+        env.events().publish(
+            (soroban_sdk::symbol_short!("refunded"), payment_ref),
+            record,
+        );
 
         Ok(())
     }
@@ -146,7 +156,7 @@ impl RefundVault {
         }
 
         token_client.transfer(&env.current_contract_address(), &to, &amount);
-        
+
         env.storage().instance().extend_ttl(100, 100000);
         Ok(())
     }
@@ -159,7 +169,9 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        env.storage().instance().set(&DataKey::RefundWindow, &ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &ledgers);
         env.storage().instance().extend_ttl(100, 100000);
         Ok(())
     }
@@ -170,3 +182,5 @@ impl RefundVault {
             .get(&DataKey::Refund(payment_ref))
     }
 }
+
+mod test;
