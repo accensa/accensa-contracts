@@ -1,6 +1,24 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Vec, Bytes};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Vec,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    Unauthorized = 3,
+    BatchNotFound = 4,
+}
+
+#[contracttype]
+pub enum DataKey {
+    Admin,
+    BatchCount,
+    Batch(u64),
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -9,15 +27,6 @@ pub struct BatchRecord {
     pub count: u32,
     pub period_start: u64,
     pub period_end: u64,
-    pub anchored_at: u64,
-}
-
-#[contracttype]
-pub enum DataKey {
-    Admin,
-    Merchant,
-    BatchCount,
-    Batch(u64),
 }
 
 #[contract]
@@ -25,63 +34,85 @@ pub struct ReceiptAnchor;
 
 #[contractimpl]
 impl ReceiptAnchor {
-    pub fn initialize(env: Env, admin: Address, merchant: Address) {
-        assert!(!env.storage().instance().has(&DataKey::Admin), "Already initialized");
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Merchant, &merchant);
+    pub fn initialize(env: Env, merchant: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &merchant);
         env.storage().instance().set(&DataKey::BatchCount, &0u64);
+        env.storage().instance().extend_ttl(100, 100000);
+        Ok(())
     }
 
-    pub fn anchor_batch(env: Env, root: BytesN<32>, count: u32, period_start: u64, period_end: u64) -> u64 {
-        let merchant: Address = env.storage().instance().get(&DataKey::Merchant).expect("Not initialized");
+    pub fn anchor_batch(
+        env: Env,
+        root: BytesN<32>,
+        count: u32,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<u64, Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        let mut batch_count: u64 = env.storage().instance().get(&DataKey::BatchCount).unwrap();
-        batch_count += 1;
+        let mut batch_id: u64 = env.storage().instance().get(&DataKey::BatchCount).unwrap();
+        batch_id += 1;
 
         let record = BatchRecord {
             root: root.clone(),
             count,
             period_start,
             period_end,
-            anchored_at: env.ledger().timestamp(),
         };
 
-        env.storage().persistent().set(&DataKey::Batch(batch_count), &record);
-        env.storage().instance().set(&DataKey::BatchCount, &batch_count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Batch(batch_id), &record);
+        env.storage().instance().set(&DataKey::BatchCount, &batch_id);
 
-        env.events().publish(("anchor", batch_count), (root, count, period_start, period_end));
+        env.storage().instance().extend_ttl(100, 100000);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Batch(batch_id), 100, 100000);
 
-        batch_count
+        env.events()
+            .publish((soroban_sdk::symbol_short!("anchored"), batch_id), record);
+
+        Ok(batch_id)
     }
 
-    pub fn get_batch(env: Env, batch_id: u64) -> BatchRecord {
-        env.storage().persistent().get(&DataKey::Batch(batch_id)).expect("Batch not found")
+    pub fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Batch(batch_id))
+            .ok_or(Error::BatchNotFound)
     }
 
-    pub fn verify_receipt(env: Env, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> bool {
-        let batch: BatchRecord = env.storage().persistent().get(&DataKey::Batch(batch_id)).expect("Batch not found");
-        
-        let mut curr_hash = leaf;
-        for p in proof.into_iter() {
-            let mut bytes = Bytes::new(&env);
-            if curr_hash < p {
-                bytes.extend_from_array(&curr_hash.to_array());
-                bytes.extend_from_array(&p.to_array());
+    pub fn verify_receipt(
+        env: Env,
+        batch_id: u64,
+        leaf: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+    ) -> Result<bool, Error> {
+        let batch = Self::get_batch(env.clone(), batch_id)?;
+        let mut computed_hash = leaf.to_array();
+
+        for sibling_bytes in proof.into_iter() {
+            let sibling = sibling_bytes.to_array();
+            let mut combined = [0u8; 64];
+            if computed_hash <= sibling {
+                combined[..32].copy_from_slice(&computed_hash);
+                combined[32..].copy_from_slice(&sibling);
             } else {
-                bytes.extend_from_array(&p.to_array());
-                bytes.extend_from_array(&curr_hash.to_array());
+                combined[..32].copy_from_slice(&sibling);
+                combined[32..].copy_from_slice(&computed_hash);
             }
-            curr_hash = env.crypto().sha256(&bytes);
+            computed_hash = env.crypto().sha256(&soroban_sdk::Bytes::from_slice(&env, &combined)).to_array();
         }
 
-        curr_hash == batch.root
-    }
-
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
-        admin.require_auth();
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(computed_hash == batch.root.to_array())
     }
 }
