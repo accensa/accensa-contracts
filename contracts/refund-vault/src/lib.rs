@@ -1,22 +1,34 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env,
+};
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RefundRecord {
-    pub recipient: Address,
-    pub amount: i128,
-    pub refunded_at_ledger: u32,
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    Unauthorized = 3,
+    AlreadyRefunded = 4,
+    WindowExpired = 5,
+    InsufficientFloat = 6,
 }
 
 #[contracttype]
 pub enum DataKey {
     Admin,
-    Merchant,
     Token,
-    RefundWindowLedgers,
+    RefundWindow,
     Refund(BytesN<32>),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefundRecord {
+    pub amount: i128,
+    pub recipient: Address,
+    pub ledger: u32,
 }
 
 #[contract]
@@ -26,84 +38,135 @@ pub struct RefundVault;
 impl RefundVault {
     pub fn initialize(
         env: Env,
-        admin: Address,
         merchant: Address,
         token: Address,
         refund_window_ledgers: u32,
-    ) {
-        assert!(!env.storage().instance().has(&DataKey::Admin), "Already initialized");
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Merchant, &merchant);
+    ) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &merchant);
         env.storage().instance().set(&DataKey::Token, &token);
-        env.storage().instance().set(&DataKey::RefundWindowLedgers, &refund_window_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &refund_window_ledgers);
+        env.storage().instance().extend_ttl(100, 100000);
+        Ok(())
     }
 
-    pub fn deposit(env: Env, amount: i128) {
-        let merchant: Address = env.storage().instance().get(&DataKey::Merchant).expect("Not initialized");
+    pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
-
-        token_client.transfer(&merchant, &env.current_contract_address(), &amount);
-    }
-
-    pub fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, paid_at_ledger: u32) {
-        let merchant: Address = env.storage().instance().get(&DataKey::Merchant).expect("Not initialized");
-        merchant.require_auth();
-
-        let refund_key = DataKey::Refund(payment_ref.clone());
-        assert!(!env.storage().persistent().has(&refund_key), "Already refunded");
-
-        let window: u32 = env.storage().instance().get(&DataKey::RefundWindowLedgers).unwrap();
-        if window > 0 {
-            let current_ledger = env.ledger().sequence();
-            assert!(
-                paid_at_ledger + window >= current_ledger,
-                "Refund window expired"
-            );
+        if from != merchant {
+            return Err(Error::Unauthorized);
         }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
+        token_client.transfer(&merchant, &env.current_contract_address(), &amount);
+
+        env.storage().instance().extend_ttl(100, 100000);
+        Ok(())
+    }
+
+    pub fn refund(
+        env: Env,
+        payment_ref: BytesN<32>,
+        recipient: Address,
+        amount: i128,
+        paid_at_ledger: u32,
+    ) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        if env.storage().persistent().has(&DataKey::Refund(payment_ref.clone())) {
+            return Err(Error::AlreadyRefunded);
+        }
+
+        let window: u32 = env.storage().instance().get(&DataKey::RefundWindow).unwrap();
+        if window > 0 {
+            let current_ledger = env.ledger().sequence();
+            if current_ledger > paid_at_ledger + window {
+                return Err(Error::WindowExpired);
+            }
+        }
+
+        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &token_addr);
+        let balance = token_client.balance(&env.current_contract_address());
+        if balance < amount {
+            return Err(Error::InsufficientFloat);
+        }
 
         token_client.transfer(&env.current_contract_address(), &recipient, &amount);
 
         let record = RefundRecord {
-            recipient: recipient.clone(),
             amount,
-            refunded_at_ledger: env.ledger().sequence(),
+            recipient: recipient.clone(),
+            ledger: env.ledger().sequence(),
         };
 
-        env.storage().persistent().set(&refund_key, &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(payment_ref.clone()), &record);
+            
+        env.storage().instance().extend_ttl(100, 100000);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Refund(payment_ref.clone()), 100, 100000);
 
-        env.events().publish(("refund", payment_ref), (recipient, amount, paid_at_ledger));
+        env.events()
+            .publish((soroban_sdk::symbol_short!("refunded"), payment_ref), record);
+
+        Ok(())
     }
 
-    pub fn withdraw(env: Env, amount: i128, to: Address) {
-        let merchant: Address = env.storage().instance().get(&DataKey::Merchant).expect("Not initialized");
+    pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
+        let balance = token_client.balance(&env.current_contract_address());
+        if balance < amount {
+            return Err(Error::InsufficientFloat);
+        }
 
         token_client.transfer(&env.current_contract_address(), &to, &amount);
+        
+        env.storage().instance().extend_ttl(100, 100000);
+        Ok(())
     }
 
-    pub fn set_refund_window(env: Env, window: u32) {
-        let merchant: Address = env.storage().instance().get(&DataKey::Merchant).expect("Not initialized");
+    pub fn set_refund_window(env: Env, ledgers: u32) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
-        env.storage().instance().set(&DataKey::RefundWindowLedgers, &window);
+
+        env.storage().instance().set(&DataKey::RefundWindow, &ledgers);
+        env.storage().instance().extend_ttl(100, 100000);
+        Ok(())
     }
 
     pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {
-        env.storage().persistent().get(&DataKey::Refund(payment_ref))
-    }
-
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
-        admin.require_auth();
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.storage()
+            .persistent()
+            .get(&DataKey::Refund(payment_ref))
     }
 }
