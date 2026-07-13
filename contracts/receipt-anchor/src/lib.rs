@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Vec,
-};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -71,7 +69,9 @@ impl ReceiptAnchor {
         env.storage()
             .persistent()
             .set(&DataKey::Batch(batch_id), &record);
-        env.storage().instance().set(&DataKey::BatchCount, &batch_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::BatchCount, &batch_id);
 
         env.storage().instance().extend_ttl(100, 100000);
         env.storage()
@@ -110,9 +110,14 @@ impl ReceiptAnchor {
                 combined[..32].copy_from_slice(&sibling);
                 combined[32..].copy_from_slice(&computed_hash);
             }
-            computed_hash = env.crypto().sha256(&soroban_sdk::Bytes::from_slice(&env, &combined)).to_array();
+            computed_hash = env
+                .crypto()
+                .sha256(&soroban_sdk::Bytes::from_slice(&env, &combined))
+                .to_array();
         }
 
         Ok(computed_hash == batch.root.to_array())
     }
 }
+
+mod test;
