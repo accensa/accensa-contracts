@@ -1,0 +1,24 @@
+---
+title: "Protocol Mechanics"
+description: "How Accensa tracks, anchors, and refunds x402 payments on Stellar."
+---
+
+## State Machine
+
+The lifecycle of an Accensa-tracked payment moves strictly forward through three distinct states:
+
+1. **`Settled`**: A standard x402 USDC transfer completes on the Stellar network. The Accensa indexer observes this ledger event, records the payer and amount, and optionally attaches route metadata if the merchant utilizes the middleware hook. 
+2. **`Anchored`**: The payment is mathematically committed to the blockchain. The indexer batches $N$ `Settled` payments into a Merkle tree and the merchant signs a transaction writing the Merkle root to the `ReceiptAnchor` Soroban contract.
+3. **`Refunded`**: The merchant explicitly authorizes a return of funds. The float is drawn from the `RefundVault` contract and deposited back to the original payer's address.
+
+## Economic Model
+
+Accensa is designed for the microtransaction economics of agentic API usage. 
+
+- **Payment size:** Standard x402 API calls generally cost $0.001.
+- **Transaction cost:** Writing one ledger entry on Stellar currently costs ~$0.00001.
+
+If a merchant anchored every $0.001 payment individually, the transaction fees would consume 1% of total revenue. 
+
+To eliminate this margin loss, **anchoring is batched**. 
+By anchoring a Merkle root of 500 payments in a single transaction, the cost per receipt drops from 1% to **0.002%**. Agents verify their individual receipt against this root off-chain via the SDK, preserving auditability without exploding on-chain costs.

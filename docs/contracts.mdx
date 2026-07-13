@@ -1,0 +1,53 @@
+---
+title: "Smart Contract Reference"
+description: "Soroban smart contracts for verifying receipts and executing refunds."
+---
+
+Accensa relies on two purpose-built Soroban contracts deployed on the Stellar Testnet. 
+
+These contracts never touch the x402 payment path and are strictly non-custodial. They do not escrow funds between payers and merchants. 
+
+## ReceiptAnchor
+
+The `ReceiptAnchor` contract stores batch commitments of settled payments. It serves as an immutable, on-chain truth ledger for agent operators.
+
+### `anchor_batch`
+Writes a Merkle root representing a batch of payments to persistent storage.
+
+```rust
+fn anchor_batch(env: Env, root: BytesN<32>, count: u32, period_start: u64, period_end: u64) -> u64
+```
+- **Authentication:** Requires the merchant's signature (`require_auth(merchant)`).
+- **Emits:** `batch_anchored` event with the assigned `batch_id`.
+- **Returns:** The assigned `batch_id`.
+
+### `verify_receipt`
+A read-only convenience function for on-chain receipt verification. Note that the Accensa SDK performs the exact same verification locally off-chain to avoid RPC overhead.
+
+```rust
+fn verify_receipt(env: Env, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> bool
+```
+
+---
+
+## RefundVault
+
+The `RefundVault` contract holds merchant float and executes refunds according to self-declared policy bounds.
+
+### `deposit`
+Transfers USDC from the merchant's wallet to the contract's float balance.
+
+```rust
+fn deposit(env: Env, amount: i128)
+```
+- **Authentication:** Requires the merchant's signature.
+
+### `refund`
+Executes a refund to a specified address, provided it occurs within the merchant's declared refund window.
+
+```rust
+fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, paid_at_ledger: u32)
+```
+- **Authentication:** Requires the merchant's signature.
+- **Constraints:** Rejects the transaction if the `payment_ref` has already been refunded, or if the current ledger minus `paid_at_ledger` exceeds the initialized window policy.
+- **Emits:** `refunded` event.
