@@ -2,6 +2,8 @@
 
 ![Stellar](https://img.shields.io/badge/stellar-x402-blue.svg)
 
+**[Live Dashboard](https://accensa-dashboard.vercel.app)** • **[Documentation](https://accensa-docs.vercel.app)**
+
 Accensa is the merchant back-office for x402 sellers on Stellar. This repository contains the Soroban smart contracts for verifiable receipts and policy-bounded refunds.
 
 ## Contracts
