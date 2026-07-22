@@ -167,3 +167,66 @@ fn test_verify_receipt_missing_batch_fails() {
         Err(Ok(Error::BatchNotFound))
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cross-implementation conformance
+// ---------------------------------------------------------------------------
+//
+// The vectors below are byte-identical to the ones the TypeScript SDK is tested
+// against (packages/sdk/merkle-vectors.json in accensa-app). Both suites are
+// generated from a single source of truth, so if this contract and the SDK ever
+// diverge on the sorted-pair SHA-256 convention, one of them fails.
+
+#[path = "vectors.rs"]
+mod vectors;
+
+#[test]
+fn test_shared_vectors_match_typescript_sdk() {
+    let (env, client, merchant) = setup();
+    client.initialize(&merchant);
+
+    for v in vectors::VECTORS {
+        let root = BytesN::from_array(&env, &v.root);
+        let leaf = BytesN::from_array(&env, &v.leaf);
+
+        let mut proof = vec![&env];
+        for sibling in v.proof {
+            proof.push_back(BytesN::from_array(&env, sibling));
+        }
+
+        // Each vector gets its own batch so roots never collide.
+        let batch_id = client.anchor_batch(&root, &(v.proof.len() as u32), &0, &100);
+        let got = client.verify_receipt(&batch_id, &leaf, &proof);
+
+        assert_eq!(
+            got, v.expected,
+            "vector {:?}: contract returned {}, TypeScript SDK returns {}",
+            v.name, got, v.expected
+        );
+    }
+}
+
+#[test]
+fn test_shared_vectors_cover_both_outcomes() {
+    // Guards against the conformance suite silently degrading into all-true or
+    // all-false cases, which would still pass while proving nothing.
+    assert!(vectors::VECTORS.iter().any(|v| v.expected));
+    assert!(vectors::VECTORS.iter().any(|v| !v.expected));
+}
+
+#[test]
+fn test_shared_vectors_include_live_testnet_batch() {
+    // The first vector is the batch anchored on Stellar testnet as batch #1 of
+    // CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV. Keeping it in
+    // the suite ties these tests to a deployment anyone can independently check.
+    let live = &vectors::VECTORS[0];
+    assert!(live.expected);
+    assert_eq!(
+        live.root,
+        [
+            0xc6, 0xcc, 0xdc, 0xdb, 0x57, 0x89, 0x6f, 0xa4, 0x99, 0x9d, 0x9d, 0xea, 0x6a, 0x5e,
+            0xf4, 0x05, 0x23, 0xd5, 0x5e, 0x46, 0xcf, 0x32, 0xb6, 0x21, 0xd7, 0xea, 0x4a, 0x58,
+            0x2d, 0x90, 0xe6, 0xac,
+        ]
+    );
+}
