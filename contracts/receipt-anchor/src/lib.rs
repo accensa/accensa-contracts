@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -21,6 +23,21 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchRecord {
+    pub root: BytesN<32>,
+    pub count: u32,
+    pub period_start: u64,
+    pub period_end: u64,
+}
+
+/// Emitted when a merchant anchors a batch of receipts.
+///
+/// Topics: `("anchored", batch_id)`. The data map mirrors [`BatchRecord`], so
+/// indexers can decode it with the same shape returned by `get_batch`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Anchored {
+    #[topic]
+    pub batch_id: u64,
     pub root: BytesN<32>,
     pub count: u32,
     pub period_start: u64,
@@ -78,8 +95,14 @@ impl ReceiptAnchor {
             .persistent()
             .extend_ttl(&DataKey::Batch(batch_id), 100, 100000);
 
-        env.events()
-            .publish((soroban_sdk::symbol_short!("anchored"), batch_id), record);
+        Anchored {
+            batch_id,
+            root: record.root,
+            count: record.count,
+            period_start: record.period_start,
+            period_end: record.period_end,
+        }
+        .publish(&env);
 
         Ok(batch_id)
     }

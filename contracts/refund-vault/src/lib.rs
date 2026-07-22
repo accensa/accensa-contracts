@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, BytesN, Env,
 };
 
 #[contracterror]
@@ -26,6 +26,20 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundRecord {
+    pub amount: i128,
+    pub recipient: Address,
+    pub ledger: u32,
+}
+
+/// Emitted when a payment is refunded from the vault float.
+///
+/// Topics: `("refunded", payment_ref)`. The data map mirrors [`RefundRecord`],
+/// so indexers can decode it with the same shape stored under the payment ref.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Refunded {
+    #[topic]
+    pub payment_ref: BytesN<32>,
     pub amount: i128,
     pub recipient: Address,
     pub ledger: u32,
@@ -68,7 +82,8 @@ impl RefundVault {
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
-        token_client.transfer(&merchant, &env.current_contract_address(), &amount);
+        let vault = env.current_contract_address();
+        token_client.transfer(&merchant, &vault, &amount);
 
         env.storage().instance().extend_ttl(100, 100000);
         Ok(())
@@ -132,10 +147,13 @@ impl RefundVault {
             .persistent()
             .extend_ttl(&DataKey::Refund(payment_ref.clone()), 100, 100000);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("refunded"), payment_ref),
-            record,
-        );
+        Refunded {
+            payment_ref,
+            amount: record.amount,
+            recipient: record.recipient,
+            ledger: record.ledger,
+        }
+        .publish(&env);
 
         Ok(())
     }
