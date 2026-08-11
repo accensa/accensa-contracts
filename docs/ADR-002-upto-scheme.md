@@ -88,6 +88,10 @@ sequenceDiagram
     Note over U: consumed := true
 ```
 
+> ⚠️ **The single-auth-tree assumption in this diagram is contested.** `@x402/stellar`'s
+> `exact` scheme rejects auth entries containing sub-invocations; see §6.2. Treat the
+> nested `approve` as the least settled part of this design.
+
 The pieces that carry the guarantees:
 
 - **Recipient binding** — `to` is recorded at authorization time from the buyer's signed
@@ -161,9 +165,25 @@ ADR.**
    `upto`, not from the specs themselves.
 2. **Can one signed auth entry cover both `authorize` and the nested `approve`?** The
    construction in §4 assumes the buyer signs a single auth tree with `approve` as a
-   sub-invocation. This needs confirming against Soroban's authorization semantics — if
-   it requires two separate buyer signatures, the UX argument for this design weakens
-   considerably.
+   sub-invocation.
+
+   ⚠️ **Evidence against, found 2026-08-11.** `ExactStellarScheme.verify` in
+   `@x402/stellar` 2.18 validates auth entries for — among other things — the **absence
+   of sub-invocations**. Its `validateAuthEntries` checks "structure, credential type,
+   expiration, facilitator safety, **no sub-invocations**, and that the payer has signed
+   and no other signatures are pending".
+
+   That rule belongs to the `exact` scheme, so it does not automatically bind `upto`,
+   which would define its own validation. But it is a strong signal about what
+   facilitator-side validation the ecosystem considers safe, and the reasoning behind it
+   applies here: a sub-invocation is an authorization the payer may not have understood
+   they were granting. A design whose central mechanism is a nested `approve` is
+   proposing exactly the shape `exact` refuses.
+
+   **This weakens §4's construction and must be resolved before it goes upstream.**
+   Either `upto` permits a constrained sub-invocation and the spec must say precisely
+   which, or authorization needs to be a separate buyer-submitted transaction — which
+   costs the UX argument and reintroduces the buyer needing fees or sponsorship.
 3. **What does `settle` cost**, and does the pair stay within per-transaction CPU,
    memory, read, and write limits under realistic load?
 4. **Sequence-number contention.** Agent traffic is bursty and the facilitator submits
