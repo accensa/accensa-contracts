@@ -1,8 +1,25 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec,
+    contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, Address, BytesN, Env, Vec,
 };
+
+contractmeta!(
+    key = "name",
+    val = "ReceiptAnchor"
+);
+contractmeta!(
+    key = "version",
+    val = env!("CARGO_PKG_VERSION")
+);
+contractmeta!(
+    key = "repo",
+    val = "https://github.com/accensa/accensa-contracts"
+);
+contractmeta!(
+    key = "commit",
+    val = env!("GIT_SHA")
+);
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
