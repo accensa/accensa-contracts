@@ -353,6 +353,9 @@ fn test_events_emitted() {
         1,
         "deposit event missing"
     );
+    extern crate std;
+    let emitted_dep = std::format!("{:?}", env.events().all().filter_by_contract(&client.address).events().last().unwrap());
+    assert!(emitted_dep.contains("StringM(deposit_event)"), "Expected deposit_event, got {:?}", emitted_dep);
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
@@ -366,6 +369,8 @@ fn test_events_emitted() {
         1,
         "refund event missing"
     );
+    let emitted_ref = std::format!("{:?}", env.events().all().filter_by_contract(&client.address).events().last().unwrap());
+    assert!(emitted_ref.contains("StringM(refund_event)"), "Expected refund_event, got {:?}", emitted_ref);
 
     client.withdraw(&100_000, &merchant);
     assert_eq!(
@@ -377,4 +382,6 @@ fn test_events_emitted() {
         1,
         "withdraw event missing"
     );
+    let emitted_wd = std::format!("{:?}", env.events().all().filter_by_contract(&client.address).events().last().unwrap());
+    assert!(emitted_wd.contains("StringM(withdraw_event)"), "Expected withdraw_event, got {:?}", emitted_wd);
 }

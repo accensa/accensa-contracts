@@ -43,7 +43,7 @@ pub struct RefundRecord {
 
 /// Emitted when a payment is refunded from the vault float.
 ///
-/// Topics: `("refunded", payment_ref)`. The data map mirrors [`RefundRecord`],
+/// Topics: `("refund_event", payment_ref)`. The data map mirrors [`RefundRecord`],
 /// so indexers can decode it with the same shape stored under the payment ref.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
