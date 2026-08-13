@@ -53,7 +53,7 @@
   ],
   "ledger": {
     "protocol_version": 27,
-    "sequence_number": 556527,
+    "sequence_number": 360763,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -180,7 +180,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 560622
+        "live_until": 364858
       },
       {
         "entry": {

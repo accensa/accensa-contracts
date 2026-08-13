@@ -19,7 +19,10 @@ Deployed 2026-07-22 with `soroban-sdk` 27.0.0, built for `wasm32v1-none`.
 - **Merchant / admin:** `GCALKSGAZRJLSUEJT3M5W6LN4R7XQOLIRCOS6ZA6EDZVTZDBIIPPFKJ6`
 - **Refund token:** native XLM SAC `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`
 - **Refund window:** 17,280 ledgers (~24h)
+- **Version:** `0.1.0`
+- **Commit SHA:** `d6e0cbfa74f4eb6a55cd9333e4dfe828bd94089d`
 - **`ReceiptAnchor` wasm hash:** `f5dc42e6c2821607de6e35ed6e37d49623415e7221a77a290e853970f1a6c7b7`
+- **`RefundVault` wasm hash:** `f23f90605090e560d503e6c5d597ae5dd2642848a05b5aa67d1f8f87ec6847c9`
 
 ### Transactions
 
