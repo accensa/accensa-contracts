@@ -68,7 +68,13 @@ fn hash_pair(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> BytesN<32> {
 
 #[test]
 fn test_happy_path_and_payment_ref_correspondence() {
-    let TestEnv { env, anchor, vault, merchant, token } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        vault,
+        merchant,
+        token,
+    } = setup();
 
     // 1. The happy path across both contracts.
     // 2. payment_ref correspondence:
@@ -102,12 +108,18 @@ fn test_happy_path_and_payment_ref_correspondence() {
 
 #[test]
 fn test_refund_of_payment_in_pruned_batch() {
-    let TestEnv { env, anchor, vault, merchant, token: _ } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        vault,
+        merchant,
+        token: _,
+    } = setup();
 
     // 3. Refund of a payment in a pruned batch.
     // Intended behaviour: Refunds outlive their anchored batch. The vault's records
-    // are persistent and independent of the anchor's pruned batches. A refund can 
-    // arrive and be processed even if the original anchor batch is gone, as long as 
+    // are persistent and independent of the anchor's pruned batches. A refund can
+    // arrive and be processed even if the original anchor batch is gone, as long as
     // it satisfies the refund window policy.
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
@@ -138,7 +150,13 @@ fn test_refund_of_payment_in_pruned_batch() {
 #[test]
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_double_refund_with_valid_receipt_proof() {
-    let TestEnv { env, anchor, vault, merchant, token: _ } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        vault,
+        merchant,
+        token: _,
+    } = setup();
 
     // 4. Double refund with a valid receipt proof.
     // A valid Merkle proof does not create a second refund path.
@@ -147,7 +165,7 @@ fn test_double_refund_with_valid_receipt_proof() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let leaf = payment_ref.clone();
-    
+
     let root = leaf.clone();
     anchor.anchor_batch(&root, &1, &0, &100);
 
@@ -164,7 +182,13 @@ fn test_double_refund_with_valid_receipt_proof() {
 
 #[test]
 fn test_pause_interaction() {
-    let TestEnv { env, anchor, vault, merchant: _, token: _ } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        vault,
+        merchant: _,
+        token: _,
+    } = setup();
 
     // 5. Pause interaction.
     // A paused vault while anchoring continues; assert anchoring is unaffected.
@@ -180,24 +204,30 @@ fn test_pause_interaction() {
     // Anchoring continues unaffected
     let root = payment_ref.clone();
     anchor.anchor_batch(&root, &1, &0, &100);
-    
+
     let proof = vec![&env];
     assert!(anchor.verify_receipt(&1, &payment_ref, &proof));
 }
 
 #[test]
 fn test_ttl_archival_across_both() {
-    let TestEnv { env, anchor, vault, merchant, token: _ } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        vault,
+        merchant,
+        token: _,
+    } = setup();
 
     // 6. TTL/archival across both.
     // extend_batch_ttl and extend_refund_ttl operating on records for the same logical payment.
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let root = payment_ref.clone();
-    
+
     anchor.anchor_batch(&root, &1, &0, &100);
     vault.deposit(&merchant, &500_000);
-    
+
     let buyer = Address::generate(&env);
     vault.refund(&payment_ref, &buyer, &100, &0);
 
