@@ -356,7 +356,7 @@ fn test_anchor_and_prune_events_emitted() {
     );
 
     use soroban_sdk::{vec, IntoVal, Symbol};
-    
+
     let anchor_events = env.events().all();
     let batch = client.get_batch(&1);
     assert_eq!(
@@ -370,7 +370,7 @@ fn test_anchor_and_prune_events_emitted() {
             )
         ]
     );
-    
+
     env.ledger().with_mut(|li| li.sequence_number = 200);
     client.prune_batches(&150);
 
@@ -382,10 +382,7 @@ fn test_anchor_and_prune_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "prune_event"), 1u64).into_val(&env),
-                soroban_sdk::map![
-                    &env,
-                    (Symbol::new(&env, "end_batch_id"), 2u64)
-                ].into_val(&env)
+                soroban_sdk::map![&env, (Symbol::new(&env, "end_batch_id"), 2u64)].into_val(&env)
             )
         ]
     );

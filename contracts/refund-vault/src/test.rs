@@ -340,12 +340,12 @@ fn test_extend_refund_ttl_succeeds() {
 
 #[test]
 fn test_events_emitted() {
-    use soroban_sdk::{vec, IntoVal, Symbol};
     use soroban_sdk::testutils::Events;
+    use soroban_sdk::{vec, IntoVal, Symbol};
     let (env, client, merchant, _token) = setup(100);
 
     client.deposit(&merchant, &500_000);
-    
+
     assert_eq!(
         env.events().all().filter_by_contract(&client.address),
         vec![
@@ -353,19 +353,16 @@ fn test_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "deposit_event"), merchant.clone()).into_val(&env),
-                soroban_sdk::map![
-                    &env,
-                    (Symbol::new(&env, "amount"), 500_000i128)
-                ].into_val(&env)
+                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 500_000i128)].into_val(&env)
             )
         ]
     );
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    
+
     client.refund(&payment_ref, &buyer, &120_000, &0);
-    
+
     let refund_events = env.events().all().filter_by_contract(&client.address);
     let refund_record = client.get_refund(&payment_ref);
     assert_eq!(
@@ -381,7 +378,7 @@ fn test_events_emitted() {
     );
 
     client.withdraw(&100_000, &merchant);
-    
+
     assert_eq!(
         env.events().all().filter_by_contract(&client.address),
         vec![
@@ -389,10 +386,7 @@ fn test_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "withdraw_event"), merchant.clone()).into_val(&env),
-                soroban_sdk::map![
-                    &env,
-                    (Symbol::new(&env, "amount"), 100_000i128)
-                ].into_val(&env)
+                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 100_000i128)].into_val(&env)
             )
         ]
     );
