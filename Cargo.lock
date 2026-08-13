@@ -1288,6 +1288,7 @@ name = "refund-vault"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "receipt-anchor",
  "soroban-sdk",
 ]
 

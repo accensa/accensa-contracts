@@ -12,3 +12,4 @@ soroban-sdk = { workspace = true }
 [dev-dependencies]
 proptest = "1.4"
 soroban-sdk = { workspace = true, features = ["testutils"] }
+receipt-anchor = { path = "../receipt-anchor" }
