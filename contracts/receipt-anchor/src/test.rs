@@ -356,7 +356,11 @@ fn test_anchor_and_prune_events_emitted() {
     );
     extern crate std;
     let emitted = std::format!("{:?}", env.events().all().events().last().unwrap());
-    assert!(emitted.contains("StringM(anchor_event)"), "Expected anchor_event, got {:?}", emitted);
+    assert!(
+        emitted.contains("StringM(anchor_event)"),
+        "Expected anchor_event, got {:?}",
+        emitted
+    );
 
     env.ledger().with_mut(|li| li.sequence_number = 200);
     client.prune_batches(&150);
@@ -371,5 +375,9 @@ fn test_anchor_and_prune_events_emitted() {
         "PruneEvent missing"
     );
     let emitted = std::format!("{:?}", env.events().all().events().last().unwrap());
-    assert!(emitted.contains("StringM(prune_event)"), "Expected prune_event, got {:?}", emitted);
+    assert!(
+        emitted.contains("StringM(prune_event)"),
+        "Expected prune_event, got {:?}",
+        emitted
+    );
 }
