@@ -4,7 +4,7 @@ use receipt_anchor::{ReceiptAnchor, ReceiptAnchorClient};
 use refund_vault::{RefundVault, RefundVaultClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    token::{StellarAssetClient, TokenClient},
+    token::StellarAssetClient,
     vec, Address, Bytes, BytesN, Env,
 };
 
@@ -16,6 +16,7 @@ struct TestEnv<'a> {
     anchor: ReceiptAnchorClient<'a>,
     vault: RefundVaultClient<'a>,
     merchant: Address,
+    #[allow(dead_code)]
     token: Address,
 }
 
@@ -73,7 +74,7 @@ fn test_happy_path_and_payment_ref_correspondence() {
         anchor,
         vault,
         merchant,
-        token,
+        token: _,
     } = setup();
 
     // 1. The happy path across both contracts.
