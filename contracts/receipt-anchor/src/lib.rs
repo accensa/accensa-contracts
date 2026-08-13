@@ -34,7 +34,7 @@ pub struct BatchRecord {
 
 /// Emitted when a merchant anchors a batch of receipts.
 ///
-/// Topics: `("anchored", batch_id)`. The data map mirrors [`BatchRecord`], so
+/// Topics: `("anchor_event", batch_id)`. The data map mirrors [`BatchRecord`], so
 /// indexers can decode it with the same shape returned by `get_batch`.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -14,7 +14,7 @@ We welcome contributions from the community! Whether it's a bug fix, new feature
 ## Submitting a Pull Request
 
 - Ensure your code follows the existing Rust style conventions.
-- Run all local build and test commands (e.g., `make build`, `cargo test`) before submitting.
+- Run all local build and test commands (e.g., `cargo build --target wasm32v1-none --release`, `cargo test`) before submitting.
 - Provide a clear and descriptive PR title and description.
 - Link to any relevant open issues in your PR description (e.g. `Closes #123`).
 - Wait for a maintainer to review your PR. Address any feedback as needed.

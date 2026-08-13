@@ -160,7 +160,7 @@ cargo install --locked stellar-cli
 ### Build and test
 
 ```bash
-cargo test                                      # 25 unit tests
+cargo test
 cargo build --target wasm32v1-none --release    # wasm artifacts
 ```
 
@@ -196,14 +196,9 @@ The dashboard, indexer, and SDK that drive these contracts live in
 
 ## Testing
 
-48 unit tests run against the Soroban test environment on every push, alongside
+Tests run against the Soroban test environment on every push, alongside
 `cargo fmt --check` and `cargo clippy -D warnings`. CI does not swallow failures.
 
-```
-receipt-anchor   24 passed
-refund-vault     28 passed
-integration      5 passed
-```
 
 ## Contributing
 
