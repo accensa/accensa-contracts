@@ -137,6 +137,8 @@ If a `BatchRecord` or `RefundRecord` is archived, it must be restored by submitt
 - `extend_batch_ttl(batch_id)` on `ReceiptAnchor`
 - `extend_refund_ttl(payment_ref)` on `RefundVault`
 
+For a complete breakdown of what is stored, why it is persistent, and the rent cost implications, read the [Storage Audit](docs/storage-audit.md).
+
 ## Live on Testnet
 
 | Contract | ID |
