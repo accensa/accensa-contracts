@@ -24,4 +24,12 @@ We welcome contributions from the community! Whether it's a bug fix, new feature
 If you find a bug or have a feature idea, please open an issue on GitHub using our issue templates.
 Include as much detail as possible to help us understand and resolve the issue quickly.
 
+## Event Stability Policy
+
+Event topics and field names are a **public interface** consumed by external indexers. Changing an event's topic tuple, adding/removing fields, or changing field names is considered a **breaking change** and requires a major version bump and a public announcement.
+
+When writing an indexer against these contracts, you should:
+- Subscribe specifically by the topics documented in [`docs/EVENTS.md`](docs/EVENTS.md).
+- Tolerate unknown fields in the event data map to allow for non-breaking additions in the future.
+
 Thank you for helping make Accensa better!

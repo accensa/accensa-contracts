@@ -354,30 +354,39 @@ fn test_anchor_and_prune_events_emitted() {
         1,
         "AnchorEvent missing"
     );
-    extern crate std;
-    let emitted = std::format!("{:?}", env.events().all().events().last().unwrap());
-    assert!(
-        emitted.contains("StringM(anchor_event)"),
-        "Expected anchor_event, got {:?}",
-        emitted
-    );
 
+    use soroban_sdk::{vec, IntoVal, Symbol};
+    
+    let anchor_events = env.events().all();
+    let batch = client.get_batch(&1);
+    assert_eq!(
+        anchor_events,
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "anchor_event"), 1u64).into_val(&env),
+                batch.into_val(&env)
+            )
+        ]
+    );
+    
     env.ledger().with_mut(|li| li.sequence_number = 200);
     client.prune_batches(&150);
 
+    let prune_events = env.events().all();
     assert_eq!(
-        env.events()
-            .all()
-            .filter_by_contract(&client.address)
-            .events()
-            .len(),
-        1,
-        "PruneEvent missing"
-    );
-    let emitted = std::format!("{:?}", env.events().all().events().last().unwrap());
-    assert!(
-        emitted.contains("StringM(prune_event)"),
-        "Expected prune_event, got {:?}",
-        emitted
+        prune_events,
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "prune_event"), 1u64).into_val(&env),
+                soroban_sdk::map![
+                    &env,
+                    (Symbol::new(&env, "end_batch_id"), 2u64)
+                ].into_val(&env)
+            )
+        ]
     );
 }

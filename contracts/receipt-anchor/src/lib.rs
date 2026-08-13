@@ -45,6 +45,7 @@ pub struct AnchorEvent {
     pub count: u32,
     pub period_start: u64,
     pub period_end: u64,
+    pub anchored_ledger: u32,
 }
 
 #[contractevent]
@@ -131,6 +132,7 @@ impl ReceiptAnchor {
             count: record.count,
             period_start: record.period_start,
             period_end: record.period_end,
+            anchored_ledger: record.anchored_ledger,
         }
         .publish(&env);
 
