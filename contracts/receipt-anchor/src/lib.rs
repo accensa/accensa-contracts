@@ -190,6 +190,14 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Returns the maximum number of receipts allowed in a single `anchor_batch`.
+    ///
+    /// Clients should call this rather than hard-coding the limit so they stay
+    /// in sync if the constant is ever tuned.
+    pub fn get_max_batch_size(_env: Env) -> u32 {
+        MAX_BATCH_SIZE
+    }
+
     pub fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error> {
         if !env.storage().persistent().has(&DataKey::Batch(batch_id)) {
             return Err(Error::BatchNotFound);

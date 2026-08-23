@@ -193,13 +193,32 @@ fn test_get_batch_count_before_initialize_fails() {
 }
 
 #[test]
+fn test_get_max_batch_size() {
+    let (_env, client, _merchant) = setup();
+    assert_eq!(client.get_max_batch_size(), MAX_BATCH_SIZE);
+    assert_eq!(client.get_max_batch_size(), 1000);
+}
+
+#[test]
+fn test_anchor_batch_at_max_size_succeeds() {
+    let (env, client, merchant) = setup();
+    client.initialize(&merchant);
+
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    let batch_id = client.anchor_batch(&root, &MAX_BATCH_SIZE, &0, &50);
+    assert_eq!(batch_id, 1);
+    let record = client.get_batch(&batch_id);
+    assert_eq!(record.count, MAX_BATCH_SIZE);
+}
+
+#[test]
 fn test_anchor_batch_enforces_max_size() {
     let (env, client, merchant) = setup();
     client.initialize(&merchant);
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
     assert_eq!(
-        client.try_anchor_batch(&root, &1001, &0, &50),
+        client.try_anchor_batch(&root, &(MAX_BATCH_SIZE + 1), &0, &50),
         Err(Ok(Error::BatchTooLarge))
     );
 }
