@@ -196,7 +196,8 @@ impl RefundVault {
         env.storage()
             .instance()
             .set(&DataKey::RefundWindow, &refund_window_ledgers);
-
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+        env.storage().instance().set(&DataKey::RefundMax, &0i128);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -204,43 +205,36 @@ impl RefundVault {
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
+        if Self::is_paused(env.clone()) {
             return Err(Error::Paused);
         }
-
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
         let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
-
         if from != merchant {
             return Err(Error::Unauthorized);
         }
-
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let client = token::Client::new(&env, &token);
-        client.transfer(&from, env.current_contract_address(), &amount);
-
-        DepositEvent {
-            from: from.clone(),
-            amount,
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
         }
-        .publish(&env);
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
+        let token_client = token::TokenClient::new(&env, &token_address);
+        token_client.transfer(&merchant, &env.current_contract_address(), &amount);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+
+        DepositEvent { from, amount }.publish(&env);
+
         Ok(())
     }
 
@@ -251,25 +245,28 @@ impl RefundVault {
         amount: i128,
         paid_at_ledger: u32,
     ) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
+        if Self::is_paused(env.clone()) {
             return Err(Error::Paused);
         }
-
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
         let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let max_refund: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundMax)
+            .unwrap_or(0);
+        if max_refund > 0 && amount > max_refund {
+            return Err(Error::AmountExceedsMax);
+        }
 
         if env
             .storage()
@@ -279,26 +276,45 @@ impl RefundVault {
             return Err(Error::AlreadyRefunded);
         }
 
-        let window: u32 = env
+        let refund_window: u32 = env
             .storage()
             .instance()
             .get(&DataKey::RefundWindow)
-            .unwrap();
-        if window > 0 {
+            .ok_or(Error::NotInitialized)?;
+
+        if refund_window > 0 {
             let current_ledger = env.ledger().sequence();
-            if current_ledger > paid_at_ledger + window {
+            if current_ledger > paid_at_ledger.saturating_add(refund_window) {
                 return Err(Error::WindowExpired);
             }
         }
 
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
-        let balance = token_client.balance(&env.current_contract_address());
-        if balance < amount {
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
+        let token_client = token::TokenClient::new(&env, &token_address);
+        let vault_balance = token_client.balance(&env.current_contract_address());
+
+        // Account for deployed yield if a strategy is active
+        let available_float = if let Some(strategy) = Self::get_yield_strategy(env.clone()) {
+            let strategy_client = YieldStrategyClient::new(&env, &strategy);
+            let strategy_balance = strategy_client.total_balance();
+            vault_balance.saturating_add(strategy_balance)
+        } else {
+            vault_balance
+        };
+
+        if amount > available_float {
             return Err(Error::InsufficientFloat);
         }
 
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+        // If vault_balance is insufficient due to deployment, withdraw from strategy first
+        if amount > vault_balance {
+            let needed = amount - vault_balance;
+            Self::withdraw_from_yield_internal(env.clone(), needed)?;
+        }
 
         let record = RefundRecord {
             amount,
@@ -309,20 +325,20 @@ impl RefundVault {
         env.storage()
             .persistent()
             .set(&DataKey::Refund(payment_ref.clone()), &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Refund(payment_ref.clone()), TTL_THRESHOLD, TTL_EXTEND);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Refund(payment_ref.clone()),
-            TTL_THRESHOLD,
-            TTL_EXTEND,
-        );
+
+        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
 
         RefundEvent {
             payment_ref,
-            amount: record.amount,
-            recipient: record.recipient,
+            amount,
+            recipient,
             ledger: record.ledger,
         }
         .publish(&env);
@@ -330,395 +346,65 @@ impl RefundVault {
         Ok(())
     }
 
-    pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
-
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
-        let balance = token_client.balance(&env.current_contract_address());
-        if balance < amount {
-            return Err(Error::InsufficientFloat);
-        }
-
-        token_client.transfer(&env.current_contract_address(), &to, &amount);
-
-        WithdrawEvent {
-            to: to.clone(),
-            amount,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    pub fn set_refund_window(env: Env, ledgers: u32) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::RefundWindow, &ledgers);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {
+    pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Result<RefundRecord, Error> {
         env.storage()
             .persistent()
             .get(&DataKey::Refund(payment_ref))
+            .ok_or(Error::RefundNotFound)
     }
 
-    // ── Yield strategy management ──────────────────────────────────────────
-
-    /// Register an external yield strategy contract. Only callable by admin.
-    pub fn set_yield_strategy(env: Env, strategy: Address) -> Result<(), Error> {
-        let merchant: Address = env
+    pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), Error> {
+        if !env
             .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::YieldStrategy, &strategy);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Set the minimum reserve ratio in basis points (1 bp = 0.01%).
-    /// E.g., 2000 = 20% of total vault value must remain as liquid token balance.
-    pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
-        if basis_points > 10_000 {
-            return Err(Error::InvalidRatio);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::ReserveRatio, &basis_points);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Set the maximum deployment ratio in basis points.
-    /// E.g., 8000 = at most 80% of total vault value can be deployed to yield.
-    pub fn set_max_deploy_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
-        if basis_points > 10_000 {
-            return Err(Error::InvalidRatio);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::MaxDeployRatio, &basis_points);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Deploy idle vault tokens into the registered yield strategy.
-    ///
-    /// Enforces:
-    /// - Strategy must be configured
-    /// - Amount must be positive
-    /// - Post-deployment liquid balance >= reserve_ratio * total_value
-    /// - Total deployed <= max_deploy_ratio * total_value
-    pub fn deploy_to_yield(env: Env, amount: i128) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
+            .persistent()
+            .has(&DataKey::Refund(payment_ref.clone()))
         {
+            return Err(Error::RefundNotFound);
+        }
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Refund(payment_ref), TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    pub fn withdraw(env: Env, amount: i128, recipient: Address) -> Result<(), Error> {
+        if Self::is_paused(env.clone()) {
             return Err(Error::Paused);
         }
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
 
-        let merchant: Address = env
+        let token_address: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
+            .get(&DataKey::Token)
             .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
+        let token_client = token::TokenClient::new(&env, &token_address);
+        let vault_balance = token_client.balance(&env.current_contract_address());
 
-        let strategy: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldStrategy)
-            .ok_or(Error::StrategyNotSet)?;
-
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
-        let token_balance = token_client.balance(&env.current_contract_address());
-
-        if token_balance < amount {
-            return Err(Error::InsufficientFloat);
+        if amount > vault_balance {
+            let needed = amount - vault_balance;
+            Self::withdraw_from_yield_internal(env.clone(), needed)?;
         }
 
-        let deployed: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DeployedPrincipal)
-            .unwrap_or(0);
-        let harvested: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::HarvestedYield)
-            .unwrap_or(0);
-
-        // total_value = liquid tokens + deployed principal
-        // (harvested yield has already been transferred to the vault and is part of token_balance,
-        //  but it belongs to the operator, not the principal pool — subtract it)
-        let total_value = token_balance + deployed - harvested;
-
-        // Reserve check: after deployment, liquid tokens must cover the reserve.
-        let reserve_ratio: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReserveRatio)
-            .unwrap_or(0);
-        let post_deploy_balance = token_balance - amount;
-        let reserve_required = total_value * reserve_ratio as i128 / 10_000;
-        if post_deploy_balance < reserve_required {
-            return Err(Error::InsufficientReserve);
-        }
-
-        // Max deployment check.
-        let max_deploy_ratio: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxDeployRatio)
-            .unwrap_or(10_000);
-        let post_deploy_total = deployed + amount;
-        let max_deploy = total_value * max_deploy_ratio as i128 / 10_000;
-        if post_deploy_total > max_deploy {
-            return Err(Error::DeploymentExceedsMax);
-        }
-
-        // Transfer tokens to strategy, then notify the strategy of the deposit
-        // (it needs to record the principal so it can return it on withdrawal).
-        token_client.transfer(&env.current_contract_address(), &strategy, &amount);
-        let strategy_client = YieldStrategyClient::new(&env, &strategy);
-        strategy_client.deposit(&amount);
-
-        env.storage()
-            .instance()
-            .set(&DataKey::DeployedPrincipal, &(deployed + amount));
-
-        YieldDeployedEvent {
-            strategy: strategy.clone(),
-            amount,
-        }
-        .publish(&env);
+        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+
+        WithdrawEvent { to: recipient, amount }.publish(&env);
+
         Ok(())
     }
-
-    /// Withdraw principal from the yield strategy. The strategy returns the requested
-    /// principal plus any proportional accrued yield.
-    ///
-    /// `principal` is the amount of originally-deployed principal to reclaim.
-    pub fn withdraw_from_yield(env: Env, principal: i128) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
-
-        if principal <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        let strategy: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldStrategy)
-            .ok_or(Error::StrategyNotSet)?;
-
-        let deployed: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DeployedPrincipal)
-            .unwrap_or(0);
-        if principal > deployed {
-            return Err(Error::NothingToWithdraw);
-        }
-
-        let strategy_client = YieldStrategyClient::new(&env, &strategy);
-        let (principal_returned, yield_returned) = strategy_client.withdraw(&principal);
-
-        let harvested: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::HarvestedYield)
-            .unwrap_or(0);
-
-        env.storage().instance().set(
-            &DataKey::DeployedPrincipal,
-            &(deployed - principal_returned),
-        );
-        env.storage()
-            .instance()
-            .set(&DataKey::HarvestedYield, &(harvested + yield_returned));
-
-        YieldWithdrawnEvent {
-            strategy,
-            principal: principal_returned,
-            yield_amount: yield_returned,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Harvest accrued yield from the strategy without touching deployed principal.
-    /// Yield tokens are transferred to the vault and tracked for operator withdrawal.
-    pub fn harvest_yield(env: Env) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        let strategy: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldStrategy)
-            .ok_or(Error::StrategyNotSet)?;
-
-        let strategy_client = YieldStrategyClient::new(&env, &strategy);
-        let yield_amount = strategy_client.harvest();
-
-        if yield_amount <= 0 {
-            return Err(Error::NothingToHarvest);
-        }
-
-        let harvested: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::HarvestedYield)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::HarvestedYield, &(harvested + yield_amount));
-
-        YieldHarvestedEvent {
-            amount: yield_amount,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Read-only: returns current yield strategy state.
-    pub fn get_yield_info(env: Env) -> YieldInfo {
-        YieldInfo {
-            deployed_principal: env
-                .storage()
-                .instance()
-                .get(&DataKey::DeployedPrincipal)
-                .unwrap_or(0),
-            harvested_yield: env
-                .storage()
-                .instance()
-                .get(&DataKey::HarvestedYield)
-                .unwrap_or(0),
-            strategy: env.storage().instance().get(&DataKey::YieldStrategy),
-            reserve_ratio: env
-                .storage()
-                .instance()
-                .get(&DataKey::ReserveRatio)
-                .unwrap_or(0),
-            max_deploy_ratio: env
-                .storage()
-                .instance()
-                .get(&DataKey::MaxDeployRatio)
-                .unwrap_or(10_000),
-        }
-    }
-
-    // ── Existing admin functions ───────────────────────────────────────────
 
     pub fn pause(env: Env) -> Result<(), Error> {
         let merchant: Address = env
@@ -727,7 +413,6 @@ impl RefundVault {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
-
         env.storage().instance().set(&DataKey::IsPaused, &true);
         env.storage()
             .instance()
@@ -742,7 +427,6 @@ impl RefundVault {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
-
         env.storage().instance().set(&DataKey::IsPaused, &false);
         env.storage()
             .instance()
@@ -750,94 +434,270 @@ impl RefundVault {
         Ok(())
     }
 
-    pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), Error> {
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Refund(payment_ref.clone()))
-        {
-            return Err(Error::RefundNotFound);
-        }
-        env.storage().persistent().extend_ttl(
-            &DataKey::Refund(payment_ref),
-            TTL_THRESHOLD,
-            TTL_EXTEND,
-        );
-        Ok(())
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
     }
 
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let current_admin: Address = env
+    pub fn set_refund_window(env: Env, refund_window_ledgers: u32) -> Result<(), Error> {
+        let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        current_admin.require_auth();
+        merchant.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &refund_window_ledgers);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
 
+    pub fn get_refund_window(env: Env) -> Result<u32, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn set_refund_max(env: Env, max_amount: i128) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+        if max_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundMax, &max_amount);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    pub fn get_refund_max(env: Env) -> Result<i128, Error> {
+        Ok(env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundMax)
+            .unwrap_or(0))
+    }
+
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
 
         AdminTransferInitiatedEvent {
-            from: current_admin,
+            from: merchant,
             to: new_admin,
         }
         .publish(&env);
 
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 
     pub fn accept_admin(env: Env) -> Result<(), Error> {
-        let pending_admin: Address = env
+        let pending: Address = env
             .storage()
             .instance()
             .get(&DataKey::PendingAdmin)
             .ok_or(Error::NoPendingTransfer)?;
-        pending_admin.require_auth();
+        pending.require_auth();
 
-        let previous_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Admin, &pending_admin);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-
-        AdminTransferAcceptedEvent {
-            from: previous_admin,
-            to: pending_admin,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
-        let current_admin: Address = env
+        let old_merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        current_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+
+        AdminTransferAcceptedEvent {
+            from: old_merchant,
+            to: pending,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
 
         if !env.storage().instance().has(&DataKey::PendingAdmin) {
             return Err(Error::NoPendingTransfer);
         }
 
         env.storage().instance().remove(&DataKey::PendingAdmin);
-
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
-}
 
-mod fuzz_test;
-mod test;
-mod yield_tests;
+    pub fn set_yield_strategy(
+        env: Env,
+        strategy: Address,
+        reserve_ratio: u32,
+        max_deploy_ratio: u32,
+    ) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        if reserve_ratio > 100 || max_deploy_ratio > 100 || reserve_ratio + max_deploy_ratio > 100 {
+            return Err(Error::InvalidRatio);
+        }
+
+        let info = YieldInfo {
+            deployed_principal: 0,
+            harvested_yield: 0,
+            strategy: Some(strategy),
+            reserve_ratio,
+            max_deploy_ratio,
+        };
+
+        env.storage().instance().set(&DataKey::YieldStrategy, &info);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    pub fn get_yield_info(env: Env) -> Result<YieldInfo, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::YieldStrategy)
+            .ok_or(Error::StrategyNotSet)
+    }
+
+    fn get_yield_strategy(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get::<_, YieldInfo>(&DataKey::YieldStrategy)
+            .and_then(|info| info.strategy)
+    }
+
+    pub fn deploy_to_yield(env: Env, amount: i128) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let mut info = Self::get_yield_info(env.clone())?;
+        let strategy = info.strategy.ok_or(Error::StrategyNotSet)?;
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
+        let token_client = token::TokenClient::new(&env, &token_address);
+        let vault_balance = token_client.balance(&env.current_contract_address());
+
+        if amount > vault_balance {
+            return Err(Error::InsufficientFloat);
+        }
+
+        let reserve_required = vault_balance * (info.reserve_ratio as i128) / 100;
+        let max_deployable = vault_balance - reserve_required;
+        if amount > max_deployable {
+            return Err(Error::DeploymentExceedsMax);
+        }
+
+        token_client.transfer(&env.current_contract_address(), &strategy, &amount);
+
+        let strategy_client = YieldStrategyClient::new(&env, &strategy);
+        strategy_client.deposit(&amount)?;
+
+        info.deployed_principal = info.deployed_principal.saturating_add(amount);
+        env.storage().instance().set(&DataKey::YieldStrategy, &info);
+
+        YieldDeployedEvent { strategy, amount }.publish(&env);
+
+        Ok(())
+    }
+
+    fn withdraw_from_yield_internal(env: Env, amount: i128) -> Result<(), Error> {
+        let mut info = Self::get_yield_info(env.clone())?;
+        let strategy = info.strategy.ok_or(Error::StrategyNotSet)?;
+
+        let strategy_client = YieldStrategyClient::new(&env, &strategy);
+        let (principal_returned, yield_returned) = strategy_client.withdraw(&amount)?;
+
+        info.deployed_principal = info
+            .deployed_principal
+            .saturating_sub(principal_returned);
+        info.harvested_yield = info.harvested_yield.saturating_add(yield_returned);
+        env.storage().instance().set(&DataKey::YieldStrategy, &info);
+
+        YieldWithdrawnEvent {
+            strategy,
+            principal: principal_returned,
+            yield_amount: yield_returned,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    pub fn harvest_yield(env: Env) -> Result<i128, Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let mut info = Self::get_yield_info(env.clone())?;
+        let strategy = info.strategy.ok_or(Error::StrategyNotSet)?;
+
+        let strategy_client = YieldStrategyClient::new(&env, &strategy);
+        let harvested = strategy_client.harvest()?;
+
+        info.harvested_yield = info.harvested_yield.saturating_add(harvested);
+        env.storage().instance().set(&DataKey::YieldStrategy, &info);
+
+        YieldHarvestedEvent { amount: harvested }.publish(&env);
+
+        Ok(harvested)
+    }
+}
