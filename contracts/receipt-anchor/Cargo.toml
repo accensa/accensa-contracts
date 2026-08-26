@@ -1,6 +1,6 @@
 [package]
 name = "receipt-anchor"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [lints]
@@ -12,7 +12,15 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+accensa-common = { workspace = true }
 
 [dev-dependencies]
+multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Test-only: lets fuzz_test.rs peek at a shard's own storage (e.g. TTLs) by
+# its DataKey type. Safe as a dev-dependency only — soroban-sdk's contract
+# export attribute is gated on `target_family = "wasm"`, so linking this
+# crate's generated functions into a native test binary creates no symbol
+# collisions with receipt-anchor's own same-named functions.
+receipt-shard = { path = "../receipt-shard" }

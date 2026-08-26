@@ -52,7 +52,7 @@ fn verify_receipt(env: Env, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<3
 The `RefundVault` contract holds merchant float and executes refunds according to self-declared policy bounds.
 
 ### `initialize`
-One-time setup binding the vault to the merchant, the refund token (USDC SAC address), and the refund window in ledgers. A window of `0` disables expiry entirely.
+One-time setup binding the vault to the merchant, the refund token (any SEP-41 token contract address — the USDC SAC by default), and the refund window in ledgers. A window of `0` disables expiry entirely.
 
 ```rust
 fn initialize(env: Env, merchant: Address, token: Address, refund_window_ledgers: u32) -> Result<(), Error>

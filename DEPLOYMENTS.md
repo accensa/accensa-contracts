@@ -95,36 +95,65 @@ stellar contract invoke \
 
 Both are read-only simulations and cost nothing to run.
 
----
+## Using a multisig contract account as admin
 
-## Pubnet (Mainnet)
+`initialize` takes a single `Address` as the merchant/admin, and on Soroban that
+address does not have to be a keypair. Point it at a **contract account** that
+implements `__check_auth` (this repo ships `contracts/multisig-account`, a
+threshold account) and every privileged call — `pause`, `unpause`,
+`set_refund_window`, `refund`, `withdraw`, `anchor_batch`, `prune_batches` —
+requires the account's threshold of signers, with **no change to the vault or
+anchor**. See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)
+for what this means for key-compromise risk; the mechanism is exercised by
+tests in `contracts/refund-vault/tests/multisig_admin_vault.rs` and
+`contracts/receipt-anchor/tests/multisig_admin_anchor.rs`.
 
-> **No pubnet deployment has been performed yet.**
->
-> See [`docs/MAINNET_DEPLOYMENT.md`](docs/MAINNET_DEPLOYMENT.md) for the
-> pre-deployment checklist covering upgradeability, audit status, key custody,
-> USDC SAC verification, refund window configuration, and rent funding.
+### Worked example: a 2-of-3 multisig merchant
 
-| Contract | Contract ID | Explorer |
-|---|---|---|
-| `ReceiptAnchor` | *(pending deployment)* | *(pending)* |
-| `RefundVault` | *(pending deployment)* | *(pending)* |
+1. **Deploy the account contract** with its three signers and threshold 2. The
+   constructor takes `(signers, threshold)`:
 
-Once deployed, this section will include:
+   ```bash
+   stellar contract invoke \
+     --id <multisig-wasm-hash> --wasm target/wasm32v1-none/release/multisig_account.wasm \
+     --network testnet --source <deployer> \
+     -- __constructor \
+     --signers '["GDEVELOPER1...","GDEVELOPER2...","GDEVELOPER3..."]' \
+     --threshold 2
+   ```
 
-- Contract IDs and explorer links
-- Merchant / admin address
-- Refund token (verified USDC SAC address)
-- Refund window configuration
-- Version and commit SHA
-- WASM hashes for both contracts
-- Deployment transactions
+   Note the deployed account's contract ID — that is your merchant address:
 
-Machine-readable values will be recorded in [`deployments/pubnet.env`](deployments/pubnet.env).
+   ```bash
+   MULTISIG=<account-contract-id>
+   ```
 
----
+2. **Initialize the vault with the account as merchant** (the anchor is
+exactly the same: `ReceiptAnchor.initialize` with the same account):
 
-## Deploying
+   ```bash
+   stellar contract invoke \
+     --id <refund-vault-id> --source <deployer> \
+     --network testnet \
+     -- initialize \
+     --merchant $MULTISIG \
+     --token CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+     --refund_window_ledgers 17280
+   ```
+
+3. **Privileged calls now need the signers.** Wallet tooling builds the
+   `SorobanAuthorizationEntry` with the account's address in
+   `AddressWithDelegates` credentials and the signers attached as delegated
+   signers — exactly what the tests in `multisig_admin_vault.rs` construct by
+   hand. A transaction carrying only one signer is rejected by the account's
+   `__check_auth` before the vault code runs.
+
+> [!NOTE]
+> The deployed testnet contracts above are keypair-administered and are **not**
+> configured this way. This section documents how to deploy *new* vault/anchor
+> instances under a multisig admin.
+
+## Redeploying
 
 ```bash
 ./deploy.sh                          # testnet (default), identity "deployer"

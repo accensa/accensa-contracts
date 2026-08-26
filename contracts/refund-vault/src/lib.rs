@@ -1,7 +1,8 @@
 #![no_std]
 
+use accensa_common::Error;
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, token,
+    contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
     Address, BytesN, Env,
 };
 
@@ -12,35 +13,21 @@ contractmeta!(
     val = "https://github.com/accensa/accensa-contracts"
 );
 contractmeta!(key = "commit", val = env!("GIT_SHA"));
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    Unauthorized = 3,
-    AlreadyRefunded = 4,
-    WindowExpired = 5,
-    InsufficientFloat = 6,
-    InvalidAmount = 7,
-    Paused = 8,
-    RefundNotFound = 9,
-    MetadataTooLong = 10,
-    AmountExceedsMax = 11,
-    NoPendingTransfer = 12,
-    StrategyNotSet = 13,
-    InsufficientReserve = 14,
-    DeploymentExceedsMax = 15,
-    NothingToWithdraw = 16,
-    NothingToHarvest = 17,
-    InvalidRatio = 18,
-}
+contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
 
 #[contracttype]
 pub enum DataKey {
     Admin,
     Token,
     RefundWindow,
+    /// Cumulative refund record for a payment (new partial-refund layout).
+    ///
+    /// Stored under `RefundV2` so the decoder never attempts to interpret a
+    /// legacy `Refund` record written by the single-refund rule.
+    RefundV2(BytesN<32>),
+    /// Legacy single-refund record (0.1.0 layout). Retained read-only for
+    /// migration detection: a present `Refund` key means the payment was
+    /// already fully refunded under the old rule.
     Refund(BytesN<32>),
     IsPaused,
     Metadata,
@@ -58,8 +45,15 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundRecord {
-    pub amount: i128,
+    /// Cumulative amount refunded so far for this payment.
+    pub amount_refunded: i128,
+    /// The original payment amount — the hard ceiling on cumulative refunds.
+    pub payment_amount: i128,
+    /// The ledger at which the original payment occurred (window is measured
+    /// from here, never from a partial).
+    pub paid_at_ledger: u32,
     pub recipient: Address,
+    /// Ledger of the most recent refund call.
     pub ledger: u32,
 }
 
@@ -73,16 +67,21 @@ pub struct YieldInfo {
     pub max_deploy_ratio: u32,
 }
 
-/// Emitted when a payment is refunded from the vault float.
+/// Emitted when a (possibly partial) refund is made from the vault float.
 ///
-/// Topics: `("refund_event", payment_ref)`. The data map mirrors [`RefundRecord`],
-/// so indexers can decode it with the same shape stored under the payment ref.
+/// Topics: `("refund_event", payment_ref)`. The data map carries the amount
+/// for **this call** (`amount`) and the running total after it
+/// (`cumulative_refunded`), so an indexer knows the state of a payment without
+/// summing history.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundEvent {
     #[topic]
     pub payment_ref: BytesN<32>,
+    /// Amount refunded in this call.
     pub amount: i128,
+    /// Running cumulative total across all refunds for this payment.
+    pub cumulative_refunded: i128,
     pub recipient: Address,
     pub ledger: u32,
 }
@@ -93,6 +92,42 @@ pub struct DepositEvent {
     #[topic]
     pub from: Address,
     pub amount: i128,
+}
+
+/// Emitted when the merchant pauses the vault, halting deposits, refunds and withdrawals.
+///
+/// Topics: `("pause_event", ledger)`. The ledger sequence lets an indexer
+/// reconstruct the pause window from the event log alone.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseEvent {
+    #[topic]
+    pub ledger: u32,
+}
+
+/// Emitted when the merchant unpauses the vault.
+///
+/// Topics: `("unpause_event", ledger)`. Together with `PauseEvent` this
+/// brackets a pause window in the event log.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnpauseEvent {
+    #[topic]
+    pub ledger: u32,
+}
+
+/// Emitted when the merchant changes the refund window.
+///
+/// Topics: `("refund_window_updated_event", previous_window, new_window)`.
+/// Both values are carried so a reader can tell whether a refund rejected at a
+/// given ledger was rejected under the old rule or the new one.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefundWindowUpdatedEvent {
+    #[topic]
+    pub previous_window: u32,
+    #[topic]
+    pub new_window: u32,
 }
 
 #[contractevent]
@@ -148,7 +183,10 @@ pub struct YieldHarvestedEvent {
 ///
 /// Any contract that implements these methods can be registered as the vault's yield
 /// strategy. The vault calls these to deploy idle funds and harvest accrued yield.
-#[contractimpl]
+/// The trait is annotated `#[contractclient(name = "YieldStrategyClient")]` (not
+/// `#[contractimpl]`, which only accepts `impl` blocks) so its client is
+/// generated from the interface.
+#[contractclient(name = "YieldStrategyClient")]
 pub trait YieldStrategy {
     /// Deploy `amount` tokens into the strategy. The vault transfers tokens to the
     /// strategy contract before calling this.
@@ -244,12 +282,28 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Refund part (or all) of an original payment.
+    ///
+    /// `payment_amount` is the original payment amount and therefore the hard
+    /// ceiling: cumulative refunds for a payment may never exceed it. It is
+    /// supplied by the merchant on **every** call, mirroring how `paid_at_ledger`
+    /// is supplied, so the ceiling never depends on partial bookkeeping. The
+    /// refund window is evaluated against `paid_at_ledger` (the original
+    /// payment), not against a previous partial — each partial does not extend
+    /// the window for the next.
+    ///
+    /// Storage note (#99): the layout changed from a single `amount` record to a
+    /// cumulative record under a new `RefundV2` key. A `Refund` key written by
+    /// the legacy single-refund rule still denotes a fully-refunded payment and
+    /// is rejected with [`Error::ExceedsPayment`] rather than a silent
+    /// misinterpretation.
     pub fn refund(
         env: Env,
         payment_ref: BytesN<32>,
         recipient: Address,
         amount: i128,
         paid_at_ledger: u32,
+        payment_amount: i128,
     ) -> Result<(), Error> {
         if env
             .storage()
@@ -271,12 +325,14 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        // Legacy record: the payment was fully refunded under the single-refund
+        // rule. Reject explicitly rather than mis-decoding the old shape.
         if env
             .storage()
             .persistent()
             .has(&DataKey::Refund(payment_ref.clone()))
         {
-            return Err(Error::AlreadyRefunded);
+            return Err(Error::ExceedsPayment);
         }
 
         let window: u32 = env
@@ -291,6 +347,25 @@ impl RefundVault {
             }
         }
 
+        // Ceiling check: cumulative refunds must not exceed the original amount.
+        // The ceiling is read from the (re)stored record, freshly minted on the
+        // first partial for this payment.
+        let existing: Option<RefundRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RefundV2(payment_ref.clone()));
+        let (previous_refunded, record_ceiling) = match existing {
+            Some(rec) => (rec.amount_refunded, rec.payment_amount),
+            None => (0i128, payment_amount),
+        };
+
+        if previous_refunded.checked_add(amount).is_none()
+            || record_ceiling <= 0
+            || previous_refunded + amount > record_ceiling
+        {
+            return Err(Error::ExceedsPayment);
+        }
+
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
         let balance = token_client.balance(&env.current_contract_address());
@@ -300,28 +375,33 @@ impl RefundVault {
 
         token_client.transfer(&env.current_contract_address(), &recipient, &amount);
 
+        let cumulative_refunded = previous_refunded + amount;
+        let current_ledger = env.ledger().sequence();
         let record = RefundRecord {
-            amount,
+            amount_refunded: cumulative_refunded,
+            payment_amount: record_ceiling,
+            paid_at_ledger,
             recipient: recipient.clone(),
-            ledger: env.ledger().sequence(),
+            ledger: current_ledger,
         };
 
         env.storage()
             .persistent()
-            .set(&DataKey::Refund(payment_ref.clone()), &record);
+            .set(&DataKey::RefundV2(payment_ref.clone()), &record);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         env.storage().persistent().extend_ttl(
-            &DataKey::Refund(payment_ref.clone()),
+            &DataKey::RefundV2(payment_ref.clone()),
             TTL_THRESHOLD,
             TTL_EXTEND,
         );
 
         RefundEvent {
             payment_ref,
-            amount: record.amount,
+            amount,
+            cumulative_refunded,
             recipient: record.recipient,
             ledger: record.ledger,
         }
@@ -380,9 +460,20 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        let previous: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .unwrap();
         env.storage()
             .instance()
             .set(&DataKey::RefundWindow, &ledgers);
+
+        RefundWindowUpdatedEvent {
+            previous_window: previous,
+            new_window: ledgers,
+        }
+        .publish(&env);
 
         env.storage()
             .instance()
@@ -393,7 +484,7 @@ impl RefundVault {
     pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {
         env.storage()
             .persistent()
-            .get(&DataKey::Refund(payment_ref))
+            .get(&DataKey::RefundV2(payment_ref))
     }
 
     // ── Yield strategy management ──────────────────────────────────────────
@@ -547,8 +638,11 @@ impl RefundVault {
             return Err(Error::DeploymentExceedsMax);
         }
 
-        // Transfer tokens to strategy and record the deposit.
+        // Transfer tokens to strategy, then notify the strategy of the deposit
+        // (it needs to record the principal so it can return it on withdrawal).
         token_client.transfer(&env.current_contract_address(), &strategy, &amount);
+        let strategy_client = YieldStrategyClient::new(&env, &strategy);
+        strategy_client.deposit(&amount);
 
         env.storage()
             .instance()
@@ -726,6 +820,12 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage().instance().set(&DataKey::IsPaused, &true);
+
+        PauseEvent {
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -741,6 +841,12 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage().instance().set(&DataKey::IsPaused, &false);
+
+        UnpauseEvent {
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -751,12 +857,12 @@ impl RefundVault {
         if !env
             .storage()
             .persistent()
-            .has(&DataKey::Refund(payment_ref.clone()))
+            .has(&DataKey::RefundV2(payment_ref.clone()))
         {
             return Err(Error::RefundNotFound);
         }
         env.storage().persistent().extend_ttl(
-            &DataKey::Refund(payment_ref),
+            &DataKey::RefundV2(payment_ref),
             TTL_THRESHOLD,
             TTL_EXTEND,
         );
@@ -837,4 +943,5 @@ impl RefundVault {
 
 mod fuzz_test;
 mod test;
+mod token_agnostic_tests;
 mod yield_tests;

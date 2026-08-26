@@ -14,10 +14,14 @@ We use Semantic Versioning (SemVer) with the following contract-specific definit
 
 When preparing a release, follow these steps to ensure reproducible builds and provenance:
 
-### 1. Update Versions
+### 1. Update Versions and Changelog
 Update the `version` field in both `Cargo.toml` files:
 - `contracts/receipt-anchor/Cargo.toml`
 - `contracts/refund-vault/Cargo.toml`
+
+Update [`CHANGELOG.md`](../CHANGELOG.md):
+- Rename the `## [Unreleased]` heading to the new version and release date, e.g., `## [1.0.0] — YYYY-MM-DD`.
+- Add a fresh `## [Unreleased]` section above it for future changes.
 
 ### 2. Cut a Release Branch and Tag
 Commit the version bump and create a Git tag for the release.
