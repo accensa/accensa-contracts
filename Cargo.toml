@@ -14,7 +14,8 @@ warnings = "deny"
 [workspace.lints.clippy]
 all = "warn"
 
-
+[profile.dev]
+overflow-checks = true
 
 [profile.release]
 opt-level = "z"

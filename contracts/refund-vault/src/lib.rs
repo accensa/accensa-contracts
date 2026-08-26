@@ -548,11 +548,7 @@ impl RefundVault {
         }
 
         // Transfer tokens to strategy and record the deposit.
-        token_client.transfer(
-            &env.current_contract_address(),
-            &strategy,
-            &amount,
-        );
+        token_client.transfer(&env.current_contract_address(), &strategy, &amount);
 
         env.storage()
             .instance()
@@ -619,12 +615,10 @@ impl RefundVault {
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
 
-        env.storage()
-            .instance()
-            .set(
-                &DataKey::DeployedPrincipal,
-                &(deployed - principal_returned),
-            );
+        env.storage().instance().set(
+            &DataKey::DeployedPrincipal,
+            &(deployed - principal_returned),
+        );
         env.storage()
             .instance()
             .set(&DataKey::HarvestedYield, &(harvested + yield_returned));

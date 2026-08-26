@@ -618,3 +618,190 @@ fn test_admin_transfer_events_emitted() {
         ]
     );
 }
+
+// ── Boundary tests (issue #57) ─────────────────────────────────────────────
+
+// A. Available float boundary
+
+#[test]
+fn test_refund_exact_available_float_succeeds() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[20u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &500_000, &0);
+
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), 0);
+    assert_eq!(token_client.balance(&buyer), 500_000);
+
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount, 500_000);
+}
+
+#[test]
+fn test_refund_available_float_plus_one_fails() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[21u8; 32]);
+    let buyer = Address::generate(&env);
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &500_001, &0),
+        Err(Ok(Error::InsufficientFloat))
+    );
+}
+
+// B. Invalid amounts (separate named tests)
+
+#[test]
+fn test_refund_zero_amount_fails() {
+    let (env, client, _merchant, _token) = setup(100);
+    let payment_ref = BytesN::from_array(&env, &[22u8; 32]);
+    let buyer = Address::generate(&env);
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &0, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn test_refund_negative_one_amount_fails() {
+    let (env, client, _merchant, _token) = setup(100);
+    let payment_ref = BytesN::from_array(&env, &[23u8; 32]);
+    let buyer = Address::generate(&env);
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &-1, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn test_refund_i128_min_amount_fails() {
+    let (env, client, _merchant, _token) = setup(100);
+    let payment_ref = BytesN::from_array(&env, &[24u8; 32]);
+    let buyer = Address::generate(&env);
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &i128::MIN, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+// C. Smallest unit
+
+#[test]
+fn test_refund_smallest_unit_succeeds() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[25u8; 32]);
+    let buyer = Address::generate(&env);
+    // Refund exactly 1 stroop (smallest token unit).
+    client.refund(&payment_ref, &buyer, &1, &0);
+
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), 499_999);
+    assert_eq!(token_client.balance(&buyer), 1);
+
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount, 1);
+    assert_eq!(record.recipient, buyer);
+}
+
+// D. RefundMax
+
+#[test]
+fn test_refund_no_refundmax_enforced_currently() {
+    // RefundMax is a reserved DataKey (lib.rs:47) with no setter, getter,
+    // or enforcement logic.  AmountExceedsMax (error 11) is defined but
+    // unreachable from the refund path.  Document that any amount up to
+    // the vault float succeeds without an AmountExceedsMax error.
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[26u8; 32]);
+    let buyer = Address::generate(&env);
+    // Refund the entire float — no max limit intervenes.
+    client.refund(&payment_ref, &buyer, &500_000, &0);
+
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), 0);
+
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount, 500_000);
+}
+
+// E. u32 overflow in window check
+
+#[test]
+#[should_panic]
+fn test_refund_window_u32_addition_overflow() {
+    // The refund path computes `paid_at_ledger + window` as u32.
+    // With paid_at_ledger = 1 and window = u32::MAX the addition
+    // overflows.  overflow-checks = true (dev + release) catches this.
+    let (env, client, merchant, _token) = setup(u32::MAX);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[27u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100, &1);
+}
+
+// F. Repeated small refunds
+
+#[test]
+fn test_repeated_small_refunds_exact_accounting() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &1_000_000);
+
+    let token_client = TokenClient::new(&env, &token);
+    let count: i128 = 1_000;
+    let each: i128 = 1; // 1 stroop per refund
+
+    for i in 0..count {
+        let mut pr_bytes = [0u8; 32];
+        pr_bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        let payment_ref = BytesN::from_array(&env, &pr_bytes);
+        let buyer = Address::generate(&env);
+        client.refund(&payment_ref, &buyer, &each, &0);
+    }
+
+    // Vault lost exactly count * each stroops.
+    assert_eq!(token_client.balance(&client.address), 1_000_000 - count);
+    // No rounding or drift — integer arithmetic is exact.
+    assert_eq!(count * each, 1_000);
+}
+
+// Decimal semantics: 7-decimal token base units
+
+#[test]
+fn test_7decimal_token_base_units() {
+    // For 7-decimal Stellar assets (USDC, XLM):
+    //   1 token   = 10_000_000 base units
+    //   1 stroop  = 1 base unit
+    //   5 USDC    = 50_000_000 base units
+    //
+    // All RefundVault amounts are integer base units.
+    let one_token: i128 = 10_000_000;
+    let five_usdc: i128 = 50_000_000;
+    let one_stroop: i128 = 1;
+
+    assert_eq!(one_token * 5, five_usdc);
+    assert_eq!(one_stroop, 1);
+
+    // Use these values through the vault — all integer, no floats.
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &five_usdc);
+
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), five_usdc);
+
+    // Refund 1 USDC = 10_000_000 base units.
+    let payment_ref = BytesN::from_array(&env, &[28u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &one_token, &0);
+
+    assert_eq!(token_client.balance(&buyer), one_token);
+    assert_eq!(token_client.balance(&client.address), five_usdc - one_token);
+}

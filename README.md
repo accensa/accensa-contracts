@@ -142,6 +142,52 @@ If a `BatchRecord` or `RefundRecord` is archived, it must be restored by submitt
 
 For a complete breakdown of what is stored, why it is persistent, and the rent cost implications, read the [Storage Audit](docs/storage-audit.md).
 
+## Amount Semantics
+
+All `RefundVault` amounts are **integer token base units** (`i128`).
+No floating-point arithmetic is used anywhere in the contract.
+
+### 7-decimal Stellar assets
+
+Stellar assets such as USDC and native XLM use **7 decimal places**:
+
+| Unit | Base units |
+|---|---|
+| 1 stroop (smallest) | `1` |
+| 1 token | `10_000_000` |
+| 5 USDC | `50_000_000` |
+
+Worked example — refunding 5 USDC:
+
+```
+5 USDC × 10_000_000 = 50_000_000 base units
+```
+
+The contract stores and transfers exactly `50_000_000` as an `i128`.
+
+### RefundMax
+
+`RefundMax` is a **reserved storage key** (`DataKey::RefundMax` in `lib.rs`)
+that is not currently set, read, or enforced by any contract function.
+The `AmountExceedsMax` error (code 11) is defined but unreachable from the
+`refund` path today.
+
+When implemented, `RefundMax` would be an `i128` value in the same integer
+base units as all other amounts — e.g., `10_000_000` for a 1-token limit
+on a 7-decimal asset.
+
+### refund_window_ledgers
+
+`refund_window_ledgers` is denominated in **Stellar ledgers**, not seconds.
+The testnet deployment uses `17_280`:
+
+```
+17_280 ledgers × ~5 seconds/ledger ≈ 86_400 seconds ≈ 24 hours
+```
+
+This is an **approximate** wall-clock duration because ledger close times
+vary.  Setting `0` disables the window entirely (no expiry).
+
 ## Live on Testnet
 
 | Contract | ID |
