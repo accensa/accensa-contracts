@@ -1,10 +1,12 @@
 # ADR 002: The `upto` Settlement Scheme on Stellar
 
-> **Status: DRAFT — §6.1 resolved; remaining open questions pending.**
-> §6.1 answers the upstream-specification research question (issue #61). The remaining
-> open questions (§6.2–6.6) require Soroban-specific implementation work, not upstream
-> research. The design in §4 is **not excluded** by the upstream `upto` spec. Do not cite
-> this document as a design that works; cite it as the design being investigated.
+> **Status: DRAFT — §6.1 and §6.2 resolved; remaining open questions pending.**
+> §6.1 answers the upstream-specification research question (issue #61).
+> §6.2 answers whether one auth entry covers a nested approve (issue #62).
+> The remaining open questions (§6.3–6.6) require Soroban-specific
+> implementation work. The design in §4 is **not excluded** by the upstream
+> `upto` spec. Do not cite this document as a design that works; cite it as
+> the design being investigated.
 
 ## 1. Context
 
@@ -229,12 +231,43 @@ The following Stellar-specific work is still needed:
 5. **Cost analysis.** Two Soroban invocations per metered payment must be priced
    against the RFP's per-transaction overhead constraints.
 
-### 6.2 Can one signed auth entry cover both invocations?
+### 6.2 ✅ Can one signed auth entry cover both invocations?
 
-**Open.** The construction in §4 assumes the buyer signs a single auth tree with
-`approve` as a sub-invocation. This needs confirming against Soroban's authorization
-semantics — if it requires two separate buyer signatures, the UX weakens considerably.
-This is a Soroban-specific question, not an upstream-spec question.
+**Answer: Yes — one auth entry covers the full tree, including the nested approve.**
+
+Researched via isolated spike: `spikes/upto-nested-approve/`. See
+[`docs/upto-nested-approve-spike.md`](upto-nested-approve-spike.md) for full
+experiment details, auth tree dumps, negative controls, and budget measurements.
+
+**The recorded auth tree proves the buyer's single signature commits to both
+the parent `authorize` call and the nested `token.approve` sub-invocation.**
+
+Recorded structure (simplified):
+
+```
+Payer auth entry:
+  Root:     authorize(payment_id, from, to, cap, expiry)  ← UptoAuthorization
+  Sub[0]:   approve(from, spender=contract, cap, expiry)  ← SEP-41 token
+```
+
+**The sub-invocation's arguments are fully committed by the signature.**
+Enforcing-mode negative controls confirm that mismatched trees are rejected:
+
+| Attack | Result |
+|---|---|
+| Auth tree omits the approve sub-invocation | Rejected (`InvalidAction`) |
+| Approve amount does not match actual call | Rejected (`InvalidAction`) |
+| Approve spender does not match actual call | Rejected (`InvalidAction`) |
+
+**The only implementation requirement** is that `from.require_auth()` must be
+called **before** the nested `token_client.approve()` in the `authorize`
+function. Without this, Soroban refuses the nested approve because no auth
+entry exists for `from` at that point in the invocation.
+
+**Budget: nested construction has no cost penalty.** CPU: 209K (nested) vs.
+214K (separate invocations). Memory: identical.
+
+**Recommendation: proceed with the nested auth construction in §4.**
 
 ### 6.3 What does `settle` cost?
 
