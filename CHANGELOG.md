@@ -39,6 +39,8 @@ breaking changes bump the **minor** version, and they are called out as such.
   are tunable via `FUZZ_CASES`/`FUZZ_SEQ_LEN` with longer `#[ignore]`d local
   profiles.
 
+## [0.3.0] — 2026-08-26
+
 ## [0.2.0] — 2026-08-14
 
 Everything below has been merged and tested on `main`. **It is not what is deployed
