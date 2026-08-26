@@ -45,3 +45,8 @@ For details on how storage archival and persistence affect the security model (s
 
 ### Trustline Failures
 For Classic Stellar assets wrapped in a Stellar Asset Contract (like USDC), the recipient must establish a trustline before receiving tokens. If a buyer's account lacks a trustline for the token, a `refund` will revert with a token-level `HostError`. The `RefundVault` does not pre-check trustlines because doing so would consume excess computation budget for successful refunds. Instead, this token-level panic is bubbled up and treated as an expected operational failure. Merchants issuing manual `withdraw` transactions face the same trustline requirement for the destination address.
+
+## Vulnerability Reporting
+
+If you discover a vulnerability that breaks any of the security properties or mitigations described in this document, please follow our private disclosure guidelines in [SECURITY.md](../SECURITY.md).
+
