@@ -1,9 +1,9 @@
 # ADR 002: The `upto` Settlement Scheme on Stellar
 
-> **Status: DRAFT — design exploration, not an accepted decision.**
-> Nothing here has been validated against the upstream `upto` specification, against a
-> running contract, or against Soroban's authorization semantics in practice. §6 lists
-> what must be confirmed before any of this is proposed as a network spec. Do not cite
+> **Status: DRAFT — §6.1 resolved; remaining open questions pending.**
+> §6.1 answers the upstream-specification research question (issue #61). The remaining
+> open questions (§6.2–6.6) require Soroban-specific implementation work, not upstream
+> research. The design in §4 is **not excluded** by the upstream `upto` spec. Do not cite
 > this document as a design that works; cite it as the design being investigated.
 
 ## 1. Context
@@ -155,30 +155,117 @@ ADR.**
 
 ## 6. Open questions — resolve before proposing this upstream
 
-1. **Does the upstream `upto` spec permit a two-invocation construction at all**, or does
-   its wire format assume a single settlement call? The EVM and SVM specs must be read
-   before any Stellar spec is drafted; this ADR was written from the RFP's summary of
-   `upto`, not from the specs themselves.
-2. **Can one signed auth entry cover both `authorize` and the nested `approve`?** The
-   construction in §4 assumes the buyer signs a single auth tree with `approve` as a
-   sub-invocation. This needs confirming against Soroban's authorization semantics — if
-   it requires two separate buyer signatures, the UX argument for this design weakens
-   considerably.
-3. **What does `settle` cost**, and does the pair stay within per-transaction CPU,
-   memory, read, and write limits under realistic load?
-4. **Sequence-number contention.** Agent traffic is bursty and the facilitator submits
-   every settlement. Channel accounts are the standard answer; that needs designing, not
-   naming.
-5. **Refund interaction.** `RefundVault` in this repo keys refunds on a payment
-   reference. If an `upto` payment settles for less than its cap, what is the refundable
-   amount — and does anything need to change here?
-6. **Does the facilitator need `authorize` at all**, or can the buyer call it directly?
-   Fee sponsorship (`extra.areFeesSponsored`) suggests the facilitator submits, but that
-   should follow from the spec rather than convenience.
+### 6.1 ✅ Does the upstream `upto` spec permit a two-invocation construction?
+
+**Answer: Yes — the two-invocation construction is VIABLE.**
+
+Researched against `x402-foundation/x402` at commit
+`b32b5640557ff793c3ecbfac6f933b0ad3b2170b` (2026-08-26). See
+[`docs/upto-upstream-notes.md`](upto-upstream-notes.md) for the full research
+notes, direct quotations, and per-question analysis.
+
+**The upstream specification does NOT require exactly one settlement call.** The core
+spec explicitly permits multiple settles:
+
+> "`/settle` MAY be invoked more than once for a single payment (for example, the
+> `escrow` flow settles a deposit before the resource executes and the final charge
+> after). A scheme defining multiple settles MUST specify how the facilitator
+> distinguishes them from payload content." — x402-specification-v2.md §7.2
+
+**The SVM `upto` spec uses two settle calls** (the `escrow` payment flow):
+
+> "Settlement happens after the resource server executes the metered work and before
+> it returns the response to the client. The overall order is
+> `settle(deposit)` → resource execution → `settle(claim)` → serve." —
+> scheme_upto_svm.md §5
+
+**The five normative `upto` properties** (from scheme_upto.md) are:
+
+1. Single-use authorization — "Each authorization MUST be settled at most once."
+2. Time-bound authorization — MUST have `validAfter` and `deadline`.
+3. Recipient binding — MUST cryptographically bind the recipient address.
+4. Maximum amount enforcement — settled amount MUST be `<=` authorized maximum.
+5. Phase-dependent `amount` semantics — `PaymentRequirements.amount` is max at
+   verify, actual at settle.
+
+The Stellar two-invocation construction (§4: `authorize` → `settle`) maps directly to
+the `escrow` flow:
+
+| Escrow step | Stellar equivalent |
+|---|---|
+| First `settle(deposit)` | `authorize()` — commits ceiling, recipient, creates binding |
+| Resource execution | Metering |
+| Second `settle(claim)` | `settle(actual)` — transfers actual amount, sets consumed |
+
+**The upstream spec architecture explicitly supports network-specific constructions.**
+Both EVM and SVM use fundamentally different mechanisms (Permit2 vs. payment channels)
+that both satisfy the same five properties. The `extra` field, per-network scheme
+documents, and scheme templates all indicate the architecture expects variation.
+
+**Critical distinction — what is normative vs. implementation detail:**
+
+| Category | What it covers | Example |
+|---|---|---|
+| **Normative MUST** (protocol-level) | The five core `upto` properties | Single-use, time-bound, recipient binding, max enforcement, phase-dependent amount |
+| **Implementation-specific** | How a network realizes those properties | Permit2 on EVM, payment channels on SVM, authorization-binding contract on Stellar |
+| **Unstated** | Behavior the spec is silent on | Exact number of `/settle` calls, transaction structure, on-chain state model |
+
+**Remaining Stellar-specific design work required:**
+
+The two-invocation construction is not excluded, but is not automatically valid either.
+The following Stellar-specific work is still needed:
+
+1. **Auth entry expiration.** Soroban `signatureExpirationLedger` is short (~12
+   ledgers, ~60s). If `authorize` and `settle` are in separate transactions, the auth
+   entry must survive until settlement. If both are in one transaction (as §4
+   proposes), this is not a problem.
+2. **Protocol flow declaration.** The Stellar `upto` spec should declare
+   `extra.paymentFlow: "escrow"` to match the SVM precedent.
+3. **Deposit vs. claim distinction.** The facilitator must distinguish the two settle
+   calls. On SVM this is done from payload content (voucher present → claim; no voucher
+   → deposit). Stellar needs an equivalent.
+4. **State lifecycle.** Authorization record TTL, cleanup, and rent payment must be
+   designed.
+5. **Cost analysis.** Two Soroban invocations per metered payment must be priced
+   against the RFP's per-transaction overhead constraints.
+
+### 6.2 Can one signed auth entry cover both invocations?
+
+**Open.** The construction in §4 assumes the buyer signs a single auth tree with
+`approve` as a sub-invocation. This needs confirming against Soroban's authorization
+semantics — if it requires two separate buyer signatures, the UX weakens considerably.
+This is a Soroban-specific question, not an upstream-spec question.
+
+### 6.3 What does `settle` cost?
+
+**Open.** Does the pair stay within per-transaction CPU, memory, read, and write
+limits under realistic load? Requires implementation and benchmarking.
+
+### 6.4 Sequence-number contention
+
+**Open.** Agent traffic is bursty and the facilitator submits every settlement.
+Channel accounts are the standard answer; that needs designing, not naming.
+
+### 6.5 Refund interaction
+
+**Open.** `RefundVault` keys refunds on a payment reference. If an `upto` payment
+settles for less than its cap, what is the refundable amount — and does anything need
+to change here?
+
+### 6.6 Does the facilitator need `authorize` at all?
+
+**Open.** Fee sponsorship (`extra.areFeesSponsored`) suggests the facilitator submits,
+but the buyer calling `authorize` directly may be viable. Should follow from the
+spec design rather than convenience.
 
 ## References
 - `rfp.md` §3.4 (settlement schemes), §3.5 (Stellar-specific considerations), §3.6
   (audit scope)
 - `docs/ADR-001-merkle-structure.md` — prior ADR format
 - `docs/SECURITY_MODEL.md`, `docs/storage-audit.md` — existing TTL and storage analysis
-- Upstream: `x402-foundation/x402`, `specs/schemes/` — **not yet read; see §6.1**
+- Upstream: `x402-foundation/x402` @ `b32b5640557ff793c3ecbfac6f933b0ad3b2170b`
+  - `specs/schemes/upto/scheme_upto.md` — chain-agnostic upto spec
+  - `specs/schemes/upto/scheme_upto_evm.md` — EVM upto implementation spec
+  - `specs/schemes/upto/scheme_upto_svm.md` — SVM/Solana upto implementation spec
+  - `specs/x402-specification-v2.md` — core x402 v2 protocol
+- [`docs/upto-upstream-notes.md`](upto-upstream-notes.md) — full research notes for §6.1
