@@ -8,6 +8,13 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- CI job enforcing `CHANGELOG.md` updates on contract changes and checking version alignment (#192).
+- Shared cross-implementation test vectors and conformance suite for `RefundVault` (#184).
+- Dependabot configuration for `cargo` and `github-actions` (#185).
+- CI WASM artifact uploading and size budget enforcement gate (#186).
+
 ### Fixed
 
 - **Build was broken on `main` after the yield-strategy merge (#200).** The
