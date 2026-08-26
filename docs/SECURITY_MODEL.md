@@ -2,6 +2,10 @@
 
 This document outlines the threat model, trust assumptions, and attack mitigations for the Accensa smart contracts.
 
+> **Audit readiness:** for the audit scope, enumerated invariants, known
+> accepted risks, and engagement logistics, see [AUDIT.md](AUDIT.md). This
+> document is the canonical threat model; the two are kept reconciled.
+
 ## Trust Assumptions
 
 ### 0. Immutability of Deployed Contracts
@@ -36,6 +40,14 @@ The off-chain indexer service is responsible for aggregating receipts and comput
 
 ### 3. The User (Buyer)
 Users are untrusted. The contracts must assume any data submitted by users could be malicious and must validate all inputs (e.g., verifying amounts are greater than zero, verifying proofs).
+
+### 4. The Yield Strategy (optional, `main` only)
+The `RefundVault` yield integration (added after this document was first
+written; present on `main` but not on the `0.1.0` testnet deployment) introduces
+one additional trust assumption: funds deployed to a registered strategy are
+trusted to that strategy's contract. The vault enforces reserve and deployment
+ratios but cannot enforce strategy solvency, and the strategy is a potential
+re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment.
 
 ## Attack Vectors and Mitigations
 
