@@ -5,6 +5,14 @@
 > running contract, or against Soroban's authorization semantics in practice. §6 lists
 > what must be confirmed before any of this is proposed as a network spec. Do not cite
 > this document as a design that works; cite it as the design being investigated.
+>
+> **2026-08-26 update:** the construction below has been drafted into a Stellar scheme
+> spec — [`scheme_upto_stellar.md`](scheme_upto_stellar.md) — in the upstream x402 format.
+> That draft keeps this ADR's caveats live: it is published as an **open proposal for
+> review**, not an adopted design, and the sections that depend on the blockers below
+> (#64 construction validation, #65 sub-invocation semantics, #66 cost measurements, and a
+> reference implementation) are marked pending rather than asserted. It will not be
+> submitted to the x402 Technical Steering Committee until those resolve.
 
 ## 1. Context
 
@@ -179,6 +187,10 @@ ADR.**
 ## References
 - `rfp.md` §3.4 (settlement schemes), §3.5 (Stellar-specific considerations), §3.6
   (audit scope)
+- [`scheme_upto_stellar.md`](scheme_upto_stellar.md) — the drafted Stellar `upto` scheme
+  spec this ADR motivates (in the upstream x402 format)
 - `docs/ADR-001-merkle-structure.md` — prior ADR format
 - `docs/SECURITY_MODEL.md`, `docs/storage-audit.md` — existing TTL and storage analysis
-- Upstream: `x402-foundation/x402`, `specs/schemes/` — **not yet read; see §6.1**
+- Upstream: `x402-foundation/x402`, `specs/schemes/` — not yet read for the final form; see
+  the upstream-submission note in `scheme_upto_stellar.md`. The Stellar ecosystem tracks
+  the same gap in [`stellar/x402-stellar#71`](https://github.com/stellar/x402-stellar/issues/71).
