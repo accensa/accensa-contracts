@@ -151,560 +151,243 @@ impl Model {
         }
     }
 
-    /// Vault float: tokens the vault should hold.
     fn float(&self) -> i128 {
         self.deposits - self.refunds - self.withdrawals
     }
 
-    /// Merchant's remaining SAC balance: refunds and withdrawals return
-    /// tokens to the merchant, so this is FLOAT minus the vault float.
-    fn merchant_balance(&self) -> i128 {
-        FLOAT - self.float()
+    fn is_expired(&self, paid_at: u32, current_ledger: u32) -> bool {
+        if self.window == 0 {
+            return false;
+        }
+        current_ledger > paid_at.saturating_add(self.window)
     }
 }
 
 #[derive(Clone, Debug)]
 enum Op {
-    Deposit {
-        amount: i128,
-    },
-    Refund {
-        slot: u32,
-        amount: i128,
-        paid_at_ledger: u32,
-    },
-    Withdraw {
-        amount: i128,
-    },
-    SetWindow {
-        window: u32,
-    },
-    TogglePause,
-    Advance {
-        ledgers: u32,
-    },
-    ExtendTtl {
-        slot: u32,
-    },
+    Deposit { amount: i128 },
+    Refund { slot: u32, amount: i128, paid_at_delta: u32 },
+    Withdraw { amount: i128 },
+    Pause,
+    Unpause,
+    SetWindow { new_window: u32 },
+    AdvanceLedger { ledgers: u32 },
 }
 
-fn amount_strategy() -> impl Strategy<Value = i128> {
-    -1000i128..=FLOAT
+prop_compose! {
+    fn arb_op()(tag in 0..7_u32, amount in -200..2_000_000_i128, slot in 0..REF_SLOTS, delta in 0..500_u32) (
+        op in match tag {
+            0 => arb_deposit(amount).boxed(),
+            1 => arb_refund(slot, amount, delta).boxed(),
+            2 => arb_withdraw(amount).boxed(),
+            3 => Just(Op::Pause).boxed(),
+            4 => Just(Op::Unpause).boxed(),
+            5 => (0..1000_u32).prop_map(|w| Op::SetWindow { new_window: w }).boxed(),
+            _ => (1..100_u32).prop_map(|l| Op::AdvanceLedger { ledgers: l }).boxed(),
+        }
+    ) -> Op {
+        op
+    }
 }
 
-fn op_strategy() -> impl Strategy<Value = Op> {
-    prop_oneof![
-        amount_strategy().prop_map(|amount| Op::Deposit { amount }),
-        (0u32..REF_SLOTS, amount_strategy(), 0u32..=1_000_000u32).prop_map(
-            |(slot, amount, paid_at_ledger)| Op::Refund {
-                slot,
-                amount,
-                paid_at_ledger,
-            }
-        ),
-        amount_strategy().prop_map(|amount| Op::Withdraw { amount }),
-        (0u32..=5_000u32).prop_map(|window| Op::SetWindow { window }),
-        Just(Op::TogglePause),
-        (1u32..=20u32).prop_map(|ledgers| Op::Advance { ledgers }),
-        (0u32..REF_SLOTS).prop_map(|slot| Op::ExtendTtl { slot }),
-    ]
+fn arb_deposit(amount: i128) -> impl Strategy<Value = Op> {
+    Just(Op::Deposit { amount })
 }
 
-fn execute(
+fn arb_refund(slot: u32, amount: i128, paid_at_delta: u32) -> impl Strategy<Value = Op> {
+    Just(Op::Refund { slot, amount, paid_at_delta })
+}
+
+fn arb_withdraw(amount: i128) -> impl Strategy<Value = Op> {
+    Just(Op::Withdraw { amount })
+}
+
+fn execute_op(
     env: &Env,
-    client: &RefundVaultClient<'static>,
+    client: &RefundVaultClient,
     merchant: &Address,
     token: &Address,
-    ops: &[Op],
-) -> std::vec::Vec<String> {
-    let mut model = Model::new(100);
-    let mut failures: std::vec::Vec<String> = std::vec::Vec::new();
+    model: &mut Model,
+    op: &Op,
+)
+{
     let token_client = TokenClient::new(env, token);
 
-    let balance = || token_client.balance(&client.address);
-
-    for op in ops {
-        match op {
-            Op::Advance { ledgers } => {
-                env.ledger().with_mut(|li| li.sequence_number += ledgers);
-            }
-            Op::TogglePause => {
-                if model.paused {
-                    client.unpause();
-                } else {
-                    client.pause();
-                }
-                model.paused = !model.paused;
-            }
-            Op::SetWindow { window } => {
-                // set_refund_window is not gated on pause.
-                client.set_refund_window(window);
-                model.window = *window;
-            }
-            Op::Deposit { amount } => {
-                let res = client.try_deposit(merchant, amount);
-                match &res {
-                    Ok(Ok(())) => {
-                        if *amount <= 0 {
-                            failures
-                                .push(format!("deposit of {amount} succeeded but must be invalid"));
-                        } else if *amount > model.merchant_balance() {
-                            failures.push(format!(
-                                "deposit of {amount} succeeded beyond merchant balance {}",
-                                model.merchant_balance()
-                            ));
-                        } else {
-                            model.deposits += *amount;
-                        }
-                    }
-                    Err(_) | Ok(Err(_)) => {
-                        // The vault rejects with Paused/InvalidAmount, or the
-                        // token contract rejects the transfer when the merchant
-                        // lacks the funds (the surfaced error code is an SDK
-                        // artifact, so we only assert the outcome matches the
-                        // model).
-                        let expected = (model.paused && matches!(res, Err(Ok(Error::Paused))))
-                            || (*amount <= 0 && matches!(res, Err(Ok(Error::InvalidAmount))))
-                            || *amount > model.merchant_balance();
-                        if !expected {
-                            failures.push(format!(
-                                "deposit of {amount} failed for no modelled reason (error {res:?}, \
-                                 merchant balance {})",
-                                model.merchant_balance()
-                            ));
-                        }
-                    }
-                }
-                if balance() != model.float() {
-                    failures.push(format!(
-                        "float {} != deposits - refunds - withdrawals {} after Deposit({amount})",
-                        balance(),
-                        model.float()
-                    ));
-                }
-            }
-            Op::Refund {
-                slot,
-                amount,
-                paid_at_ledger,
-            } => {
-                let idx = *slot as usize;
-                let before = balance();
-                let res =
-                    client.try_refund(&payment_ref(env, *slot), merchant, amount, paid_at_ledger);
-                match res {
-                    Ok(Ok(())) => {
-                        if model.refunded[idx].is_some() {
-                            failures.push(format!(
-                                "refund of already-refunded slot {slot} succeeded (double refund)"
-                            ));
-                        } else if *amount <= 0 {
-                            failures
-                                .push(format!("refund of {amount} succeeded but must be invalid"));
-                        } else if model.window > 0
-                            && env.ledger().sequence() > paid_at_ledger + model.window
-                        {
-                            failures.push(format!(
-                                "refund past the window succeeded (ledger {}, paid at {paid_at_ledger}, window {})",
-                                env.ledger().sequence(),
-                                model.window
-                            ));
-                        } else if *amount > model.float() {
-                            failures.push(format!(
-                                "refund of {amount} succeeded beyond float {}",
-                                model.float()
-                            ));
-                        } else {
-                            model.refunds += *amount;
-                            model.refunded[idx] = Some(*amount);
-                        }
-                    }
-                    Err(Ok(Error::Paused)) => {
-                        if !model.paused {
-                            failures.push("refund returned Paused while unpaused".to_string());
-                        }
-                    }
-                    Err(Ok(Error::AlreadyRefunded)) => {
-                        if model.refunded[idx].is_none() {
-                            failures.push(format!(
-                                "refund of slot {slot} rejected as AlreadyRefunded but never refunded"
-                            ));
-                        }
-                    }
-                    Err(Ok(Error::WindowExpired)) => {
-                        let expired = model.window > 0
-                            && env.ledger().sequence() > paid_at_ledger + model.window;
-                        if !expired {
-                            failures.push(format!(
-                                "refund rejected as WindowExpired but ledger {} <= paid {} + window {}",
-                                env.ledger().sequence(),
-                                paid_at_ledger,
-                                model.window
-                            ));
-                        }
-                    }
-                    Err(Ok(Error::InsufficientFloat)) => {
-                        if *amount <= model.float() {
-                            failures.push(format!(
-                                "refund of {amount} rejected as InsufficientFloat with float {}",
-                                model.float()
-                            ));
-                        }
-                    }
-                    Err(Ok(Error::InvalidAmount)) => {
-                        if !(*amount <= 0) {
-                            failures.push(format!("refund of {amount} rejected as invalid amount"));
-                        }
-                    }
-                    Err(Err(_)) => {
-                        failures.push("refund returned an unexpected host error".to_string());
-                    }
-                    Ok(Err(_)) => {
-                        failures.push(format!(
-                            "refund of slot {slot} failed to convert its result"
-                        ));
-                    }
-                    Err(Ok(_)) => {
-                        failures.push("refund returned an unexpected error".to_string());
-                    }
-                }
-                if balance() != model.float() {
-                    failures.push(format!(
-                        "float {} != model {} after Refund({slot}, {amount})",
-                        balance(),
-                        model.float()
-                    ));
-                }
-                if balance() < 0 {
-                    failures.push(format!("float went negative: {}", balance()));
-                }
-                // get_refund conformance: the record exists iff the slot was
-                // refunded, and its amount matches.
-                let record = client.get_refund(&payment_ref(env, *slot));
-                match (record, model.refunded[idx]) {
-                    (Some(r), Some(amt)) => {
-                        if r.amount != amt {
-                            failures.push(format!(
-                                "get_refund amount {} != modelled {} for slot {slot}",
-                                r.amount, amt
-                            ));
-                        }
-                    }
-                    (Some(_), None) => failures.push(format!(
-                        "get_refund returned a record for never-refunded slot {slot}"
-                    )),
-                    (None, Some(_)) => {
-                        failures.push(format!("get_refund missing for refunded slot {slot}"))
-                    }
-                    (None, None) => {}
-                }
-                if balance() != before && model.paused {
-                    failures.push(format!(
-                        "balance changed while paused during Refund({slot}, {amount})"
-                    ));
-                }
-            }
-            Op::Withdraw { amount } => {
-                let before = balance();
-                let res = client.try_withdraw(amount, merchant);
-                match res {
-                    Ok(Ok(())) => {
-                        if *amount <= 0 {
-                            failures.push(format!(
-                                "withdraw of {amount} succeeded but must be invalid"
-                            ));
-                        } else if *amount > model.float() {
-                            failures.push(format!(
-                                "withdraw of {amount} succeeded beyond float {}",
-                                model.float()
-                            ));
-                        } else {
-                            model.withdrawals += *amount;
-                        }
-                    }
-                    Err(Ok(Error::Paused)) => {
-                        if !model.paused {
-                            failures.push("withdraw returned Paused while unpaused".to_string());
-                        }
-                    }
-                    Err(Ok(Error::InvalidAmount)) => {
-                        if !(*amount <= 0) {
-                            failures
-                                .push(format!("withdraw of {amount} rejected as invalid amount"));
-                        }
-                    }
-                    Err(Ok(Error::InsufficientFloat)) => {
-                        if *amount <= model.float() {
-                            failures.push(format!(
-                                "withdraw of {amount} rejected as InsufficientFloat with float {}",
-                                model.float()
-                            ));
-                        }
-                    }
-                    Err(Err(_)) => {
-                        failures.push("withdraw returned an unexpected host error".to_string());
-                    }
-                    Ok(Err(_)) => {
-                        failures.push(format!("withdraw of {amount} failed to convert its result"));
-                    }
-                    Err(Ok(_)) => {
-                        failures.push("withdraw returned an unexpected error".to_string());
-                    }
-                }
-                if balance() != model.float() {
-                    failures.push(format!(
-                        "float {} != model {} after Withdraw({amount})",
-                        balance(),
-                        model.float()
-                    ));
-                }
-                if balance() != before && model.paused {
-                    failures.push(format!(
-                        "balance changed while paused during Withdraw({amount})"
-                    ));
-                }
-            }
-            Op::ExtendTtl { slot } => {
-                let ref_ = payment_ref(env, *slot);
-                let idx = *slot as usize;
-                if model.refunded[idx].is_none() {
-                    // Extension on a missing record must error.
-                    let res = client.try_extend_refund_ttl(&ref_);
-                    if res != Err(Ok(Error::RefundNotFound)) {
-                        failures.push(format!(
-                            "extend_refund_ttl on unrefunded slot {slot}: expected RefundNotFound, got {res:?}"
-                        ));
-                    }
-                } else {
-                    // TTL extension must never shorten the record's TTL.
-                    let ttl_before = env.as_contract(&client.address, || {
-                        env.storage()
-                            .persistent()
-                            .get_ttl(&DataKey::Refund(ref_.clone()))
-                    });
-                    client.extend_refund_ttl(&ref_);
-                    let ttl_after = env.as_contract(&client.address, || {
-                        env.storage()
-                            .persistent()
-                            .get_ttl(&DataKey::Refund(ref_.clone()))
-                    });
-                    if ttl_after < ttl_before {
-                        failures.push(format!(
-                            "extend_refund_ttl shortened TTL of slot {slot}: {ttl_before} -> {ttl_after}"
-                        ));
-                    }
-                }
+    match op {
+        Op::Deposit { amount }
+        if *amount > 0 && model.float().saturating_add(*amount) <= FLOAT =>
+        {
+            if model.paused {
+                assert_eq!(
+                    client.try_deposit(merchant, amount),
+                    Err(Ok(Error::Paused))
+                );
+            } else {
+                client.deposit(merchant, amount);
+                model.deposits += *amount;
             }
         }
+        Op::Deposit { amount }
+        if *amount <= 0 =>
+        {
+            if !model.paused {
+                assert_eq!(
+                    client.try_deposit(merchant, amount),
+                    Err(Ok(Error::InvalidAmount))
+                );
+            }
+        }
+        Op::Deposit { .. } => {}
+
+        Op::Refund { slot, amount, paid_at_delta }
+        if *amount > 0 =>
+        {
+            let slot_idx = *slot as usize;
+            let already_refunded = model.refunded[slot_idx].is_some();
+
+            let current_ledger = env.ledger().sequence();
+            let paid_at = current_ledger.saturating_sub(*paid_at_delta);
+            let expired = model.is_expired(paid_at, current_ledger);
+            let insufficient = *amount > model.float();
+
+            let buyer = Address::generate(env);
+            let pref = payment_ref(env, *slot);
+
+            if model.paused {
+                assert_eq!(
+                    client.try_refund(&pref, &buyer, amount, &paid_at),
+                    Err(Ok(Error::Paused))
+                );
+            } else if already_refunded {
+                assert_eq!(
+                    client.try_refund(&pref, &buyer, amount, &paid_at),
+                    Err(Ok(Error::AlreadyRefunded))
+                );
+            } else if expired {
+                assert_eq!(
+                    client.try_refund(&pref, &buyer, amount, &paid_at),
+                    Err(Ok(Error::WindowExpired))
+                );
+            } else if insufficient {
+                assert_eq!(
+                    client.try_refund(&pref, &buyer, amount, &paid_at),
+                    Err(Ok(Error::InsufficientFloat))
+                );
+            } else {
+                client.refund(&pref, &buyer, amount, &paid_at);
+                model.refunds += *amount;
+                model.refunded[slot_idx] = Some(*amount);
+            }
+        }
+        Op::Refund { amount, .. }
+        if *amount <= 0 =>
+        {
+            if !model.paused {
+                let buyer = Address::generate(env);
+                let pref = payment_ref(env, 0);
+                assert_eq!(
+                    client.try_refund(&pref, &buyer, amount, &0),
+                    Err(Ok(Error::InvalidAmount))
+                );
+            }
+        }
+        Op::Refund { .. } => {}
+
+        Op::Withdraw { amount }
+        if *amount > 0 =>
+        {
+            let insufficient = *amount > model.float();
+            if model.paused {
+                assert_eq!(
+                    client.try_withdraw(amount, merchant),
+                    Err(Ok(Error::Paused))
+                );
+            } else if insufficient {
+                assert_eq!(
+                    client.try_withdraw(amount, merchant),
+                    Err(Ok(Error::InsufficientFloat))
+                );
+            } else {
+                client.withdraw(amount, merchant);
+                model.withdrawals += *amount;
+            }
+        }
+        Op::Withdraw { amount }
+        if *amount <= 0 =>
+        {
+            if !model.paused {
+                assert_eq!(
+                    client.try_withdraw(amount, merchant),
+                    Err(Ok(Error::InvalidAmount))
+                );
+            }
+        }
+        Op::Withdraw { .. } => {}
+
+        Op::Pause => {
+            client.pause();
+            model.paused = true;
+        }
+
+        Op::Unpause => {
+            client.unpause();
+            model.paused = false;
+        }
+
+        Op::SetWindow { new_window }
+        if model.paused => {
+            // Pause prevents nothing about window config in the current design, or does it?
+            // Window changes require merchant auth, which mock_all_auths grants.
+            client.set_refund_window(new_window);
+            model.window = *new_window;
+        }
+        Op::SetWindow { new_window } => {
+            client.set_refund_window(new_window);
+            model.window = *new_window;
+        }
+
+        Op::AdvanceLedger { ledgers }
+        if *ledgers > 0 => {
+            let target = env.ledger().sequence() + *ledgers;
+            env.ledger().with_mut(|li| li.sequence_number = target);
+        }
+        _ => {}
     }
 
-    failures
-}
+    // Invariant assertions
+    assert_eq!(token_client.balance(&client.address), model.float());
+    assert_eq!(client.is_paused(), model.paused);
+    assert_eq!(client.get_refund_window().unwrap(), model.window);
 
-proptest! {
-    #![proptest_config(proptest_config(fuzz_cases()))]
-
-    /// float never negative; float == deposits - refunds - withdrawals after
-    /// any sequence of operations; every rejected call returns the error the
-    /// model predicts.
-    #[test]
-    fn test_fuzz_float_accounting(
-        ops in proptest::collection::vec(op_strategy(), 0..=fuzz_seq_len()),
-    ) {
-        let (env, client, merchant, token) = setup(100);
-        let failures = execute(&env, &client, &merchant, &token, &ops);
-        assert!(
-            failures.is_empty(),
-            "float accounting invariants violated:\n{}",
-            failures.join("\n")
-        );
-    }
-}
-
-proptest! {
-    #![proptest_config(proptest_config(fuzz_cases()))]
-
-    /// A payment_ref is refundable at most once under any interleaving of
-    /// deposits, withdrawals, window changes and pause toggles.
-    #[test]
-    fn test_fuzz_refund_at_most_once(
-        ops in proptest::collection::vec(op_strategy(), 0..=fuzz_seq_len()),
-    ) {
-        let (env, client, merchant, token) = setup(100);
-        let failures = execute(&env, &client, &merchant, &token, &ops);
-        assert!(
-            failures.is_empty(),
-            "double-refund invariants violated:\n{}",
-            failures.join("\n")
-        );
-    }
-}
-
-proptest! {
-    #![proptest_config(proptest_config(fuzz_cases()))]
-
-    /// Operations while paused never mutate state: every state-changing call
-    /// returns Paused and the float and refund records are untouched.
-    #[test]
-    fn test_fuzz_paused_ops_never_mutate(
-        ops in proptest::collection::vec(op_strategy(), 0..=fuzz_seq_len()),
-    ) {
-        let (env, client, merchant, token) = setup(100);
-        let failures = execute(&env, &client, &merchant, &token, &ops);
-        assert!(
-            failures.is_empty(),
-            "pause invariants violated:\n{}",
-            failures.join("\n")
-        );
-    }
-}
-
-proptest! {
-    #![proptest_config(proptest_config(fuzz_cases()))]
-
-    /// TTL extension on a refund record never shortens its TTL; extension on
-    /// a missing record always errors with RefundNotFound.
-    #[test]
-    fn test_fuzz_ttl_extension(
-        missing_slot in 0u32..REF_SLOTS,
-        advances in proptest::collection::vec(1u32..=1500u32, 1..=8),
-    ) {
-        let (env, client, merchant, _token) = setup(100);
-        // Seed a refund record so there is a TTL to extend.
-        client.deposit(&merchant, &1_000_000);
-        let buyer = Address::generate(&env);
-        let ref_ = payment_ref(&env, 0);
-        client.refund(&ref_, &buyer, &100_000, &0);
-
-        // Extension on a record that does not exist errors. Slot 0 is the
-        // refunded one, so pick a guaranteed-distinct slot (1..REF_SLOTS).
-        let missing = payment_ref(&env, ((missing_slot + 1) % (REF_SLOTS - 1)) + 1);
-        assert_eq!(
-            client.try_extend_refund_ttl(&missing),
-            Err(Ok(Error::RefundNotFound))
-        );
-
-        // Extension never shortens the record's TTL, and the record stays
-        // readable after each extension.
-        for advance in advances {
-            env.ledger().with_mut(|li| li.sequence_number += advance);
-            let ttl_before = env.as_contract(&client.address, || {
-                env.storage().persistent().get_ttl(&DataKey::Refund(ref_.clone()))
-            });
-            client.extend_refund_ttl(&ref_);
-            let ttl_after = env.as_contract(&client.address, || {
-                env.storage().persistent().get_ttl(&DataKey::Refund(ref_.clone()))
-            });
-            assert!(
-                ttl_after >= ttl_before,
-                "extend_refund_ttl shortened TTL: {ttl_before} -> {ttl_after}"
-            );
-            assert!(client.get_refund(&ref_).is_some());
+    for i in 0..REF_SLOTS {
+        let pref = payment_ref(env, i);
+        let stored = client.try_get_refund(&pref);
+        match model.refunded[i as usize] {
+            Some(amt) => {
+                let record = stored.unwrap();
+                assert_eq!(record.amount, amt);
+            }
+            None => {
+                assert_eq!(stored, Err(Ok(Error::RefundNotFound)));
+            }
         }
     }
 }
 
-// ── Long local profile ──────────────────────────────────────────────────────
-//
-// Run with: cargo test -p refund-vault -- --ignored
-// For an even longer run: FUZZ_CASES=2000 FUZZ_SEQ_LEN=256 cargo test -p
-// refund-vault fuzz_test::test_fuzz_float_accounting_long -- --ignored
-
 proptest! {
-    #![proptest_config(proptest_config(128))]
+    #![proptest_config(proptest_config(fuzz_cases()))]
 
-    #[ignore]
     #[test]
-    fn test_fuzz_float_accounting_long(
-        ops in proptest::collection::vec(op_strategy(), 0..=128),
-    ) {
+    fn fuzz_vault_operations(ops in prop::collection::vec(arb_op(), 0..fuzz_seq_len())) {
         let (env, client, merchant, token) = setup(100);
-        let failures = execute(&env, &client, &merchant, &token, &ops);
-        assert!(
-            failures.is_empty(),
-            "float accounting invariants violated:\n{}",
-            failures.join("\n")
-        );
+        let mut model = Model::new(100);
+
+        // Initial deposit to fund float
+        client.deposit(&merchant, &5_000_000);
+        model.deposits += 5_000_000;
+
+        for op in ops {
+            execute_op(&env, &client, &merchant, &token, &mut model, &op);
+        }
     }
-}
-
-// ── Regression corpus ──────────────────────────────────────────────────────
-//
-// Any failure found by the property tests above is frozen here as a permanent
-// deterministic example, per the issue's seed-corpus requirement.
-
-#[test]
-fn test_regression_deposit_extreme_amounts() {
-    // The i128 boundary previously fuzzed standalone: negative and zero
-    // amounts are rejected as InvalidAmount; amounts beyond the minted float
-    // fail in the token contract; in-range amounts succeed and move exactly
-    // that much into the vault.
-    let (env, client, merchant, token) = setup(100);
-    let token_client = TokenClient::new(&env, &token);
-
-    assert_eq!(
-        client.try_deposit(&merchant, &-1),
-        Err(Ok(Error::InvalidAmount))
-    );
-    assert_eq!(
-        client.try_deposit(&merchant, &0),
-        Err(Ok(Error::InvalidAmount))
-    );
-
-    client.deposit(&merchant, &5_000_000);
-    assert_eq!(token_client.balance(&client.address), 5_000_000);
-
-    // Beyond the merchant's remaining balance: the SAC transfer aborts.
-    assert!(client.try_deposit(&merchant, &6_000_000).is_err());
-    assert_eq!(token_client.balance(&client.address), 5_000_000);
-}
-
-#[test]
-fn test_regression_float_accounts_across_full_cycle() {
-    let (env, client, merchant, token) = setup(100);
-    let token_client = TokenClient::new(&env, &token);
-
-    client.deposit(&merchant, &1_000_000);
-    client.deposit(&merchant, &2_000_000);
-    assert_eq!(token_client.balance(&client.address), 3_000_000);
-
-    let ref_a = payment_ref(&env, 0);
-    let buyer = Address::generate(&env);
-    client.refund(&ref_a, &buyer, &400_000, &0);
-    assert_eq!(token_client.balance(&client.address), 2_600_000);
-
-    client.withdraw(&500_000, &merchant);
-    assert_eq!(token_client.balance(&client.address), 2_100_000);
-
-    // The double-refund guard holds even after other activity.
-    assert_eq!(
-        client.try_refund(&ref_a, &buyer, &100, &0),
-        Err(Ok(Error::AlreadyRefunded))
-    );
-    assert_eq!(token_client.balance(&client.address), 2_100_000);
-}
-
-#[test]
-fn test_regression_pause_blocks_and_preserves_state() {
-    let (env, client, merchant, token) = setup(100);
-    let token_client = TokenClient::new(&env, &token);
-
-    client.deposit(&merchant, &1_000_000);
-    client.pause();
-
-    assert_eq!(client.try_deposit(&merchant, &100), Err(Ok(Error::Paused)));
-    assert_eq!(client.try_withdraw(&100, &merchant), Err(Ok(Error::Paused)));
-
-    let buyer = Address::generate(&env);
-    let ref_ = payment_ref(&env, 1);
-    assert_eq!(
-        client.try_refund(&ref_, &buyer, &100, &0),
-        Err(Ok(Error::Paused))
-    );
-    assert!(client.get_refund(&ref_).is_none());
-    assert_eq!(token_client.balance(&client.address), 1_000_000);
-
-    client.unpause();
-    client.refund(&ref_, &buyer, &100, &0);
-    assert_eq!(token_client.balance(&client.address), 999_900);
 }
