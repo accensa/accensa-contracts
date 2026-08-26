@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, BytesN, Env,
+    contract, contracterror, contractevent, contractimpl, contractmeta, contracttrait,
+    contracttype, token, Address, BytesN, Env,
 };
 
 contractmeta!(key = "name", val = "RefundVault");
@@ -148,7 +148,10 @@ pub struct YieldHarvestedEvent {
 ///
 /// Any contract that implements these methods can be registered as the vault's yield
 /// strategy. The vault calls these to deploy idle funds and harvest accrued yield.
-#[contractimpl]
+///
+/// `#[contracttrait]` (rather than `#[contractimpl]`) generates the `YieldStrategyClient`
+/// used to call the registered strategy contract.
+#[contracttrait]
 pub trait YieldStrategy {
     /// Deploy `amount` tokens into the strategy. The vault transfers tokens to the
     /// strategy contract before calling this.
@@ -548,11 +551,12 @@ impl RefundVault {
         }
 
         // Transfer tokens to strategy and record the deposit.
-        token_client.transfer(
-            &env.current_contract_address(),
-            &strategy,
-            &amount,
-        );
+        token_client.transfer(&env.current_contract_address(), &strategy, &amount);
+        // Tell the strategy to account for the deployment. Per the
+        // `YieldStrategy` interface, the vault transfers the tokens before
+        // calling `deposit`. (The amount has already been validated above, so
+        // the strategy call cannot fail for input reasons.)
+        YieldStrategyClient::new(&env, &strategy).deposit(&amount);
 
         env.storage()
             .instance()
@@ -619,12 +623,10 @@ impl RefundVault {
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
 
-        env.storage()
-            .instance()
-            .set(
-                &DataKey::DeployedPrincipal,
-                &(deployed - principal_returned),
-            );
+        env.storage().instance().set(
+            &DataKey::DeployedPrincipal,
+            &(deployed - principal_returned),
+        );
         env.storage()
             .instance()
             .set(&DataKey::HarvestedYield, &(harvested + yield_returned));
