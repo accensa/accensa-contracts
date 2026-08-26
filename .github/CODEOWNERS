@@ -1,0 +1,7 @@
+# CODEOWNERS for accensa-contracts
+
+# Require review from maintainers for smart contract source code
+contracts/ @accensa/maintainers
+
+# Require review for contract threat model and security specifications
+docs/SECURITY_MODEL.md @accensa/maintainers
