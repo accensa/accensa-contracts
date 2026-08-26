@@ -207,6 +207,18 @@ The dashboard, indexer, and SDK that drive these contracts live in
 Tests run against the Soroban test environment on every push, alongside
 `cargo fmt --check` and `cargo clippy -D warnings`. CI does not swallow failures.
 
+### Resource benchmark
+
+`ReceiptAnchor` ships a resource benchmark that anchors batches at 10, 100, 500
+and 1000 (`MAX_BATCH_SIZE`) receipts and meters CPU instructions, memory and the
+estimated resource fee per invocation against the mainnet per-transaction
+limits. It runs as a regular test; to see the CSV table and host budget
+breakdowns:
+
+```bash
+cargo test -p receipt-anchor bench -- --nocapture
+```
+
 
 ## Contributing
 

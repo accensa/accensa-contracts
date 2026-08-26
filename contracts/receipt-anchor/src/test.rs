@@ -1,5 +1,11 @@
 #![cfg(test)]
 
+// This crate is `#![no_std]`; the test harness still links `std`, so bring it
+// into scope for `println!` and `std::vec::Vec` below. (The std prelude is not
+// auto-injected in no_std crates, so the macro needs an explicit import.)
+extern crate std;
+use std::println;
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -404,5 +410,235 @@ fn test_anchor_and_prune_events_emitted() {
                 soroban_sdk::map![&env, (Symbol::new(&env, "end_batch_id"), 2u64)].into_val(&env)
             )
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Resource benchmark: anchor_batch / verify_receipt vs batch size
+// ---------------------------------------------------------------------------
+//
+// `MAX_BATCH_SIZE` caps how many receipts fit into a single anchor, but the
+// number was theoretical: nothing empirically showed that a 1000-receipt batch
+// fits inside Soroban's per-transaction resource budget. This benchmark anchors
+// a genuine Merkle batch (root built over `size` leaves with the same
+// sorted-pair SHA-256 convention as the SDK) at increasing sizes and meters
+// each invocation.
+//
+// Measurement notes:
+//   * `Env::default()` enforces the mainnet invocation resource limits and
+//     panics if any invocation breaches them, so the test passing is itself
+//     proof that every tier fits on mainnet. The explicit assertions below
+//     additionally pin the headroom so a regression fails with a readable
+//     message.
+//   * `env.cost_estimate().resources()` reports the resources metered during
+//     the last top-level contract invocation (CPU insns, memory, I/O, rent),
+//     and `env.cost_estimate().fee()` estimates the resource fee in stroops
+//     using the mainnet fee-rate snapshot baked into the SDK.
+//   * The test harness runs the contract natively (Rust) rather than as Wasm,
+//     so VM interpretation and Wasm read costs are NOT included: the measured
+//     figures are a conservative lower bound of on-chain usage.
+//
+// Run with `cargo test -- --nocapture` to see the CSV table and breakdowns.
+
+/// Batch sizes benchmarked, ending at the contract's own `MAX_BATCH_SIZE` so
+/// the largest tier is defined by the limit under test rather than a magic
+/// number.
+const BENCH_BATCH_SIZES: [u32; 4] = [10, 100, MAX_BATCH_SIZE / 2, MAX_BATCH_SIZE];
+
+/// Builds a sorted-pair SHA-256 Merkle tree over `leaves` — the same convention
+/// the accensa-app TypeScript SDK uses — and returns `(root, proof)`, where
+/// `proof` is the sibling path proving the leaf at `index`.
+///
+/// Odd nodes are carried up unchanged; a carried node contributes no sibling to
+/// the proof at that level. Building happens off-chain in the test harness, so
+/// it is not part of the metered contract costs below.
+fn build_merkle_tree(
+    env: &Env,
+    leaves: &[BytesN<32>],
+    index: usize,
+) -> (BytesN<32>, std::vec::Vec<BytesN<32>>) {
+    assert!(!leaves.is_empty(), "merkle tree needs at least one leaf");
+    assert!(index < leaves.len(), "proven leaf index out of range");
+
+    let mut level: std::vec::Vec<BytesN<32>> = leaves.to_vec();
+    let mut proof: std::vec::Vec<BytesN<32>> = std::vec::Vec::new();
+    let mut idx = index;
+
+    while level.len() > 1 {
+        let mut next: std::vec::Vec<BytesN<32>> =
+            std::vec::Vec::with_capacity(level.len().div_ceil(2));
+        let mut i = 0;
+        while i < level.len() {
+            if i + 1 < level.len() {
+                if i == idx {
+                    proof.push(level[i + 1].clone());
+                } else if i + 1 == idx {
+                    proof.push(level[i].clone());
+                }
+                next.push(hash_pair(env, &level[i], &level[i + 1]));
+            } else {
+                // Odd node at this level: carried up without a sibling.
+                next.push(level[i].clone());
+            }
+            i += 2;
+        }
+        idx /= 2;
+        level = next;
+    }
+
+    let root = level.pop().expect("merkle tree has a root");
+    (root, proof)
+}
+
+#[test]
+fn bench_anchor_batch_scales_to_max_batch_size() {
+    use soroban_env_host::InvocationResourceLimits;
+    use soroban_sdk::testutils::cost_estimate::NetworkInvocationResourceLimits;
+
+    let (env, client, merchant) = setup();
+    client.initialize(&merchant);
+
+    // The per-transaction limits every invocation must fit into (mainnet
+    // snapshot enforced by `Env::default()`).
+    let limits = InvocationResourceLimits::mainnet();
+
+    // One row per tier: (batch_size, anchor cpu, anchor mem, anchor fee,
+    // verify cpu, verify mem, verify fee).
+    let mut results: std::vec::Vec<(u32, u64, u64, u64, u64, u64, u64)> = std::vec::Vec::new();
+
+    for &size in &BENCH_BATCH_SIZES {
+        // Genuine batch: `size` distinct leaves. The proof targets the last
+        // leaf — the deepest path, i.e. the worst case for verify_receipt.
+        let leaves: std::vec::Vec<BytesN<32>> = (0..size)
+            .map(|i| {
+                let mut leaf = [0u8; 32];
+                leaf[..4].copy_from_slice(&i.to_be_bytes());
+                BytesN::from_array(&env, &leaf)
+            })
+            .collect();
+        let (root, proof) = build_merkle_tree(&env, &leaves, (size - 1) as usize);
+
+        // anchor_batch — metered by the host and checked against mainnet
+        // limits; any breach would have panicked here.
+        let batch_id = client.anchor_batch(&root, &size, &0, &100);
+        assert_eq!(batch_id, results.len() as u64 + 1);
+        let anchor = env.cost_estimate().resources();
+        let anchor_cpu = anchor.instructions as u64;
+        let anchor_mem = anchor.mem_bytes as u64;
+        let anchor_fee = env.cost_estimate().fee().total as u64;
+
+        if size == MAX_BATCH_SIZE {
+            println!("\n--- host budget breakdown for anchor_batch({MAX_BATCH_SIZE}) ---");
+            env.cost_estimate().budget().print();
+            println!("--- metered invocation resources for anchor_batch({MAX_BATCH_SIZE}) ---");
+            println!("{anchor:?}");
+        }
+
+        // verify_receipt for the deepest leaf — cost grows with tree depth.
+        let mut path = vec![&env];
+        for sibling in &proof {
+            path.push_back(sibling.clone());
+        }
+        let last_leaf = &leaves[(size - 1) as usize];
+        let verified = client.verify_receipt(&batch_id, last_leaf, &path);
+        let verify = env.cost_estimate().resources();
+        let verify_cpu = verify.instructions as u64;
+        let verify_mem = verify.mem_bytes as u64;
+        let verify_fee = env.cost_estimate().fee().total as u64;
+
+        assert!(
+            verified,
+            "proof for the last leaf of a {size}-leaf batch must verify"
+        );
+
+        // Safe-limit validation: every tier must stay inside the mainnet
+        // per-transaction limits.
+        assert!(
+            anchor_cpu < limits.instructions as u64,
+            "anchor_batch({size}) used {anchor_cpu} CPU insns, exceeding the mainnet limit of {}",
+            limits.instructions
+        );
+        assert!(
+            anchor_mem < limits.mem_bytes as u64,
+            "anchor_batch({size}) used {anchor_mem} mem bytes, exceeding the mainnet limit of {}",
+            limits.mem_bytes
+        );
+        assert!(
+            verify_cpu < limits.instructions as u64,
+            "verify_receipt({size}) used {verify_cpu} CPU insns, exceeding the mainnet limit of {}",
+            limits.instructions
+        );
+        assert!(
+            verify_mem < limits.mem_bytes as u64,
+            "verify_receipt({size}) used {verify_mem} mem bytes, exceeding the mainnet limit of {}",
+            limits.mem_bytes
+        );
+
+        // The largest batch must stay well within the budget: demand at least
+        // 10x headroom so mainnet deployment has comfortable margin.
+        if size == MAX_BATCH_SIZE {
+            assert!(
+                anchor_cpu <= limits.instructions as u64 / 10,
+                "anchor_batch at MAX_BATCH_SIZE uses {anchor_cpu} CPU insns, more than 10% of the \
+                 mainnet limit ({})",
+                limits.instructions
+            );
+            assert!(
+                anchor_mem <= limits.mem_bytes as u64 / 10,
+                "anchor_batch at MAX_BATCH_SIZE uses {anchor_mem} mem bytes, more than 10% of the \
+                 mainnet limit ({})",
+                limits.mem_bytes
+            );
+        }
+
+        results.push((
+            size, anchor_cpu, anchor_mem, anchor_fee, verify_cpu, verify_mem, verify_fee,
+        ));
+    }
+
+    println!("\n=== ReceiptAnchor resource benchmark (soroban-sdk test env) ===");
+    println!(
+        "mainnet invocation limits: instructions={}, mem_bytes={}",
+        limits.instructions, limits.mem_bytes
+    );
+
+    println!("\n-- CSV --");
+    println!(
+        "batch_size,anchor_cpu_insns,anchor_mem_bytes,anchor_fee_stroops,\
+         verify_cpu_insns,verify_mem_bytes,verify_fee_stroops"
+    );
+    for (size, ac, am, af, vc, vm, vf) in &results {
+        println!("{size},{ac},{am},{af},{vc},{vm},{vf}");
+    }
+
+    println!("\n-- summary --");
+    println!(
+        "{:<10}{:<19}{:<18}{:<16}{:<19}{:<18}{:<16}",
+        "batch", "anchor_cpu", "anchor_mem", "anchor_fee", "verify_cpu", "verify_mem", "verify_fee"
+    );
+    println!(
+        "{:<10}{:<19}{:<18}{:<16}{:<19}{:<18}{:<16}",
+        "size", "(insns)", "(bytes)", "(stroops)", "(insns)", "(bytes)", "(stroops)"
+    );
+    for (size, ac, am, af, vc, vm, vf) in &results {
+        println!("{size:<10}{ac:<19}{am:<18}{af:<16}{vc:<19}{vm:<18}{vf:<16}");
+    }
+
+    let (max_size, ac_max, am_max, _, vc_max, vm_max, _) =
+        *results.last().expect("benchmark has at least one tier");
+    println!("\n-- safe-limit validation (largest tier: batch_size={max_size}) --");
+    println!(
+        "anchor_batch:   {ac_max} CPU insns ({:.4}% of {}), {am_max} mem bytes ({:.4}% of {})",
+        ac_max as f64 / limits.instructions as f64 * 100.0,
+        limits.instructions,
+        am_max as f64 / limits.mem_bytes as f64 * 100.0,
+        limits.mem_bytes
+    );
+    println!(
+        "verify_receipt: {vc_max} CPU insns ({:.4}% of {}), {vm_max} mem bytes ({:.4}% of {})",
+        vc_max as f64 / limits.instructions as f64 * 100.0,
+        limits.instructions,
+        vm_max as f64 / limits.mem_bytes as f64 * 100.0,
+        limits.mem_bytes
     );
 }

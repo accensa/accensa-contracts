@@ -15,4 +15,5 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 proptest = "1.4"
+soroban-env-host = "27.0.1"
 soroban-sdk = { workspace = true, features = ["testutils"] }

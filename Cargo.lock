@@ -1260,6 +1260,7 @@ name = "receipt-anchor"
 version = "0.2.0"
 dependencies = [
  "proptest",
+ "soroban-env-host",
  "soroban-sdk",
 ]
 
