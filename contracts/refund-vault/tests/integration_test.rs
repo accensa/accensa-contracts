@@ -11,6 +11,15 @@ use soroban_sdk::{
 const FLOAT: i128 = 1_000_000;
 const WINDOW: u32 = 100;
 
+/// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
+/// wasm32v1-none --release` before these tests run (see
+/// `.github/workflows/ci.yml` and the README's "Build and test" section).
+/// `ReceiptAnchor::anchor_batch` factory-deploys shards from a real installed
+/// wasm hash, so this integration test needs the same wasm the unit tests do.
+mod shard_wasm {
+    soroban_sdk::contractimport!(file = "../../target/wasm32v1-none/release/receipt_shard.wasm");
+}
+
 struct TestEnv<'a> {
     env: Env,
     anchor: ReceiptAnchorClient<'a>,
@@ -32,7 +41,8 @@ fn setup<'a>() -> TestEnv<'a> {
 
     let anchor_id = env.register(ReceiptAnchor, ());
     let anchor = ReceiptAnchorClient::new(&env, &anchor_id);
-    anchor.initialize(&merchant);
+    let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
+    anchor.initialize(&merchant, &shard_wasm_hash);
 
     let vault_id = env.register(RefundVault, ());
     let vault = RefundVaultClient::new(&env, &vault_id);

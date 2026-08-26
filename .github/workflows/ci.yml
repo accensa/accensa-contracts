@@ -81,6 +81,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: wasm32v1-none
       - name: Cache cargo
         uses: actions/cache@v3
         with:
@@ -89,6 +90,10 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build receipt-shard wasm
+        # receipt-anchor's test/clippy target imports this wasm via
+        # `contractimport!` to test the shard factory end-to-end.
+        run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
@@ -109,6 +114,10 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build receipt-shard wasm
+        # receipt-anchor's tests import this wasm via `contractimport!` to
+        # test the shard factory end-to-end.
+        run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run Tests
         run: cargo test
 

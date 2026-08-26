@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "contracts/receipt-anchor",
+    "contracts/receipt-shard",
     "contracts/refund-vault",
 ]
 resolver = "2"

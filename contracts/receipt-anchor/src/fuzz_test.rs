@@ -63,6 +63,23 @@ use std::{format, string::String, vec};
 
 use super::{DataKey, Error, ReceiptAnchor, ReceiptAnchorClient};
 
+/// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
+/// wasm32v1-none --release` before these tests run (see
+/// `.github/workflows/ci.yml` and the README's "Build and test" section).
+mod shard_wasm {
+    soroban_sdk::contractimport!(file = "../../target/wasm32v1-none/release/receipt_shard.wasm");
+}
+
+fn shard_wasm_hash(env: &Env) -> BytesN<32> {
+    env.deployer().upload_contract_wasm(shard_wasm::WASM)
+}
+
+/// Resolves the shard address holding `batch_id`, for tests that need to peek
+/// at a shard's own storage (e.g. TTLs) directly.
+fn shard_for(client: &ReceiptAnchorClient<'static>, batch_id: u64) -> Address {
+    client.get_shard_address(&((batch_id - 1) / super::SHARD_CAPACITY))
+}
+
 /// Bounded CI default budgets; override with `FUZZ_CASES` / `FUZZ_SEQ_LEN`.
 fn fuzz_cases() -> u32 {
     std::env::var("FUZZ_CASES")
@@ -100,7 +117,7 @@ fn setup() -> (Env, ReceiptAnchorClient<'static>, Address) {
     let contract_id = env.register(ReceiptAnchor, ());
     let client = ReceiptAnchorClient::new(&env, &contract_id);
     let merchant = Address::generate(&env);
-    client.initialize(&merchant);
+    client.initialize(&merchant, &shard_wasm_hash(&env));
     (env, client, merchant)
 }
 
@@ -525,16 +542,17 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                     }
                 } else if let Some(_b) = model.batch(batch_id) {
                     // TTL extension must never shorten the TTL.
-                    let ttl_before = env.as_contract(&client.address, || {
+                    let shard_addr = shard_for(client, batch_id);
+                    let ttl_before = env.as_contract(&shard_addr, || {
                         env.storage()
                             .persistent()
-                            .get_ttl(&DataKey::Batch(batch_id))
+                            .get_ttl(&receipt_shard::DataKey::Batch(batch_id))
                     });
                     client.extend_batch_ttl(&batch_id);
-                    let ttl_after = env.as_contract(&client.address, || {
+                    let ttl_after = env.as_contract(&shard_addr, || {
                         env.storage()
                             .persistent()
-                            .get_ttl(&DataKey::Batch(batch_id))
+                            .get_ttl(&receipt_shard::DataKey::Batch(batch_id))
                     });
                     if ttl_after < ttl_before {
                         failures.push(format!(
@@ -711,14 +729,19 @@ proptest! {
             Err(Ok(Error::BatchNotFound))
         );
 
+        let shard_addr = shard_for(&client, batch_id);
         for advance in advances {
             env.ledger().with_mut(|li| li.sequence_number += advance);
-            let ttl_before: u32 = env.as_contract(&client.address, || {
-                env.storage().persistent().get_ttl(&DataKey::Batch(batch_id))
+            let ttl_before: u32 = env.as_contract(&shard_addr, || {
+                env.storage()
+                    .persistent()
+                    .get_ttl(&receipt_shard::DataKey::Batch(batch_id))
             });
             client.extend_batch_ttl(&batch_id);
-            let ttl_after: u32 = env.as_contract(&client.address, || {
-                env.storage().persistent().get_ttl(&DataKey::Batch(batch_id))
+            let ttl_after: u32 = env.as_contract(&shard_addr, || {
+                env.storage()
+                    .persistent()
+                    .get_ttl(&receipt_shard::DataKey::Batch(batch_id))
             });
             assert!(
                 ttl_after >= ttl_before,

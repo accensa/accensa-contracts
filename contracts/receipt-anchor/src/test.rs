@@ -6,6 +6,18 @@ use soroban_sdk::{
     vec, Address, Bytes, Env,
 };
 
+/// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
+/// wasm32v1-none --release` before these tests run (CI does this in the same
+/// step that installs the wasm32v1-none target; see `.github/workflows/ci.yml`
+/// and the README's "Build and test" section for the local equivalent).
+mod shard_wasm {
+    soroban_sdk::contractimport!(file = "../../target/wasm32v1-none/release/receipt_shard.wasm");
+}
+
+fn shard_wasm_hash(env: &Env) -> BytesN<32> {
+    env.deployer().upload_contract_wasm(shard_wasm::WASM)
+}
+
 fn setup() -> (Env, ReceiptAnchorClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -13,6 +25,10 @@ fn setup() -> (Env, ReceiptAnchorClient<'static>, Address) {
     let client = ReceiptAnchorClient::new(&env, &contract_id);
     let merchant = Address::generate(&env);
     (env, client, merchant)
+}
+
+fn init(env: &Env, client: &ReceiptAnchorClient, merchant: &Address) {
+    client.initialize(merchant, &shard_wasm_hash(env));
 }
 
 fn hash_pair(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> BytesN<32> {
@@ -33,16 +49,17 @@ fn hash_pair(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> BytesN<32> {
 
 #[test]
 fn test_initialize() {
-    let (_env, client, merchant) = setup();
-    client.initialize(&merchant);
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
 }
 
 #[test]
 fn test_double_initialize_fails() {
-    let (_env, client, merchant) = setup();
-    client.initialize(&merchant);
+    let (env, client, merchant) = setup();
+    let wasm_hash = shard_wasm_hash(&env);
+    client.initialize(&merchant, &wasm_hash);
     assert_eq!(
-        client.try_initialize(&merchant),
+        client.try_initialize(&merchant, &wasm_hash),
         Err(Ok(Error::AlreadyInitialized))
     );
 }
@@ -60,7 +77,7 @@ fn test_anchor_batch_before_initialize_fails() {
 #[test]
 fn test_anchor_batch_assigns_sequential_ids() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
@@ -72,7 +89,7 @@ fn test_anchor_batch_assigns_sequential_ids() {
 #[test]
 fn test_get_batch_returns_stored_record() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     let root = BytesN::from_array(&env, &[9u8; 32]);
     let batch_id = client.anchor_batch(&root, &42, &1000, &2000);
@@ -86,9 +103,16 @@ fn test_get_batch_returns_stored_record() {
 
 #[test]
 fn test_get_batch_missing_fails() {
-    let (_env, client, merchant) = setup();
-    client.initialize(&merchant);
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
     assert_eq!(client.try_get_batch(&99), Err(Ok(Error::BatchNotFound)));
+}
+
+#[test]
+fn test_get_batch_zero_fails() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    assert_eq!(client.try_get_batch(&0), Err(Ok(Error::BatchNotFound)));
 }
 
 #[test]
@@ -100,7 +124,7 @@ fn test_anchor_batch_requires_merchant_auth() {
     let merchant = Address::generate(&env);
 
     env.mock_all_auths();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     // Enforcing mode with no signatures: merchant.require_auth() must abort.
     env.set_auths(&[]);
@@ -111,7 +135,7 @@ fn test_anchor_batch_requires_merchant_auth() {
 #[test]
 fn test_verify_receipt_single_leaf_tree() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     // A one-receipt batch: the root is the leaf itself, proof is empty.
     let leaf = BytesN::from_array(&env, &[7u8; 32]);
@@ -123,7 +147,7 @@ fn test_verify_receipt_single_leaf_tree() {
 #[test]
 fn test_verify_receipt_four_leaf_tree() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     let l1 = BytesN::from_array(&env, &[1u8; 32]);
     let l2 = BytesN::from_array(&env, &[2u8; 32]);
@@ -146,7 +170,7 @@ fn test_verify_receipt_four_leaf_tree() {
 #[test]
 fn test_verify_receipt_rejects_wrong_leaf_and_proof() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     let l1 = BytesN::from_array(&env, &[1u8; 32]);
     let l2 = BytesN::from_array(&env, &[2u8; 32]);
@@ -163,7 +187,7 @@ fn test_verify_receipt_rejects_wrong_leaf_and_proof() {
 #[test]
 fn test_verify_receipt_missing_batch_fails() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
     assert_eq!(
         client.try_verify_receipt(&5, &leaf, &vec![&env]),
@@ -174,7 +198,7 @@ fn test_verify_receipt_missing_batch_fails() {
 #[test]
 fn test_get_batch_count_tracks_anchors() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     assert_eq!(client.get_batch_count(), 0);
 
@@ -202,7 +226,7 @@ fn test_get_max_batch_size() {
 #[test]
 fn test_anchor_batch_at_max_size_succeeds() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
     let batch_id = client.anchor_batch(&root, &MAX_BATCH_SIZE, &0, &50);
@@ -214,7 +238,7 @@ fn test_anchor_batch_at_max_size_succeeds() {
 #[test]
 fn test_anchor_batch_enforces_max_size() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
     assert_eq!(
@@ -225,8 +249,8 @@ fn test_anchor_batch_enforces_max_size() {
 
 #[test]
 fn test_extend_batch_ttl_fails_if_missing() {
-    let (_env, client, merchant) = setup();
-    client.initialize(&merchant);
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
     assert_eq!(
         client.try_extend_batch_ttl(&99),
         Err(Ok(Error::BatchNotFound))
@@ -236,13 +260,102 @@ fn test_extend_batch_ttl_fails_if_missing() {
 #[test]
 fn test_extend_batch_ttl_succeeds() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
     let batch_id = client.anchor_batch(&root, &5, &0, &50);
 
     // This won't fail since the batch exists. (TTL updates aren't observable from the contract API, but it shouldn't revert)
     client.extend_batch_ttl(&batch_id);
+}
+
+// ---------------------------------------------------------------------------
+// Sharded storage / factory routing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_shard_capacity() {
+    let (_env, client, _merchant) = setup();
+    assert_eq!(client.get_shard_capacity(), SHARD_CAPACITY);
+}
+
+#[test]
+fn test_first_anchor_creates_one_shard() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    assert_eq!(client.get_shard_count(), 0);
+
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    client.anchor_batch(&root, &1, &0, &10);
+
+    assert_eq!(client.get_shard_count(), 1);
+    // The shard exists and is addressable.
+    client.get_shard_address(&0);
+}
+
+#[test]
+fn test_get_shard_address_missing_fails() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    assert_eq!(
+        client.try_get_shard_address(&0),
+        Err(Ok(Error::BatchNotFound))
+    );
+}
+
+#[test]
+fn test_anchor_batch_crosses_shard_boundary() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    for _ in 0..SHARD_CAPACITY {
+        client.anchor_batch(&root, &1, &0, &1);
+    }
+    assert_eq!(client.get_batch_count(), SHARD_CAPACITY);
+    assert_eq!(client.get_shard_count(), 1);
+
+    // Batch SHARD_CAPACITY + 1 is the first id in the second shard.
+    let overflow_id = client.anchor_batch(&root, &1, &0, &1);
+    assert_eq!(overflow_id, SHARD_CAPACITY + 1);
+    assert_eq!(client.get_shard_count(), 2);
+
+    // Both the last batch of shard 0 and the first batch of shard 1 read back correctly.
+    assert_eq!(client.get_batch(&SHARD_CAPACITY).period_end, 1);
+    assert_eq!(client.get_batch(&overflow_id).period_end, 1);
+
+    let shard0 = client.get_shard_address(&0);
+    let shard1 = client.get_shard_address(&1);
+    assert_ne!(shard0, shard1);
+}
+
+#[test]
+fn test_shard_created_event_emitted_once_per_shard() {
+    use soroban_sdk::testutils::Events;
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    client.anchor_batch(&root, &1, &0, &1);
+    let after_first = env
+        .events()
+        .all()
+        .filter_by_contract(&client.address)
+        .events()
+        .len();
+    assert_eq!(after_first, 2, "expected ShardCreatedEvent + AnchorEvent");
+
+    // `events().all()` only reflects the most recent top-level invocation, so
+    // a second anchor into the same shard should show just its own
+    // AnchorEvent (1), not a repeated ShardCreatedEvent.
+    client.anchor_batch(&root, &1, &0, &1);
+    let after_second = env
+        .events()
+        .all()
+        .filter_by_contract(&client.address)
+        .events()
+        .len();
+    assert_eq!(after_second, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +373,7 @@ mod vectors;
 #[test]
 fn test_shared_vectors_match_typescript_sdk() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     for v in vectors::VECTORS {
         let root = BytesN::from_array(&env, &v.root);
@@ -311,7 +424,7 @@ fn test_shared_vectors_include_live_testnet_batch() {
 #[test]
 fn test_prune_batches_deletes_old_records() {
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     env.ledger().with_mut(|li| li.sequence_number = 100);
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
@@ -340,6 +453,43 @@ fn test_prune_batches_deletes_old_records() {
 }
 
 #[test]
+fn test_prune_batches_crosses_shard_boundary() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    // Fill shard 0 completely, then anchor 5 batches into shard 1.
+    for _ in 0..(SHARD_CAPACITY + 5) {
+        client.anchor_batch(&root, &1, &0, &1);
+    }
+    assert_eq!(client.get_shard_count(), 2);
+
+    env.ledger().with_mut(|li| li.sequence_number = 1_000_000);
+
+    // MAX_PRUNE_BATCHES caps each call at 100 deletions, so draining shard 0
+    // (SHARD_CAPACITY = 1000 batches) takes 10 calls.
+    for _ in 0..(SHARD_CAPACITY / MAX_PRUNE_BATCHES) {
+        client.prune_batches(&1_000_000);
+    }
+    assert_eq!(
+        client.try_get_batch(&SHARD_CAPACITY),
+        Err(Ok(Error::BatchNotFound))
+    );
+    // Shard 1's batches must survive until the cursor actually reaches them.
+    assert!(client.get_batch(&(SHARD_CAPACITY + 1)).period_end == 1);
+
+    // One more call crosses into shard 1 and prunes the remaining 5 batches.
+    client.prune_batches(&1_000_000);
+    for offset in 1..=5u64 {
+        assert_eq!(
+            client.try_get_batch(&(SHARD_CAPACITY + offset)),
+            Err(Ok(Error::BatchNotFound))
+        );
+    }
+}
+
+#[test]
 #[should_panic]
 fn test_prune_batches_requires_admin_auth() {
     let env = Env::default();
@@ -348,7 +498,7 @@ fn test_prune_batches_requires_admin_auth() {
     let merchant = Address::generate(&env);
 
     env.mock_all_auths();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     env.set_auths(&[]);
     client.prune_batches(&100);
@@ -358,30 +508,47 @@ fn test_prune_batches_requires_admin_auth() {
 fn test_anchor_and_prune_events_emitted() {
     use soroban_sdk::testutils::Events;
     let (env, client, merchant) = setup();
-    client.initialize(&merchant);
+    init(&env, &client, &merchant);
 
     env.ledger().with_mut(|li| li.sequence_number = 100);
     let root = BytesN::from_array(&env, &[1u8; 32]);
     client.anchor_batch(&root, &10, &0, &10);
 
+    // The first anchor into a fresh contract also spawns shard 0, so the
+    // router emits ShardCreatedEvent ahead of AnchorEvent.
     assert_eq!(
         env.events()
             .all()
             .filter_by_contract(&client.address)
             .events()
             .len(),
-        1,
-        "AnchorEvent missing"
+        2,
+        "expected ShardCreatedEvent + AnchorEvent"
     );
 
     use soroban_sdk::{vec, IntoVal, Symbol};
 
     let anchor_events = env.events().all();
     let batch = client.get_batch(&1);
+    let shard0 = client.get_shard_address(&0);
+    let shard_created_data: soroban_sdk::Map<Symbol, soroban_sdk::Val> = soroban_sdk::map![
+        &env,
+        (Symbol::new(&env, "shard_address"), shard0.into_val(&env)),
+        (Symbol::new(&env, "start_batch_id"), 1u64.into_val(&env)),
+        (
+            Symbol::new(&env, "end_batch_id"),
+            (SHARD_CAPACITY + 1).into_val(&env)
+        ),
+    ];
     assert_eq!(
         anchor_events,
         vec![
             &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "shard_created_event"), 0u64).into_val(&env),
+                shard_created_data.into_val(&env)
+            ),
             (
                 client.address.clone(),
                 (Symbol::new(&env, "anchor_event"), 1u64).into_val(&env),
