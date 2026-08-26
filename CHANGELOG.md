@@ -8,16 +8,29 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
-- CI job enforcing `CHANGELOG.md` updates on contract changes and checking version alignment (#192).
-- Shared cross-implementation test vectors and conformance suite for `RefundVault` (#184).
-- Dependabot configuration for `cargo` and `github-actions` (#185).
-- CI WASM artifact uploading and size budget enforcement gate (#186).
+- **Build was broken on `main` after the yield-strategy merge (#200).** The
+  `YieldStrategy` trait used `#[contractimpl]`, which cannot generate a client on
+  a bare trait; it is now `#[contractclient(name = "YieldStrategyClient")]`.
+  `deploy_to_yield` also transferred tokens to the strategy without notifying it
+  (`strategy_client.deposit`), so the strategy never recorded the principal and
+  later withdrawals failed. `yield_tests.rs` additionally used event APIs that
+  do not exist in this SDK. No deployed contract is affected — this restores a
+  compiling, green test suite.
 
-### Changed
+### Tested
 
-- Standardized `CHANGELOG.md` with `## [Unreleased]` section according to Keep a Changelog guidelines.
+- Property-based fuzz suites in `contracts/*/src/fuzz_test.rs` now generate
+  random operation sequences and assert invariants after every step: pruning
+  stays a contiguous prefix with a monotonic `PrunedUpTo` cursor, Merkle
+  verification rejects every wrong proof shape (wrong leaf/sibling/length/batch
+  and reversed level order), vault float always equals
+  `deposits - refunds - withdrawals` and never goes negative, a `payment_ref`
+  can never be refunded twice, paused operations never mutate state, and TTL
+  extension never shortens a TTL while missing records always error. Budgets
+  are tunable via `FUZZ_CASES`/`FUZZ_SEQ_LEN` with longer `#[ignore]`d local
+  profiles.
 
 ## [0.2.0] — 2026-08-14
 

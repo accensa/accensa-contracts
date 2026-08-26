@@ -547,9 +547,9 @@ impl RefundVault {
             return Err(Error::DeploymentExceedsMax);
         }
 
-        // Transfer tokens to strategy and record the deposit.
+        // Transfer tokens to strategy, then notify the strategy of the deposit
+        // (it needs to record the principal so it can return it on withdrawal).
         token_client.transfer(&env.current_contract_address(), &strategy, &amount);
-
         let strategy_client = YieldStrategyClient::new(&env, &strategy);
         strategy_client.deposit(&amount);
 

@@ -3,12 +3,12 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype,
-    testutils::{Address as _, Ledger},
+    testutils::Address as _,
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, Error as HostError,
+    Address, BytesN, Env,
 };
 
-use crate::{Error, RefundVault, RefundVaultClient, YieldInfo};
+use crate::{Error, RefundVault, RefundVaultClient};
 
 // ── Mock yield strategy contract ───────────────────────────────────────────
 
@@ -272,12 +272,13 @@ fn test_set_yield_strategy_uninitialized_fails() {
 
 #[test]
 fn test_set_yield_strategy_requires_auth() {
-    let (env, vault_client, _merchant, _token, strategy_addr, _tc) =
-        setup_with_strategy(2000, 8000);
+    let (env, vault_client, _merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
     let new_strategy = Address::generate(&env);
 
     env.set_auths(&[]);
-    assert!(vault_client.try_set_yield_strategy(&strategy_addr).is_err());
+    // `merchant.require_auth()` aborts rather than returning an error, so the
+    // call is caught by the client as a host error, not `Unauthorized`.
+    assert!(vault_client.try_set_yield_strategy(&new_strategy).is_err());
 }
 
 #[test]
@@ -304,7 +305,7 @@ fn test_set_max_deploy_ratio_invalid_fails() {
 
 #[test]
 fn test_deploy_to_yield_happy_path() {
-    let (env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(2000, 8000);
+    let (_env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(2000, 8000);
 
     // Deposit 5M into vault.
     vault_client.deposit(&merchant, &5_000_000);
@@ -343,7 +344,7 @@ fn test_deploy_without_strategy_fails() {
 
 #[test]
 fn test_deploy_insufficient_reserve_fails() {
-    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
     vault_client.deposit(&merchant, &5_000_000);
 
@@ -356,7 +357,7 @@ fn test_deploy_insufficient_reserve_fails() {
 
 #[test]
 fn test_deploy_exceeds_max_ratio_fails() {
-    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 5000); // 0% reserve, 50% max deploy
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 5000); // 0% reserve, 50% max deploy
 
     vault_client.deposit(&merchant, &5_000_000);
 
@@ -369,7 +370,7 @@ fn test_deploy_exceeds_max_ratio_fails() {
 
 #[test]
 fn test_deploy_insufficient_float_fails() {
-    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
     vault_client.deposit(&merchant, &1_000_000);
 
@@ -407,7 +408,7 @@ fn test_deploy_when_paused_fails() {
 
 #[test]
 fn test_deploy_multiple_times() {
-    let (env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(1000, 8000);
+    let (_env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(1000, 8000);
 
     vault_client.deposit(&merchant, &5_000_000);
 
@@ -454,7 +455,7 @@ fn test_withdraw_from_yield_returns_principal_and_yield() {
 
 #[test]
 fn test_withdraw_more_than_deployed_fails() {
-    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
     vault_client.deposit(&merchant, &5_000_000);
     vault_client.deploy_to_yield(&2_000_000);
@@ -548,7 +549,7 @@ fn test_harvest_yield_happy_path() {
 
 #[test]
 fn test_harvest_nothing_fails() {
-    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
     vault_client.deposit(&merchant, &5_000_000);
     vault_client.deploy_to_yield(&3_000_000);
@@ -648,7 +649,7 @@ fn test_operator_withdraw_harvested_yield() {
     vault_client.harvest_yield();
 
     let operator = Address::generate(&env);
-    let merchant_balance_before = tc.balance(&merchant);
+    let _merchant_balance_before = tc.balance(&merchant);
 
     // Merchant withdraws the harvested yield.
     vault_client.withdraw(&300_000, &operator);
@@ -712,7 +713,7 @@ fn test_deploy_when_paused() {
 
 #[test]
 fn test_withdraw_from_yield_when_paused() {
-    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
     vault_client.deposit(&merchant, &5_000_000);
     vault_client.deploy_to_yield(&3_000_000);
@@ -751,21 +752,22 @@ fn test_yield_deployed_event() {
     vault_client.deposit(&merchant, &5_000_000);
     vault_client.deploy_to_yield(&2_000_000);
 
-    let events = env.events().all().filter_by_contract(&vault_client.address);
+    // Note: `env.events().all()` returns only the events of the last contract
+    // invocation, so this asserts on the deploy invocation's events alone.
     assert_eq!(
-        events,
+        env.events().all().filter_by_contract(&vault_client.address),
         vec![
             &env,
             (
                 vault_client.address.clone(),
                 (
                     Symbol::new(&env, "yield_deployed_event"),
-                    strategy_addr.clone(),
+                    strategy_addr.clone()
                 )
                     .into_val(&env),
                 soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 2_000_000i128)]
                     .into_val(&env)
-            )
+            ),
         ]
     );
 }
@@ -785,16 +787,16 @@ fn test_yield_harvested_event() {
 
     vault_client.harvest_yield();
 
-    let events = env.events().all().filter_by_contract(&vault_client.address);
+    // `env.events().all()` returns only the last invocation's events (the harvest).
     assert_eq!(
-        events,
+        env.events().all().filter_by_contract(&vault_client.address),
         vec![
             &env,
             (
                 vault_client.address.clone(),
                 (Symbol::new(&env, "yield_harvested_event"),).into_val(&env),
                 soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 200_000i128)].into_val(&env)
-            )
+            ),
         ]
     );
 }
@@ -803,7 +805,7 @@ fn test_yield_harvested_event() {
 
 #[test]
 fn test_zero_reserve_full_deploy() {
-    let (env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(0, 10_000);
+    let (_env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(0, 10_000);
 
     vault_client.deposit(&merchant, &5_000_000);
 
@@ -817,7 +819,8 @@ fn test_zero_reserve_full_deploy() {
 
 #[test]
 fn test_full_reserve_cannot_deploy() {
-    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(10_000, 10_000); // 100% reserve.
+    let (_env, vault_client, merchant, _token, _strategy, _tc) =
+        setup_with_strategy(10_000, 10_000); // 100% reserve.
 
     vault_client.deposit(&merchant, &5_000_000);
 

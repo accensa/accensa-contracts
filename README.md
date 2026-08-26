@@ -213,6 +213,20 @@ The dashboard, indexer, and SDK that drive these contracts live in
 Tests run against the Soroban test environment on every push, alongside
 `cargo fmt --check` and `cargo clippy -D warnings`. CI does not swallow failures.
 
+Both contracts carry property-based fuzz suites (`src/fuzz_test.rs`) that generate
+random operation sequences and assert invariants after every step — pruning stays a
+contiguous prefix, Merkle verification rejects every wrong proof shape, vault float
+always equals `deposits - refunds - withdrawals`, and a `payment_ref` can never be
+refunded twice. CI runs a bounded budget; a longer profile is available locally:
+
+```sh
+cargo test -- --ignored          # longer profile
+FUZZ_CASES=2000 FUZZ_SEQ_LEN=256 cargo test -- --ignored   # even longer
+```
+
+See the module headers in `contracts/*/src/fuzz_test.rs` for the approach and its
+limits.
+
 
 ## Contributing
 
