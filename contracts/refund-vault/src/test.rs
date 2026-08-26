@@ -618,3 +618,45 @@ fn test_admin_transfer_events_emitted() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Shared Test Vectors (Issue #184)
+// ---------------------------------------------------------------------------
+
+#[path = "refund_vectors.rs"]
+mod refund_vectors;
+
+#[test]
+fn test_shared_refund_vectors_match_typescript_sdk() {
+    let (env, client, merchant, _token) = setup(1000);
+    client.deposit(&merchant, &1_000_000);
+
+    let recipient = Address::generate(&env);
+
+    for v in refund_vectors::VECTORS {
+        let payment_ref = BytesN::from_array(&env, &v.payment_ref);
+        let res = client.try_refund(&payment_ref, &recipient, &v.amount, &v.paid_at_ledger);
+
+        assert_eq!(
+            res.is_ok(),
+            v.expected_success,
+            "vector {:?}: contract returned is_ok={}, expected={}",
+            v.name,
+            res.is_ok(),
+            v.expected_success
+        );
+    }
+}
+
+#[test]
+fn test_shared_refund_vectors_cover_both_outcomes() {
+    assert!(refund_vectors::VECTORS.iter().any(|v| v.expected_success));
+    assert!(refund_vectors::VECTORS.iter().any(|v| !v.expected_success));
+}
+
+#[test]
+fn test_shared_refund_vectors_include_live_testnet_refund() {
+    let live = &refund_vectors::VECTORS[0];
+    assert!(live.expected_success);
+    assert!(live.tx_hash.is_some());
+}

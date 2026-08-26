@@ -6,6 +6,19 @@ The two contracts are versioned together and share a tag. Versioning follows the
 policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0,
 breaking changes bump the **minor** version, and they are called out as such.
 
+## [Unreleased]
+
+### Added
+
+- CI job enforcing `CHANGELOG.md` updates on contract changes and checking version alignment (#192).
+- Shared cross-implementation test vectors and conformance suite for `RefundVault` (#184).
+- Dependabot configuration for `cargo` and `github-actions` (#185).
+- CI WASM artifact uploading and size budget enforcement gate (#186).
+
+### Changed
+
+- Standardized `CHANGELOG.md` with `## [Unreleased]` section according to Keep a Changelog guidelines.
+
 ## [0.2.0] — 2026-08-14
 
 Everything below has been merged and tested on `main`. **It is not what is deployed
