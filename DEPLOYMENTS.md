@@ -1,11 +1,13 @@
 # Deployments
 
-Every Accensa contract deployment is recorded here with its contract ID and the
-transaction that created it, so anyone can verify the deployment independently
-without trusting this repository.
+Every Accensa contract deployment is recorded here with its contract ID and
+provenance, so anyone can verify the deployment independently without trusting
+this repository.
 
-Machine-readable values live in [`deployments/testnet.env`](deployments/testnet.env)
-and are produced by [`deploy.sh`](deploy.sh).
+Machine-readable values live in [`deployments/<network>.env`](deployments/) and
+are produced by [`deploy.sh`](deploy.sh).
+
+---
 
 ## Testnet
 
@@ -52,12 +54,12 @@ Deployed 2026-07-22 with `soroban-sdk` 27.0.0, built for `wasm32v1-none`.
 | Initialize `RefundVault` | [`5c77fc34…`](https://stellar.expert/explorer/testnet/tx/5c77fc346943f56e10fc3666f4640211d721c1754886f107aac9fa696897662e) |
 | Anchor batch #1 | [`99d0481b…`](https://stellar.expert/explorer/testnet/tx/99d0481bf2b4a00b51f1ca7c3e633d8675dc84ede8eefc6804a00686ff7b8c9a) |
 
-## Verifying the live deployment yourself
+### Verifying the live testnet deployment yourself
 
-Batch #1 is anchored on-chain over four demo receipts. Its Merkle root was computed
-off-chain by the TypeScript SDK (`packages/sdk` in
-[`accensa-app`](https://github.com/accensa/accensa-app)) and verified on-chain by
-`ReceiptAnchor.verify_receipt` — the two implementations agree on the same
+Batch #1 is anchored on-chain over four demo receipts.  Its Merkle root was
+computed off-chain by the TypeScript SDK (`packages/sdk` in
+[`accensa-app`](https://github.com/accensa/accensa-app)) and verified on-chain
+by `ReceiptAnchor.verify_receipt` — the two implementations agree on the same
 sorted-pair SHA-256 convention.
 
 Read the anchored batch:
@@ -93,13 +95,45 @@ stellar contract invoke \
 
 Both are read-only simulations and cost nothing to run.
 
-## Redeploying
+---
+
+## Pubnet (Mainnet)
+
+> **No pubnet deployment has been performed yet.**
+>
+> See [`docs/MAINNET_DEPLOYMENT.md`](docs/MAINNET_DEPLOYMENT.md) for the
+> pre-deployment checklist covering upgradeability, audit status, key custody,
+> USDC SAC verification, refund window configuration, and rent funding.
+
+| Contract | Contract ID | Explorer |
+|---|---|---|
+| `ReceiptAnchor` | *(pending deployment)* | *(pending)* |
+| `RefundVault` | *(pending deployment)* | *(pending)* |
+
+Once deployed, this section will include:
+
+- Contract IDs and explorer links
+- Merchant / admin address
+- Refund token (verified USDC SAC address)
+- Refund window configuration
+- Version and commit SHA
+- WASM hashes for both contracts
+- Deployment transactions
+
+Machine-readable values will be recorded in [`deployments/pubnet.env`](deployments/pubnet.env).
+
+---
+
+## Deploying
 
 ```bash
-./deploy.sh                      # testnet, identity "deployer"
-NETWORK=futurenet ./deploy.sh    # another network
-TOKEN=<usdc-sac-id> ./deploy.sh  # settle refunds in USDC instead of XLM
+./deploy.sh                          # testnet (default), identity "deployer"
+NETWORK=futurenet ./deploy.sh        # another network
+TOKEN=<usdc-sac-id> ./deploy.sh      # settle refunds in USDC instead of XLM
+
+# Pubnet — requires clean working tree, main branch, and explicit confirmation:
+NETWORK=pubnet TOKEN=<mainnet-usdc-sac-id> ./deploy.sh
 ```
 
-The script writes `deployments/<network>.env`. Commit that file so the record
+The script writes `deployments/<network>.env`.  Commit that file so the record
 stays reproducible.
