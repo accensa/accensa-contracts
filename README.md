@@ -40,6 +40,12 @@ anyone can verify without asking the merchant. Refunds run through a vault with 
 enforced time window and double-refund protection, so the policy lives in the contract
 rather than in a support inbox.
 
+Both contracts are **immutable**: they ship with no upgrade entry point and no
+`update_current_contract_wasm`, so once deployed, nobody — not even the merchant —
+can change the refund policy or how receipts verify. This is a deliberate security
+property (see [ADR 003](docs/ADR-003-upgradeability.md)); a logic change means a
+new contract ID and the migration procedure documented there.
+
 ## Why Stellar
 
 This design is only economical on Stellar:

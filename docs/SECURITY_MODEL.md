@@ -4,6 +4,24 @@ This document outlines the threat model, trust assumptions, and attack mitigatio
 
 ## Trust Assumptions
 
+### 0. Immutability of Deployed Contracts
+
+Both `ReceiptAnchor` and `RefundVault` are **immutable**: they contain no upgrade
+entry point and no call to `update_current_contract_wasm`. This is a deliberate
+security property, not an omission — see
+[ADR 003](ADR-003-upgradeability.md).
+
+Consequences for the threat model:
+- **No admin — including the operator — can change contract behaviour after
+deployment.** A merchant can withdraw float, pause/unpause, and (via the two-step
+transfer) hand over admin, but cannot install new rules or alter the refund policy
+or anchoring behaviour.
+- **A compromised admin key cannot rewrite wasm.** Its blast radius is bounded by
+the authorisation surface the contract already encodes (drain float, pause, refund
+within policy).
+- **Bugs are permanent at a deployed address.** The response to a logic defect is
+withdraw-and-redeploy per the migration runbook in ADR 003, not an in-place patch.
+
 ### 1. The Admin (Merchant)
 The admin is assumed to be a trusted entity in the context of configuring the contract. They are responsible for:
 - Initializing the `RefundVault` with the correct token address and parameters.
@@ -48,5 +66,7 @@ For Classic Stellar assets wrapped in a Stellar Asset Contract (like USDC), the 
 
 ## Vulnerability Reporting
 
-If you discover a vulnerability that breaks any of the security properties or mitigations described in this document, please follow our private disclosure guidelines in [SECURITY.md](../SECURITY.md).
+If you discover a vulnerability that breaks any of the security properties or
+mitigations described in this document, please follow our private disclosure
+guidelines in [SECURITY.md](../SECURITY.md).
 
