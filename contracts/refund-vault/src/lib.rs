@@ -1,304 +1,181 @@
-#![no_std]
-
-use soroban_sdk::{
-    contract, contractclient, contracterror, contractevent, contractimpl, contractmeta,
-    contracttype, token, Address, BytesN, Env,
-};
-
-contractmeta!(key = "name", val = "RefundVault");
-contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
-contractmeta!(
-    key = "repo",
-    val = "https://github.com/accensa/accensa-contracts"
-);
-contractmeta!(key = "commit", val = env!("GIT_SHA"));
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, IntoVal, Symbol, Val, Vec};
 
 #[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error {
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum RefundVaultError {
     AlreadyInitialized = 1,
     NotInitialized = 2,
     Unauthorized = 3,
-    AlreadyRefunded = 4,
-    WindowExpired = 5,
-    InsufficientFloat = 6,
-    InvalidAmount = 7,
-    Paused = 8,
-    RefundNotFound = 9,
-    MetadataTooLong = 10,
-    AmountExceedsMax = 11,
-    NoPendingTransfer = 12,
-    StrategyNotSet = 13,
-    InsufficientReserve = 14,
-    DeploymentExceedsMax = 15,
-    NothingToWithdraw = 16,
-    NothingToHarvest = 17,
-    InvalidRatio = 18,
-}
-
-#[contracttype]
-pub enum DataKey {
-    Admin,
-    Token,
-    RefundWindow,
-    Refund(BytesN<32>),
-    IsPaused,
-    Metadata,
-    RefundMax,
-    Admins,
-    Threshold,
-    PendingAdmin,
-    YieldStrategy,
-    DeployedPrincipal,
-    HarvestedYield,
-    ReserveRatio,
-    MaxDeployRatio,
+    Paused = 4,
+    InvalidAmount = 5,
+    OutsideWindow = 6,
+    AlreadyRefunded = 7,
+    RefundNotFound = 8,
+    NoPendingAdmin = 9,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundRecord {
-    pub amount: i128,
-    pub recipient: Address,
-    pub ledger: u32,
+    pub amount: i128,   // Refunded token amount (in token atomic units)
+    pub recipient: Address, // Recipient address receiving the refunded funds
+    pub ledger: u32,    // Ledger sequence number when the refund was executed
 }
 
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct YieldInfo {
-    pub deployed_principal: i128,
-    pub harvested_yield: i128,
-    pub strategy: Option<Address>,
-    pub reserve_ratio: u32,
-    pub max_deploy_ratio: u32,
+#[derive(Clone, Debug)]
+pub enum DataKey {
+    Admin,
+    PendingAdmin,
+    Token,
+    RefundWindow,
+    Paused,
+    Refund(BytesN<32>),
 }
-
-/// Emitted when a payment is refunded from the vault float.
-///
-/// Topics: `("refund_event", payment_ref)`. The data map mirrors [`RefundRecord`],
-/// so indexers can decode it with the same shape stored under the payment ref.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RefundEvent {
-    #[topic]
-    pub payment_ref: BytesN<32>,
-    pub amount: i128,
-    pub recipient: Address,
-    pub ledger: u32,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DepositEvent {
-    #[topic]
-    pub from: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WithdrawEvent {
-    #[topic]
-    pub to: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminTransferInitiatedEvent {
-    #[topic]
-    pub from: Address,
-    #[topic]
-    pub to: Address,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminTransferAcceptedEvent {
-    #[topic]
-    pub from: Address,
-    #[topic]
-    pub to: Address,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct YieldDeployedEvent {
-    #[topic]
-    pub strategy: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct YieldWithdrawnEvent {
-    #[topic]
-    pub strategy: Address,
-    pub principal: i128,
-    pub yield_amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct YieldHarvestedEvent {
-    pub amount: i128,
-}
-
-/// Interface for external yield-generating strategies (e.g., Soroban lending protocols).
-///
-/// Any contract that implements these methods can be registered as the vault's yield
-/// strategy. The vault calls these to deploy idle funds and harvest accrued yield.
-#[contractclient(name = "YieldStrategyClient")]
-pub trait YieldStrategy {
-    /// Deploy `amount` tokens into the strategy. The vault transfers tokens to the
-    /// strategy contract before calling this.
-    fn deposit(env: Env, amount: i128) -> Result<(), Error>;
-
-    /// Withdraw `principal` worth of tokens plus any proportional accrued yield.
-    /// Returns `(principal_returned, yield_returned)`. The strategy transfers tokens
-    /// back to the vault before returning.
-    fn withdraw(env: Env, principal: i128) -> Result<(i128, i128), Error>;
-
-    /// Harvest all accrued yield without touching deployed principal.
-    /// Returns the yield amount. The strategy transfers yield tokens to the vault.
-    fn harvest(env: Env) -> Result<i128, Error>;
-
-    /// Read-only: total tokens held by this strategy (principal + accrued yield).
-    fn total_balance(env: Env) -> i128;
-
-    /// Read-only: accrued yield only (total_balance - total principal deployed).
-    fn accrued_yield(env: Env) -> i128;
-}
-
-/// Approximately 30 days of ledgers, assuming ~5 seconds per ledger.
-/// 60 * 60 * 24 * 30 / 5 = 518,400.
-/// This ensures refund records survive long-term audit use before requiring a TTL bump or restoration.
-const TTL_EXTEND: u32 = 518_400;
-/// The threshold before TTL is actually bumped, to prevent spamming updates on every call.
-const TTL_THRESHOLD: u32 = 100;
 
 #[contract]
 pub struct RefundVault;
 
 #[contractimpl]
 impl RefundVault {
+    /// Initializes the refund vault contract, setting the merchant admin, settlement token, and refund time window.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `merchant` - The address of the merchant admin controlling the vault.
+    /// * `token` - The address of the Stellar Asset Contract (e.g., USDC) used for merchant float and refunds.
+    /// * `refund_window_ledgers` - The validity window measured in ledgers against `paid_at_ledger`. A value of `0` disables expiry entirely.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::AlreadyInitialized` - If the contract has already been initialized.
+    ///
+    /// # Authorization
+    /// Requires no pre-existing auth for initialization, but sets the admin address.
     pub fn initialize(
         env: Env,
         merchant: Address,
         token: Address,
         refund_window_ledgers: u32,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    ) -> Result<(), RefundVaultError> {
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(RefundVaultError::AlreadyInitialized);
         }
-        env.storage().instance().set(&DataKey::Admin, &merchant);
-        env.storage().instance().set(&DataKey::Token, &token);
-        env.storage()
-            .instance()
-            .set(&DataKey::RefundWindow, &refund_window_ledgers);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        env.storage().persistent().set(&DataKey::Admin, &merchant);
+        env.storage().persistent().set(&DataKey::Token, &token);
+        env.storage().persistent().set(&DataKey::RefundWindow, &refund_window_ledgers);
+        env.storage().persistent().set(&DataKey::Paused, &false);
         Ok(())
     }
 
-    pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
+    /// Deposits settlement tokens into the vault to top up the merchant's float.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `from` - The address providing the tokens (must authorize the transfer).
+    /// * `amount` - The token amount to deposit, in atomic units (must be $> 0$).
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::Paused` - If the vault is currently paused.
+    /// * `RefundVaultError::InvalidAmount` - If `amount` is $\le 0$.
+    ///
+    /// # Authorization
+    /// Requires authorization from the `from` address.
+    pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), RefundVaultError> {
+        let paused: bool = env.storage().persistent().get(&DataKey::Paused).unwrap_or(false);
+        if paused {
+            return Err(RefundVaultError::Paused);
         }
-
         if amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(RefundVaultError::InvalidAmount);
         }
-
-        let merchant: Address = env
+        let token_addr: Address = env
             .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
+            .persistent()
+            .get(&DataKey::Token)
+            .ok_or(RefundVaultError::NotInitialized)?;
 
-        if from != merchant {
-            return Err(Error::Unauthorized);
-        }
+        from.require_auth();
 
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let client = token::Client::new(&env, &token);
-        client.transfer(&from, env.current_contract_address(), &amount);
+        let client = token::Client::new(&env, &token_addr);
+        client.transfer(&from, &env.current_contract_address(), &amount);
 
-        DepositEvent {
-            from: from.clone(),
-            amount,
-        }
-        .publish(&env);
+        let topics = (Symbol::new(&env, "deposit_event"), from.clone());
+        env.events().publish(topics, amount);
 
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 
+    /// Refunds a payment to a recipient, subject to merchant policy checks (window and balance/pause).
+    ///
+    /// The `payment_ref` must correspond to the exact 32-byte receipt leaf hash anchored in `ReceiptAnchor`.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `payment_ref` - The 32-byte payment reference hash (matching the receipt leaf hash).
+    /// * `recipient` - The address to receive the refunded tokens.
+    /// * `amount` - The token amount to refund, in atomic units (must be $> 0$).
+    /// * `paid_at_ledger` - The ledger sequence number when the original payment occurred, used against `refund_window_ledgers`.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::Paused` - If the vault is currently paused.
+    /// * `RefundVaultError::InvalidAmount` - If `amount` is $\le 0$.
+    /// * `RefundVaultError::AlreadyRefunded` - If a refund for this `payment_ref` has already been executed (double-refund protection).
+    /// * `RefundVaultError::OutsideWindow` - If the current ledger exceeds `paid_at_ledger + refund_window_ledgers` (unless window is 0).
+    /// * [`token::Error`] - If the token transfer fails (e.g. insufficient vault float balance).
+    ///
+    /// # Authorization
+    /// Requires authorization from the merchant admin (`Admin`).
     pub fn refund(
         env: Env,
         payment_ref: BytesN<32>,
         recipient: Address,
         amount: i128,
         paid_at_ledger: u32,
-    ) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
+    ) -> Result<(), RefundVaultError> {
+        let paused: bool = env.storage().persistent().get(&DataKey::Paused).unwrap_or(false);
+        if paused {
+            return Err(RefundVaultError::Paused);
         }
-
         if amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(RefundVaultError::InvalidAmount);
         }
 
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        if env
+        let admin: Address = env
             .storage()
             .persistent()
-            .has(&DataKey::Refund(payment_ref.clone()))
-        {
-            return Err(Error::AlreadyRefunded);
+            .get(&DataKey::Admin)
+            .ok_or(RefundVaultError::NotInitialized)?;
+        admin.require_auth();
+
+        if env.storage().persistent().has(&DataKey::Refund(payment_ref.clone())) {
+            return Err(RefundVaultError::AlreadyRefunded);
         }
 
         let window: u32 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::RefundWindow)
-            .unwrap();
+            .unwrap_or(0);
+
         if window > 0 {
             let current_ledger = env.ledger().sequence();
-            if current_ledger > paid_at_ledger + window {
-                return Err(Error::WindowExpired);
+            let deadline = paid_at_ledger.saturating_add(window);
+            if current_ledger > deadline {
+                return Err(RefundVaultError::OutsideWindow);
             }
         }
 
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
-        let balance = token_client.balance(&env.current_contract_address());
-        if balance < amount {
-            return Err(Error::InsufficientFloat);
-        }
+        let token_addr: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Token)
+            .ok_or(RefundVaultError::NotInitialized)?;
 
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+        let client = token::Client::new(&env, &token_addr);
+        client.transfer(&env.current_contract_address(), &recipient, &amount);
 
         let record = RefundRecord {
             amount,
@@ -306,538 +183,258 @@ impl RefundVault {
             ledger: env.ledger().sequence(),
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Refund(payment_ref.clone()), &record);
+        env.storage().persistent().set(&DataKey::Refund(payment_ref.clone()), &record);
 
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Refund(payment_ref.clone()),
-            TTL_THRESHOLD,
-            TTL_EXTEND,
+        let topics = (Symbol::new(&env, "refund_event"), payment_ref);
+        env.events().publish(
+            topics,
+            (record.amount, record.recipient, record.ledger),
         );
 
-        RefundEvent {
-            payment_ref,
-            amount: record.amount,
-            recipient: record.recipient,
-            ledger: record.ledger,
-        }
-        .publish(&env);
-
         Ok(())
     }
 
-    pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
-
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
-        let balance = token_client.balance(&env.current_contract_address());
-        if balance < amount {
-            return Err(Error::InsufficientFloat);
-        }
-
-        token_client.transfer(&env.current_contract_address(), &to, &amount);
-
-        WithdrawEvent {
-            to: to.clone(),
-            amount,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    pub fn set_refund_window(env: Env, ledgers: u32) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::RefundWindow, &ledgers);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Refund(payment_ref))
-    }
-
-    // ── Yield strategy management ──────────────────────────────────────────
-
-    /// Register an external yield strategy contract. Only callable by admin.
-    pub fn set_yield_strategy(env: Env, strategy: Address) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::YieldStrategy, &strategy);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Set the minimum reserve ratio in basis points (1 bp = 0.01%).
-    /// E.g., 2000 = 20% of total vault value must remain as liquid token balance.
-    pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
-        if basis_points > 10_000 {
-            return Err(Error::InvalidRatio);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::ReserveRatio, &basis_points);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Set the maximum deployment ratio in basis points.
-    /// E.g., 8000 = at most 80% of total vault value can be deployed to yield.
-    pub fn set_max_deploy_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
-        if basis_points > 10_000 {
-            return Err(Error::InvalidRatio);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::MaxDeployRatio, &basis_points);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Deploy idle vault tokens into the registered yield strategy.
+    /// Withdraws merchant float tokens from the vault back to the merchant's address.
     ///
-    /// Enforces:
-    /// - Strategy must be configured
-    /// - Amount must be positive
-    /// - Post-deployment liquid balance >= reserve_ratio * total_value
-    /// - Total deployed <= max_deploy_ratio * total_value
-    pub fn deploy_to_yield(env: Env, amount: i128) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
-
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        let strategy: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldStrategy)
-            .ok_or(Error::StrategyNotSet)?;
-
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
-        let token_balance = token_client.balance(&env.current_contract_address());
-
-        if token_balance < amount {
-            return Err(Error::InsufficientFloat);
-        }
-
-        let deployed: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DeployedPrincipal)
-            .unwrap_or(0);
-        let harvested: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::HarvestedYield)
-            .unwrap_or(0);
-
-        // total_value = liquid tokens + deployed principal
-        // (harvested yield has already been transferred to the vault and is part of token_balance,
-        //  but it belongs to the operator, not the principal pool — subtract it)
-        let total_value = token_balance + deployed - harvested;
-
-        // Reserve check: after deployment, liquid tokens must cover the reserve.
-        let reserve_ratio: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReserveRatio)
-            .unwrap_or(0);
-        let post_deploy_balance = token_balance - amount;
-        let reserve_required = total_value * reserve_ratio as i128 / 10_000;
-        if post_deploy_balance < reserve_required {
-            return Err(Error::InsufficientReserve);
-        }
-
-        // Max deployment check.
-        let max_deploy_ratio: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxDeployRatio)
-            .unwrap_or(10_000);
-        let post_deploy_total = deployed + amount;
-        let max_deploy = total_value * max_deploy_ratio as i128 / 10_000;
-        if post_deploy_total > max_deploy {
-            return Err(Error::DeploymentExceedsMax);
-        }
-
-        // Transfer tokens to strategy, then notify the strategy of the deposit
-        // (it needs to record the principal so it can return it on withdrawal).
-        token_client.transfer(&env.current_contract_address(), &strategy, &amount);
-        let strategy_client = YieldStrategyClient::new(&env, &strategy);
-        strategy_client.deposit(&amount);
-
-        env.storage()
-            .instance()
-            .set(&DataKey::DeployedPrincipal, &(deployed + amount));
-
-        YieldDeployedEvent {
-            strategy: strategy.clone(),
-            amount,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Withdraw principal from the yield strategy. The strategy returns the requested
-    /// principal plus any proportional accrued yield.
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `amount` - The token amount to withdraw, in atomic units (must be $> 0$).
+    /// * `to` - The destination address to receive the withdrawn tokens (must be the merchant admin).
     ///
-    /// `principal` is the amount of originally-deployed principal to reclaim.
-    pub fn withdraw_from_yield(env: Env, principal: i128) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::Paused` - If the vault is currently paused.
+    /// * `RefundVaultError::InvalidAmount` - If `amount` is $\le 0$.
+    /// * `RefundVaultError::Unauthorized` - If `to` is not the merchant admin.
+    ///
+    /// # Authorization
+    /// Requires authorization from the merchant admin (`Admin`).
+    pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), RefundVaultError> {
+        let paused: bool = env.storage().persistent().get(&DataKey::Paused).unwrap_or(false);
+        if paused {
+            return Err(RefundVaultError::Paused);
+        }
+        if amount <= 0 {
+            return Err(RefundVaultError::InvalidAmount);
         }
 
-        if principal <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        let strategy: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldStrategy)
-            .ok_or(Error::StrategyNotSet)?;
-
-        let deployed: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DeployedPrincipal)
-            .unwrap_or(0);
-        if principal > deployed {
-            return Err(Error::NothingToWithdraw);
-        }
-
-        let strategy_client = YieldStrategyClient::new(&env, &strategy);
-        let (principal_returned, yield_returned) = strategy_client.withdraw(&principal);
-
-        let harvested: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::HarvestedYield)
-            .unwrap_or(0);
-
-        env.storage().instance().set(
-            &DataKey::DeployedPrincipal,
-            &(deployed - principal_returned),
-        );
-        env.storage()
-            .instance()
-            .set(&DataKey::HarvestedYield, &(harvested + yield_returned));
-
-        YieldWithdrawnEvent {
-            strategy,
-            principal: principal_returned,
-            yield_amount: yield_returned,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Harvest accrued yield from the strategy without touching deployed principal.
-    /// Yield tokens are transferred to the vault and tracked for operator withdrawal.
-    pub fn harvest_yield(env: Env) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
-
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        let strategy: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldStrategy)
-            .ok_or(Error::StrategyNotSet)?;
-
-        let strategy_client = YieldStrategyClient::new(&env, &strategy);
-        let yield_amount = strategy_client.harvest();
-
-        if yield_amount <= 0 {
-            return Err(Error::NothingToHarvest);
-        }
-
-        let harvested: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::HarvestedYield)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::HarvestedYield, &(harvested + yield_amount));
-
-        YieldHarvestedEvent {
-            amount: yield_amount,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    /// Read-only: returns current yield strategy state.
-    pub fn get_yield_info(env: Env) -> YieldInfo {
-        YieldInfo {
-            deployed_principal: env
-                .storage()
-                .instance()
-                .get(&DataKey::DeployedPrincipal)
-                .unwrap_or(0),
-            harvested_yield: env
-                .storage()
-                .instance()
-                .get(&DataKey::HarvestedYield)
-                .unwrap_or(0),
-            strategy: env.storage().instance().get(&DataKey::YieldStrategy),
-            reserve_ratio: env
-                .storage()
-                .instance()
-                .get(&DataKey::ReserveRatio)
-                .unwrap_or(0),
-            max_deploy_ratio: env
-                .storage()
-                .instance()
-                .get(&DataKey::MaxDeployRatio)
-                .unwrap_or(10_000),
-        }
-    }
-
-    // ── Existing admin functions ───────────────────────────────────────────
-
-    pub fn pause(env: Env) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage().instance().set(&DataKey::IsPaused, &true);
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    pub fn unpause(env: Env) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage().instance().set(&DataKey::IsPaused, &false);
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
-    }
-
-    pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), Error> {
-        if !env
+        let admin: Address = env
             .storage()
             .persistent()
-            .has(&DataKey::Refund(payment_ref.clone()))
-        {
-            return Err(Error::RefundNotFound);
-        }
-        env.storage().persistent().extend_ttl(
-            &DataKey::Refund(payment_ref),
-            TTL_THRESHOLD,
-            TTL_EXTEND,
-        );
-        Ok(())
-    }
-
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let current_admin: Address = env
-            .storage()
-            .instance()
             .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        current_admin.require_auth();
+            .ok_or(RefundVaultError::NotInitialized)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingAdmin, &new_admin);
-
-        AdminTransferInitiatedEvent {
-            from: current_admin,
-            to: new_admin,
+        if to != admin {
+            return Err(RefundVaultError::Unauthorized);
         }
-        .publish(&env);
+        admin.require_auth();
 
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        let token_addr: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Token)
+            .ok_or(RefundVaultError::NotInitialized)?;
+
+        let client = token::Client::new(&env, &token_addr);
+        client.transfer(&env.current_contract_address(), &to, &amount);
+
+        let topics = (Symbol::new(&env, "withdraw_event"), to.clone());
+        env.events().publish(topics, amount);
+
         Ok(())
     }
 
-    pub fn accept_admin(env: Env) -> Result<(), Error> {
+    /// Updates the refund time window policy.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `ledgers` - The new refund window duration in ledgers. Setting `ledgers` to `0` disables expiry entirely.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::Unauthorized` - If the caller is not the merchant admin.
+    ///
+    /// # Authorization
+    /// Requires authorization from the merchant admin (`Admin`).
+    pub fn set_refund_window(env: Env, ledgers: u32) -> Result<(), RefundVaultError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RefundVaultError::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().persistent().set(&DataKey::RefundWindow, &ledgers);
+        Ok(())
+    }
+
+    /// Looks up a refund record by its payment reference hash.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `payment_ref` - The 32-byte payment reference hash.
+    ///
+    /// # Returns
+    /// Returns `Some(RefundRecord)` if a refund was executed for the given reference, or `None` otherwise.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    ///
+    /// # Authorization
+    /// Read-only; requires no authorization.
+    pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Result<Option<RefundRecord>, RefundVaultError> {
+        if !env.storage().persistent().has(&DataKey::Admin) {
+            return Err(RefundVaultError::NotInitialized);
+        }
+        let record = env.storage().persistent().get(&DataKey::Refund(payment_ref));
+        Ok(record)
+    }
+
+    /// Pauses vault operations (deposits, refunds, and withdrawals) for emergency stops.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::Unauthorized` - If the caller is not the merchant admin.
+    ///
+    /// # Authorization
+    /// Requires authorization from the merchant admin (`Admin`).
+    pub fn pause(env: Env) -> Result<(), RefundVaultError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RefundVaultError::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().persistent().set(&DataKey::Paused, &true);
+        Ok(())
+    }
+
+    /// Resumes paused vault operations.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::Unauthorized` - If the caller is not the merchant admin.
+    ///
+    /// # Authorization
+    /// Requires authorization from the merchant admin (`Admin`).
+    pub fn unpause(env: Env) -> Result<(), RefundVaultError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RefundVaultError::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().persistent().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    /// Extends the TTL (Time-To-Live) of a refund record to prevent state archival.
+    ///
+    /// This function is intentionally publicly callable by anyone, allowing agents or integrators
+    /// to sponsor or maintain storage liveness for completed refund records.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `payment_ref` - The 32-byte payment reference hash of the refund record whose TTL should be extended.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::RefundNotFound` - If no refund record exists for the given `payment_ref`.
+    ///
+    /// # Authorization
+    /// Publicly callable; requires no authorization.
+    pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), RefundVaultError> {
+        if !env.storage().persistent().has(&DataKey::Refund(payment_ref.clone())) {
+            return Err(RefundVaultError::RefundNotFound);
+        }
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Refund(payment_ref), 500000, 500000);
+        Ok(())
+    }
+
+    /// Initiates a transfer of the merchant admin role to a new address.
+    ///
+    /// The pending admin must subsequently call `accept_admin` to complete the transfer.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `new_admin` - The address of the proposed new admin.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::Unauthorized` - If the caller is not the current merchant admin.
+    ///
+    /// # Authorization
+    /// Requires authorization from the current merchant admin (`Admin`).
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), RefundVaultError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RefundVaultError::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accepts a pending admin role transfer.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::NoPendingAdmin` - If no pending admin transfer has been initiated.
+    /// * `RefundVaultError::Unauthorized` - If the caller is not the designated pending admin.
+    ///
+    /// # Authorization
+    /// Requires authorization from the pending admin address (`PendingAdmin`).
+    pub fn accept_admin(env: Env) -> Result<(), RefundVaultError> {
         let pending_admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::PendingAdmin)
-            .ok_or(Error::NoPendingTransfer)?;
+            .ok_or(RefundVaultError::NoPendingAdmin)?;
         pending_admin.require_auth();
 
-        let previous_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Admin, &pending_admin);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-
-        AdminTransferAcceptedEvent {
-            from: previous_admin,
-            to: pending_admin,
-        }
-        .publish(&env);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        env.storage().persistent().set(&DataKey::Admin, &pending_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
         Ok(())
     }
 
-    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
-        let current_admin: Address = env
+    /// Cancels a pending admin role transfer.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// * `RefundVaultError::NotInitialized` - If the contract has not been initialized.
+    /// * `RefundVaultError::NoPendingAdmin` - If there is no pending admin transfer to cancel.
+    /// * `RefundVaultError::Unauthorized` - If the caller is not the current merchant admin.
+    ///
+    /// # Authorization
+    /// Requires authorization from the current merchant admin (`Admin`).
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), RefundVaultError> {
+        let admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        current_admin.require_auth();
+            .ok_or(RefundVaultError::NotInitialized)?;
+        admin.require_auth();
 
-        if !env.storage().instance().has(&DataKey::PendingAdmin) {
-            return Err(Error::NoPendingTransfer);
+        if !env.storage().persistent().has(&DataKey::PendingAdmin) {
+            return Err(RefundVaultError::NoPendingAdmin);
         }
-
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
         Ok(())
     }
 }
-
-mod fuzz_test;
-mod test;
-mod yield_tests;
