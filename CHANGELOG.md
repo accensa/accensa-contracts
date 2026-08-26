@@ -8,6 +8,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+### ⚠️ Breaking
+
+- **`RefundVault::get_refund` now returns `Result<RefundRecord, Error>` instead of `Option<RefundRecord>` (#<issue>).**
+  This aligns `get_refund` with `ReceiptAnchor::get_batch` for API consistency and uses the `RefundNotFound` error variant that already existed. Callers consuming bindings and SDK clients (such as `accensa-app`) must update their calls and handle `Result` or `Error::RefundNotFound`.
+
 ### Fixed
 
 - **Build was broken on `main` after the yield-strategy merge (#200).** The
@@ -112,39 +117,4 @@ Both:
   tests cover receipt correspondence, double-refund against a valid proof, refund
   of a payment inside a pruned batch, TTL archival across both contracts, and the
   pause interaction.
-- `verify_receipt` remains pinned to conformance vectors shared with the
-  TypeScript SDK, so off-chain and on-chain verification are proven to agree.
-
-### Deployment status
-
-**The testnet deployment has deliberately not been updated to `0.2.0`.** The
-contracts live at:
-
-| Contract | Contract ID | Version deployed |
-|---|---|---|
-| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0` |
-| `RefundVault` | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0` |
-
-Soroban deployment mints a new contract ID. Redeploying would invalidate every
-published address — including the ones the public receipt verifier at
-<https://accensa-dashboard.vercel.app/verify> reads live, and every contract link
-in this repository and in `accensa-app`. So `0.2.0` is a **source release**: the
-tag, the notes and the reproducible build are the artifact. A redeployment is a
-coordinated change across both repositories and is tracked separately in
-[#59](https://github.com/accensa/accensa-contracts/issues/59), which also covers
-pubnet.
-
-Practical consequence: the new functions above and the new event topics exist in
-the source and in the tagged build, **not at those two addresses**. Anything
-reading the live contracts should keep treating them as `0.1.0`.
-
-## [0.1.0] — 2026-07-14
-
-First testnet deployment. `ReceiptAnchor` with `anchor_batch`, `get_batch`,
-`verify_receipt` and `initialize`; `RefundVault` with `deposit`, `refund`,
-`withdraw`, `get_refund`, `set_refund_window` and `initialize`. Contract IDs and
-the transactions that created them are recorded in
-[`DEPLOYMENTS.md`](DEPLOYMENTS.md).
-
-[0.2.0]: https://github.com/accensa/accensa-contracts/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/accensa/accensa-contracts/releases/tag/v0.1.0
+- `verify_receipt` remains pinned to conformance vectors shared
