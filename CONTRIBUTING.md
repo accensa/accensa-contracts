@@ -28,6 +28,8 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 - Run all local build and test commands (e.g., `cargo build --target wasm32v1-none --release`, `cargo test`) before submitting.
 - Provide a clear and descriptive PR title and description.
 - Link to any relevant open issues in your PR description (e.g. `Closes #123`).
+- **Changelog Enforcement**: Any PR modifying contract source code (`contracts/**/src/**`) must include an entry in [`CHANGELOG.md`](CHANGELOG.md) under `## [Unreleased]`.
+  - **Escape Hatch**: If a PR contains genuinely internal or non-functional changes (e.g. refactoring, comments, or internal tests) that do not warrant a user-facing changelog entry, attach the `skip-changelog` label to your pull request to bypass the CI check.
 - Wait for a maintainer to review your PR. Address any feedback as needed.
 
 ## Reporting Bugs and Requesting Features
