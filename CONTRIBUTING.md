@@ -11,6 +11,17 @@ We welcome contributions from the community! Whether it's a bug fix, new feature
 5. **Create a new branch** for your feature or bug fix (`git checkout -b feature/my-new-feature` or `bugfix/issue-123`).
 6. **Make your changes** and test them thoroughly.
 
+### Ignoring Mechanical Formatting Revisions in Git Blame
+
+This repository contains a `.git-blame-ignore-revs` file to filter out mechanical formatting and lint sweeps when inspecting line history with `git blame`.
+
+To enable it locally for your clone, run:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+
 ## Submitting a Pull Request
 
 - Ensure your code follows the existing Rust style conventions.
