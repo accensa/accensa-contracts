@@ -166,15 +166,26 @@ ADR.**
    considerably.
 3. **What does `settle` cost**, and does the pair stay within per-transaction CPU,
    memory, read, and write limits under realistic load?
-4. **Sequence-number contention.** Agent traffic is bursty and the facilitator submits
-   every settlement. Channel accounts are the standard answer; that needs designing, not
-   naming.
-5. **Refund interaction.** `RefundVault` in this repo keys refunds on a payment
-   reference. If an `upto` payment settles for less than its cap, what is the refundable
-   amount — and does anything need to change here?
-6. **Does the facilitator need `authorize` at all**, or can the buyer call it directly?
-   Fee sponsorship (`extra.areFeesSponsored`) suggests the facilitator submits, but that
-   should follow from the spec rather than convenience.
+4. **[RESOLVED] Sequence-number contention.** 
+   - **Resolution:** The existing multi-signer pool mechanism is currently sufficient.
+   - **Mechanism:** As implemented in the `accensa/x402-facilitator-stellar` repository, the facilitator supports an array of signers with round-robin `selectSigner` rotation, along with an optional `feeBumpSigner` that decouples fee payment from sequence-number management (Evidence: Implementation - `src/facilitator.js`). 
+   - **Impact of `upto`:** The proposed `upto` design requires two on-chain invocations per metered payment instead of one (`authorize` and `settle`). This logically doubles the transaction submission demand per metered payment compared to exact payments.
+   - **Channel Accounts:** Because the signer pool already distributes sequence number contention across an array of addresses, channel accounts are not required at this time. 
+   - **Sizing & Measurement:** *Assumption:* We assume the signer array can scale horizontally to meet burst throughput. Empirical sizing and benchmarking of the signer pool under burst traffic remains future work before production deployment.
+
+5. **[RESOLVED] Refund interaction.** 
+   - **Resolution:** `RefundVault` requires no changes for `upto`; it operates on the actual settled payment amount rather than the authorization cap (Evidence: Implementation - `RefundVault::refund` does not validate against an upfront cap, but relies on the administrator to supply the correct refund amount). 
+   - **Refundable Amount:** The refundable amount is the actual settled amount, not the authorized cap. The off-chain accounting layer must derive and pass this settled amount to the vault.
+   - **Payment Reference:** The `payment_ref` generation remains stable and available during settlement for use as the refund key.
+   - **Unsettled/Expired Authorizations:** An authorization that expires or is never settled does not result in a token transfer, so there are no funds to refund. These records simply expire on-chain and are pruned without `RefundVault` interaction.
+   - **Changes Required:** None.
+
+6. **[RESOLVED] Who Authorizes?** 
+   - **Resolution:** The facilitator must submit the `authorize` operation.
+   - **Mechanism:** The buyer signs an authorization entry for the `authorize` invocation. The facilitator receives this authority and submits the transaction, paying the network fees (Evidence: Specification/Assumption - Fee sponsorship aligns with `extra.areFeesSponsored`). 
+   - **Buyer Requirements:** This approach ensures the buyer only needs to hold the payment asset, avoiding the requirement to hold XLM for transaction fees or manage Stellar sequence numbers.
+   - **Security Boundaries:** The facilitator is safely bounded because the authorization is scoped to the exact invocation arguments (recipient, amount cap) and bounded by the `signatureExpirationLedger` and on-chain `expiry`. Replay is prevented natively by the Soroban auth framework and the `consumed` state.
+   - **UX Trade-off:** If the buyer were to submit `authorize` directly, they would need to fund their wallet with XLM and handle native network submissions, breaking the abstracted UX where agents only care about the payment asset.
 
 ## References
 - `rfp.md` §3.4 (settlement schemes), §3.5 (Stellar-specific considerations), §3.6
