@@ -126,11 +126,12 @@ same shape stored under the payment ref.
 
 Enforced invariants, each covered by a test:
 
-- **No double refunds** — a `payment_ref` can only be refunded once (`AlreadyRefunded`).
-- **Time-bounded** — refunds past `refund_window_ledgers` are rejected (`WindowExpired`).
+- **No double refunds** — a `payment_ref` can only be refunded once (`AlreadyRefunded`). Refunds are single-shot and remain so for metered payments.
+- **Time-bounded** — refunds past `refund_window_ledgers` are rejected (`WindowExpired`). For metered payments, `paid_at_ledger` represents the actual settlement ledger, not the authorization ledger.
 - **Float-bounded** — a refund can never exceed vault balance (`InsufficientFloat`).
 - **Merchant-only** — every state-changing call requires merchant auth (`Unauthorized`).
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
+- **Refund ceiling** — a refund for an `upto` payment cannot exceed the amount actually settled. Authorization caps are not refundable balances. Unsettled or expired authorizations cannot be refunded.
 
 ## Storage Archival
 

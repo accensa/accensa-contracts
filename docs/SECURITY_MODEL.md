@@ -37,6 +37,11 @@ Users are untrusted. The contracts must assume any data submitted by users could
 - **Threat:** An attacker tries to refund a negative amount to cause an underflow or steal funds.
 - **Mitigation:** Explicit validation ensures that the `amount` is strictly greater than zero (`InvalidAmount` error) before executing token transfers, preventing unintended arithmetic behaviors or logical exploits.
 
+### Upto Payments and Refund Ceilings
+- **Threat:** A buyer who authorized a metered cap (e.g. 100) but only settled a fraction (e.g. 40) attempts to claim a refund up to the authorization cap (100).
+- **Mitigation:** The `RefundVault` does not execute cross-contract reads to determine refund amounts. Instead, the vault relies entirely on the Admin (Merchant) to supply the correct settled amount as the `amount` parameter when calling `refund()`. The trust boundary explicitly requires the off-chain system to derive the actual settled amount and cap the refund at that value. Authorization caps do not create refundable balances, and unsettled or expired authorizations cannot be refunded.
+- **Partial Refund Policy:** Refunds remain strictly single-shot. Even for metered `upto` payments, `RefundVault` enforces one refund per `payment_ref`.
+
 ## Storage Security
 
 For details on how storage archival and persistence affect the security model (such as preventing replay attacks via persistent tombstoning), see the [Storage Audit](storage-audit.md).
