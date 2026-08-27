@@ -1,8 +1,11 @@
 #![cfg(test)]
 
 use super::*;
+use refund_window_policy::RefundWindowPolicy;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger},
+    testutils::{
+        storage::Persistent as _, Address as _, Events, Ledger,
+    },
     token::{StellarAssetClient, TokenClient},
     Address, Env,
 };
@@ -19,20 +22,21 @@ fn setup(window: u32) -> (Env, RefundVaultClient<'static>, Address, Address) {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let contract_id = env.register(RefundVault, ());
+    let policy_id = env.register(RefundWindowPolicy, ());
+    let contract_id = env.register(RefundVault, (merchant.clone(), token.clone(), window, policy_id));
     let client = RefundVaultClient::new(&env, &contract_id);
-    client.initialize(&merchant, &token, &window);
 
     (env, client, merchant, token)
 }
 
 #[test]
-fn test_double_initialize_fails() {
-    let (_env, client, merchant, token) = setup(100);
-    assert_eq!(
-        client.try_initialize(&merchant, &token, &100),
-        Err(Ok(Error::AlreadyInitialized))
-    );
+fn test_vault_is_initialized_via_constructor() {
+    let (env, client, merchant, token) = setup(100);
+    // The vault is deployed constructor-initialised, so privileged calls work
+    // without any separate `initialize` step.
+    client.deposit(&merchant, &100);
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), 100);
 }
 
 #[test]
@@ -277,31 +281,30 @@ fn test_set_refund_window_takes_effect() {
 }
 
 #[test]
-fn test_uninitialized_calls_fail() {
+fn test_refund_with_non_contract_policy_fails_policy_call() {
+    // A vault bound to an address that is not a contract cannot execute its
+    // policy: the external policy call fails at the host level and surfaces as
+    // PolicyCallFailed (it cannot masquerade as WindowExpired or a success).
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-    let addr = Address::generate(&env);
-    let payment_ref = BytesN::from_array(&env, &[6u8; 32]);
 
+    let merchant = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin);
+    let token = sac.address();
+    StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
+
+    let no_policy = Address::generate(&env);
+    let contract_id = env.register(RefundVault, (merchant.clone(), token.clone(), 100, no_policy));
+    let client = RefundVaultClient::new(&env, &contract_id);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[6u8; 32]);
+    let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_deposit(&addr, &100),
-        Err(Ok(Error::NotInitialized))
+        client.try_refund(&payment_ref, &buyer, &100, &0, &100),
+        Err(Ok(Error::PolicyCallFailed))
     );
-    assert_eq!(
-        client.try_refund(&payment_ref, &addr, &100, &0, &100),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(
-        client.try_withdraw(&100, &addr),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(
-        client.try_propose_policy(&10),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
 }
 
 #[test]
@@ -853,34 +856,6 @@ fn test_old_admin_cannot_act_after_transfer() {
 }
 
 #[test]
-fn test_transfer_admin_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-    let addr = Address::generate(&env);
-
-    assert_eq!(
-        client.try_transfer_admin(&addr),
-        Err(Ok(Error::NotInitialized))
-    );
-}
-
-#[test]
-fn test_cancel_admin_transfer_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-
-    assert_eq!(
-        client.try_cancel_admin_transfer(),
-        Err(Ok(Error::NotInitialized))
-    );
-}
-
-#[test]
-#[should_panic]
 fn test_transfer_admin_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
     let new_admin = Address::generate(&env);
@@ -1056,29 +1031,6 @@ fn test_execute_policy_applies_new_window() {
 }
 
 #[test]
-fn test_propose_policy_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-
-    assert_eq!(
-        client.try_propose_policy(&100),
-        Err(Ok(Error::NotInitialized))
-    );
-}
-
-#[test]
-fn test_execute_policy_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-
-    assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
-}
-
-#[test]
 #[should_panic]
 fn test_propose_policy_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
@@ -1227,7 +1179,7 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     // No refund event emitted for the contract
     let events = env.events().all().filter_by_contract(&client.address);
     // Only the deposit event should exist
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.events().len(), 1);
 }
 
 #[test]
@@ -1241,7 +1193,7 @@ fn test_withdraw_to_contract_address_fails_self_transfer() {
 
     // Only the deposit event should exist
     let events = env.events().all().filter_by_contract(&client.address);
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.events().len(), 1);
 }
 
 #[test]
@@ -1298,7 +1250,7 @@ fn test_set_token_fails_when_vault_is_funded() {
 #[test]
 fn test_set_token_requires_admin_auth() {
     let (env, client, _merchant, _token) = setup(100);
-    let stranger = Address::generate(&env);
+    let _stranger = Address::generate(&env);
 
     let new_token_admin = Address::generate(&env);
     let new_sac = env.register_stellar_asset_contract_v2(new_token_admin);

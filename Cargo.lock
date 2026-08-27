@@ -1316,6 +1316,24 @@ dependencies = [
  "multisig-account",
  "proptest",
  "receipt-anchor",
+ "refund-window-policy",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "refund-vault-factory"
+version = "0.1.0"
+dependencies = [
+ "accensa-common",
+ "refund-window-policy",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "refund-window-policy"
+version = "0.1.0"
+dependencies = [
+ "accensa-common",
  "soroban-sdk",
 ]
 

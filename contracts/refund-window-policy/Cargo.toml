@@ -1,0 +1,27 @@
+[package]
+name = "refund-window-policy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Stateless refund-window policy contract called into by RefundVault instances"
+
+[lints]
+workspace = true
+
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+accensa-common = { workspace = true }
+soroban-sdk = { workspace = true }
+
+[features]
+default = []
+# Enables the [soroban-sdk] `testutils` feature so sibling crates' tests can
+# register this contract in-process with `env.register(RefundWindowPolicy, ())`.
+testutils = ["soroban-sdk/testutils"]
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

@@ -54,6 +54,7 @@ use soroban_sdk::{
 };
 
 use crate::{DataKey, Error, RefundVault, RefundVaultClient};
+use refund_window_policy::RefundWindowPolicy;
 
 const FLOAT: i128 = 1_000_000;
 
@@ -308,19 +309,27 @@ struct MaliciousTokenVault {
     token_id: Address,
 }
 
+/// Register a fresh default policy contract in the given env. Every setup
+/// helper uses the same (stateless) policy, so the window invariant is
+/// identical across the suite.
+fn policy_for(env: &Env) -> Address {
+    env.register(RefundWindowPolicy, ())
+}
+
 fn setup_with_malicious_token() -> MaliciousTokenVault {
     let env = Env::default();
     env.mock_all_auths();
 
     let merchant = Address::generate(&env);
-    let vault_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &vault_id);
+    let policy = policy_for(&env);
 
     let token_id = env.register(MaliciousToken, ());
+    let vault_id = env.register(RefundVault, (merchant.clone(), token_id.clone(), 100, policy));
+    let client = RefundVaultClient::new(&env, &vault_id);
+
     MaliciousTokenClient::new(&env, &token_id).initialize(&merchant, &vault_id);
     MaliciousTokenClient::new(&env, &token_id).mint(&merchant, &FLOAT);
 
-    client.initialize(&merchant, &token_id, &100);
     client.deposit(&merchant, &FLOAT);
 
     MaliciousTokenVault {
@@ -702,9 +711,9 @@ fn setup_with_malicious_strategy(
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &YIELD_FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let policy = policy_for(&env);
+    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 17_280, policy));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &17_280);
 
     let strategy_id = env.register(MaliciousYieldStrategy, ());
     MaliciousYieldStrategyClient::new(&env, &strategy_id).initialize(&token, &vault_id);
@@ -807,9 +816,9 @@ fn setup_plain_vault() -> (Env, RefundVaultClient<'static>, Address, Address) {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let policy = policy_for(&env);
+    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 100, policy));
     let client = RefundVaultClient::new(&env, &vault_id);
-    client.initialize(&merchant, &token, &100);
     client.deposit(&merchant, &FLOAT);
 
     (env, client, merchant, token)

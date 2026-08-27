@@ -9,6 +9,7 @@ use soroban_sdk::{
 };
 
 use crate::{Error, RefundVault, RefundVaultClient};
+use refund_window_policy::RefundWindowPolicy;
 
 // ── Mock yield strategy contract ───────────────────────────────────────────
 
@@ -211,10 +212,10 @@ fn setup_with_strategy(
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    // Deploy vault.
-    let vault_id = env.register(RefundVault, ());
+    // Deploy vault (constructor-initialised).
+    let policy_id = env.register(RefundWindowPolicy, ());
+    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 17_280, policy_id));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &17_280);
 
     // Deploy mock strategy.
     let strategy_id = env.register(MockYieldStrategy, ());
@@ -332,9 +333,9 @@ fn test_deploy_without_strategy_fails() {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let policy_id = env.register(RefundWindowPolicy, ());
+    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 100, policy_id));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &100);
     vault_client.deposit(&merchant, &500_000);
 
     assert_eq!(
@@ -491,9 +492,9 @@ fn test_withdraw_without_strategy_fails() {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let policy_id = env.register(RefundWindowPolicy, ());
+    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 100, policy_id));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &100);
 
     assert_eq!(
         vault_client.try_withdraw_from_yield(&100),

@@ -20,5 +20,6 @@ accensa-common = { workspace = true }
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
+refund-window-policy = { path = "../refund-window-policy", features = ["testutils"] }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 receipt-anchor = { path = "../receipt-anchor" }

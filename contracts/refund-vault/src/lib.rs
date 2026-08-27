@@ -20,7 +20,12 @@ contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
 pub enum DataKey {
     Admin,
     Token,
-    RefundWindow,
+RefundWindow,
+    /// Address of the refund-policy contract every refund is routed to.
+    /// Policy execution is external (see the [`RefundPolicy`] trait and the
+    /// `refund-window-policy` crate), so a policy's rule can change without
+    /// the vault's wasm changing.
+    RefundPolicy,
     /// Cumulative refund record for a payment (new partial-refund layout).
     ///
     /// Stored under `RefundV2` so the decoder never attempts to interpret a
@@ -225,6 +230,43 @@ pub trait YieldStrategy {
     fn accrued_yield(env: Env) -> i128;
 }
 
+/// Interface of the refund-policy contract every refund is routed to
+/// (issue #129).
+///
+/// Policy execution is deliberately external: the vault passes every input the
+/// rule could need — the payment reference, the requested refund `amount`, the
+/// payment's `paid_at_ledger` and `payment_amount`, the running cumulative
+/// refund total, and the configured `refund_window_ledgers` — and the policy
+/// returns `Ok(())` or a deliberate error (`WindowExpired`, ...). The default
+/// `RefundWindowPolicy` (`contracts/refund-window-policy`) is stateless; other
+/// policy kinds are new contracts implementing this same fixed signature, so
+/// the vault wasm never changes when a policy rule changes.
+///
+/// Declared as a trait (rather than depending on the `refund-window-policy`
+/// crate) so `#[contractclient]` can generate `RefundPolicyClient` without
+/// pulling the policy's own `#[contract]` exports into this contract's wasm —
+/// the same trick the `ReceiptAnchor` uses for its `ShardInterface`.
+#[contractclient(name = "RefundPolicyClient")]
+pub trait RefundPolicy {
+    /// Decide whether a refund of `amount` against `payment_ref` is allowed.
+    ///
+    /// * `paid_at_ledger` — ledger of the original payment (window is measured
+    ///   from here, never from a partial).
+    /// * `payment_amount` — the original payment amount (the ceiling).
+    /// * `cumulative_refunded` — running total refunded so far for this payment.
+    /// * `refund_window_ledgers` — the configured window; `0` means "no time
+    ///   bound".
+    fn check_refund(
+        env: Env,
+        payment_ref: BytesN<32>,
+        amount: i128,
+        paid_at_ledger: u32,
+        payment_amount: i128,
+        cumulative_refunded: i128,
+        refund_window_ledgers: u32,
+    ) -> Result<(), Error>;
+}
+
 /// Approximately 30 days of ledgers, assuming ~5 seconds per ledger.
 /// 60 * 60 * 24 * 30 / 5 = 518,400.
 /// This ensures refund records survive long-term audit use before requiring a TTL bump or restoration.
@@ -321,25 +363,30 @@ pub struct RefundVault;
 
 #[contractimpl]
 impl RefundVault {
-    pub fn initialize(
+    /// Constructor invoked atomically by [`RefundVaultFactory::deploy`] via
+    /// `deploy_v2`, initialising the vault at deploy time (mirrors `ReceiptShard`,
+    /// which is also constructor-only). A vault is always initialised when it
+    /// exists on-chain; there is no separate `initialize` step to call
+    /// afterwards.
+    pub fn __constructor(
         env: Env,
         merchant: Address,
         token: Address,
         refund_window_ledgers: u32,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
+        refund_policy: Address,
+    ) {
         env.storage().instance().set(&DataKey::Admin, &merchant);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage()
             .instance()
             .set(&DataKey::RefundWindow, &refund_window_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundPolicy, &refund_policy);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
@@ -416,7 +463,10 @@ impl RefundVault {
     /// is supplied, so the ceiling never depends on partial bookkeeping. The
     /// refund window is evaluated against `paid_at_ledger` (the original
     /// payment), not against a previous partial — each partial does not extend
-    /// the window for the next.
+    /// the window for the next. The window rule itself is not evaluated by
+    /// this contract: it is routed to the vault's bound refund-policy contract
+    /// (issue #129), which receives the payment inputs and the configured
+    /// window and permits or rejects the refund.
     ///
     /// Storage note (#99): the layout changed from a single `amount` record to a
     /// cumulative record under a new `RefundV2` key. A `Refund` key written by
@@ -467,19 +517,8 @@ impl RefundVault {
             return Err(Error::ExceedsPayment);
         }
 
-        let window: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RefundWindow)
-            .unwrap();
-        if window > 0 {
-            let current_ledger = env.ledger().sequence();
-            if current_ledger > paid_at_ledger + window {
-                return Err(Error::WindowExpired);
-            }
-        }
-
-        // Ceiling check: cumulative refunds must not exceed the original amount.
+        // Read the cumulative record first: the policy call needs the running
+        // total, and the ceiling check below needs the stored payment amount.
         // The ceiling is read from the (re)stored record, freshly minted on the
         // first partial for this payment.
         let existing: Option<RefundRecord> = env
@@ -491,6 +530,31 @@ impl RefundVault {
             None => (0i128, payment_amount),
         };
 
+        // Policy execution is external (issue #129): route the window rule to
+        // the configured policy contract rather than evaluating it inline. The
+        // policy is stateless and receives every input the rule could need.
+        let window: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .unwrap();
+        let refund_policy: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundPolicy)
+            .unwrap();
+        Self::invoke_policy(
+            &env,
+            &refund_policy,
+            &payment_ref,
+            &amount,
+            &paid_at_ledger,
+            &payment_amount,
+            &previous_refunded,
+            &window,
+        )?;
+
+        // Ceiling check: cumulative refunds must not exceed the original amount.
         if previous_refunded.checked_add(amount).is_none()
             || record_ceiling <= 0
             || previous_refunded + amount > record_ceiling
@@ -666,6 +730,62 @@ impl RefundVault {
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// Point the vault at a different refund-policy contract. Only callable by
+    /// the merchant. The new policy must implement the same `check_refund`
+    /// interface; refunds after this call are routed to it, so a policy rule
+    /// can change without redeploying the vault.
+    pub fn set_refund_policy(env: Env, refund_policy: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundPolicy, &refund_policy);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// The refund-policy contract address this vault is bound to, if set.
+    pub fn get_refund_policy(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::RefundPolicy)
+    }
+
+    /// Call the bound policy contract and translate its result into the
+    /// vault's own error space (mirrors `ReceiptAnchor::unwrap_shard_result`).
+    /// A deliberate policy error (`WindowExpired`, ...) propagates as-is; a
+    /// host-level invocation failure or a value that fails to decode becomes
+    /// [`Error::PolicyCallFailed`].
+    fn invoke_policy(
+        env: &Env,
+        refund_policy: &Address,
+        payment_ref: &BytesN<32>,
+        amount: &i128,
+        paid_at_ledger: &u32,
+        payment_amount: &i128,
+        cumulative_refunded: &i128,
+        refund_window_ledgers: &u32,
+    ) -> Result<(), Error> {
+        match RefundPolicyClient::new(env, refund_policy).try_check_refund(
+            payment_ref,
+            amount,
+            paid_at_ledger,
+            payment_amount,
+            cumulative_refunded,
+            refund_window_ledgers,
+        ) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) | Err(Err(_)) => Err(Error::PolicyCallFailed),
+            Err(Ok(e)) => Err(e),
+        }
     }
 
     pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {

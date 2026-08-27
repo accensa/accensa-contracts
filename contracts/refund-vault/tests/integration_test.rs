@@ -2,6 +2,7 @@
 
 use receipt_anchor::{ReceiptAnchor, ReceiptAnchorClient};
 use refund_vault::{RefundVault, RefundVaultClient};
+use refund_window_policy::RefundWindowPolicy;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
@@ -44,9 +45,9 @@ fn setup<'a>() -> TestEnv<'a> {
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
     anchor.initialize(&merchant, &shard_wasm_hash);
 
-    let vault_id = env.register(RefundVault, ());
+    let policy_id = env.register(RefundWindowPolicy, ());
+    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), WINDOW, policy_id));
     let vault = RefundVaultClient::new(&env, &vault_id);
-    vault.initialize(&merchant, &token, &WINDOW);
 
     // Initial sequence number
     env.ledger().with_mut(|li| li.sequence_number = 10);

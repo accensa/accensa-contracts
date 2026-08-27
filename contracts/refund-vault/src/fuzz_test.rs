@@ -67,6 +67,7 @@ use std::{
 };
 
 use crate::{DataKey, Error, RefundVault, RefundVaultClient};
+use refund_window_policy::RefundWindowPolicy;
 
 /// Total tokens minted to the merchant at setup.
 const FLOAT: i128 = 10_000_000;
@@ -113,9 +114,9 @@ fn setup(window: u32) -> (Env, RefundVaultClient<'static>, Address, Address) {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let contract_id = env.register(RefundVault, ());
+    let policy_id = env.register(RefundWindowPolicy, ());
+    let contract_id = env.register(RefundVault, (merchant.clone(), token.clone(), window, policy_id));
     let client = RefundVaultClient::new(&env, &contract_id);
-    client.initialize(&merchant, &token, &window);
 
     (env, client, merchant, token)
 }

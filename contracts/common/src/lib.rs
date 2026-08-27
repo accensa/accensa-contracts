@@ -86,4 +86,9 @@ pub enum Error {
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
     TimelockNotExpired = 301,
+    /// A refund-policy contract call returned a value the vault could not
+    /// decode, or failed at the host level (e.g. the registered policy
+    /// address is not a contract). Distinct from the policy's own deliberate
+    /// errors (`WindowExpired`, ...), which propagate unchanged.
+    PolicyCallFailed = 302,
 }

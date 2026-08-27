@@ -13,6 +13,7 @@
 use multisig_account::testutils::make_auth_entry_no_args;
 use multisig_account::{MultisigAccount, MultisigAccountClient};
 use refund_vault::{RefundVault, RefundVaultClient};
+use refund_window_policy::RefundWindowPolicy;
 use soroban_sdk::{testutils::Address as _, vec, Address, Env};
 
 /// Deploy the multisig account (signers `s1`, `s2`, threshold 2) and a
@@ -29,10 +30,10 @@ fn setup() -> (Env, Address, Address, Address, Address) {
     let multisig_id = env.register(MultisigAccount, (vec![&env, s1.clone(), s2.clone()], 2u32));
     let _ = MultisigAccountClient::new(&env, &multisig_id);
 
-    let vault_id = env.register(RefundVault, ());
+    let policy_id = env.register(RefundWindowPolicy, ());
+    let vault_token = Address::generate(&env);
+    let vault_id = env.register(RefundVault, (multisig_id.clone(), vault_token.clone(), 100, policy_id));
     let vault = RefundVaultClient::new(&env, &vault_id);
-    // `initialize` is not auth-gated, so it needs no auth entries.
-    vault.initialize(&multisig_id, &Address::generate(&env), &100);
 
     (env, vault_id, multisig_id, s1, s2)
 }
