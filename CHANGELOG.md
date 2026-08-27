@@ -6,6 +6,119 @@ The two contracts are versioned together and share a tag. Versioning follows the
 policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0,
 breaking changes bump the **minor** version, and they are called out as such.
 
+## [Unreleased]
+
+### Added
+
+- **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
+  `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
+  from the event log alone, and `RefundWindowUpdatedEvent` carries both the
+  previous and the new window (old value captured before overwrite). All three
+  follow the existing `#[contractevent]` convention and are documented in
+  `docs/EVENTS.md` and the README event table.
+- **Trustworthy build provenance in `contractmeta`** (issue #164): both
+  `build.rs` files now fail loudly (a `cargo:warning`) when the git commit hash
+  cannot be resolved instead of silently embedding `"unknown"`, embed a new
+  `commit_dirty` key computed from `git status --porcelain`, and re-run on
+  `.git/HEAD`, the resolved branch ref, the index and `src/` so a cached build
+  cannot report a stale hash. A `test_commit_meta_is_well_formed` test in both
+  crates pins the embedded commit to 40 hex characters.
+
+### Changed
+
+- **`RefundVault` token generality is documented and pinned** (issue #166): the
+  vault treats all amounts as raw integer units in the token's smallest unit and
+  performs no decimal arithmetic, so any SEP-41 precision behaves identically.
+  New `token_agnostic_tests.rs` proves the full lifecycle (deposit, refund,
+  withdraw, float-bound check) against 0- and 2-decimal tokens, including the
+  smallest unit, i128 extremes, and a refund exactly equal to the float.
+  Documented in `docs/storage-audit.md` (Token Generality) and
+  `docs/contracts.mdx`.
+
+### Security
+
+- **Merchant-only float funding is a documented guarantee** (issue #157):
+  `docs/SECURITY_MODEL.md` now states it explicitly — only the merchant's own
+  funds are ever at stake, a third party cannot contribute float the merchant
+  has not authorised, and `withdraw` stays merchant-only. The existing
+  `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
+  deliberate.
+
+## [0.3.0] — 2026-08-26
+
+### ⚠️ Breaking
+
+- **`refund` gained a required `payment_amount` argument** (issue #99). Refunds
+  are now cumulative: each call adds `amount` to a running total for the
+  `payment_ref`, and the total can never exceed the `payment_amount` ceiling.
+  The refund window is still measured from `paid_at_ledger`, never from a
+  partial.
+- **`RefundRecord` layout changed and is stored under a new key.** The single
+  `amount` field is replaced by `amount_refunded` + `payment_amount`, and
+  records are stored under a new `RefundV2` storage key. A `Refund` key written
+  by the 0.2.0 single-refund rule is still recognised and treated as a
+  fully-refunded payment (rejected with `ExceedsPayment`), never mis-decoded.
+- **Error codes are unified across both contracts** (issue #98). Both contracts
+  now return the single `accensa-common` `Error` enum; the two codes that used
+  to collide (`AlreadyInitialized`, `NotInitialized`) keep their original
+  values, and the anchor-only codes moved to a dedicated block (100+) so no two
+  variants overlap. See the error table in the README.
+
+### Added
+
+`RefundVault`:
+
+- **Partial refunds** — a payment may be refunded across multiple calls, each
+  emitting a `RefundEvent` carrying both the per-call amount and the cumulative
+  total, so an indexer never has to sum history.
+- **Multisig contract-account admin support is verified and documented** (issue
+  #97). Tests prove both contracts work with a `__check_auth` contract account
+  as merchant — see `contracts/multisig-account`,
+  `contracts/refund-vault/tests/multisig_admin_vault.rs` and
+  `contracts/receipt-anchor/tests/multisig_admin_anchor.rs`.
+- **Tests for the two README cross-contract claims** (issue #163):
+  `readme_claim_payment_ref_is_receipt_leaf` and
+  `readme_claim_refunds_outlive_pruned_batches` in
+  `contracts/refund-vault/tests/integration_test.rs`.
+
+### Added
+
+- CI job enforcing `CHANGELOG.md` updates on contract changes and checking version alignment (#192).
+- Shared cross-implementation test vectors and conformance suite for `RefundVault` (#184).
+- Dependabot configuration for `cargo` and `github-actions` (#185).
+- CI WASM artifact uploading and size budget enforcement gate (#186).
+
+### Fixed
+
+- **Build was broken on `main` after the yield-strategy merge (#200).** The
+  `YieldStrategy` trait used `#[contractimpl]`, which cannot generate a client on
+  a bare trait; it is now `#[contractclient(name = "YieldStrategyClient")]`.
+  `deploy_to_yield` also transferred tokens to the strategy without notifying it
+  (`strategy_client.deposit`), so the strategy never recorded the principal and
+  later withdrawals failed. `yield_tests.rs` additionally used event APIs that
+  do not exist in this SDK. No deployed contract is affected — this restores a
+  compiling, green test suite.
+
+### Tested
+
+- Property-based fuzz suites in `contracts/*/src/fuzz_test.rs` now generate
+  random operation sequences and assert invariants after every step: pruning
+  stays a contiguous prefix with a monotonic `PrunedUpTo` cursor, Merkle
+  verification rejects every wrong proof shape (wrong leaf/sibling/length/batch
+  and reversed level order), vault float always equals
+  `deposits - refunds - withdrawals` and never goes negative, cumulative
+  refunds per `payment_ref` never exceed the supplied ceiling, paused
+  operations never mutate state, and TTL extension never shortens a TTL while
+  missing records always error. Budgets
+  are tunable via `FUZZ_CASES`/`FUZZ_SEQ_LEN` with longer `#[ignore]`d local
+  profiles.
+
+### Deployment status
+
+Like `0.2.0`, this is a source release: the live testnet addresses in
+[`DEPLOYMENTS.md`](DEPLOYMENTS.md) still run `0.1.0`, and the new `refund`
+signature, event shapes and error codes **do not exist at those addresses**.
+
 ## [0.2.0] — 2026-08-14
 
 Everything below has been merged and tested on `main`. **It is not what is deployed
@@ -120,5 +233,6 @@ First testnet deployment. `ReceiptAnchor` with `anchor_batch`, `get_batch`,
 the transactions that created them are recorded in
 [`DEPLOYMENTS.md`](DEPLOYMENTS.md).
 
+[0.3.0]: https://github.com/accensa/accensa-contracts/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/accensa/accensa-contracts/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/accensa/accensa-contracts/releases/tag/v0.1.0

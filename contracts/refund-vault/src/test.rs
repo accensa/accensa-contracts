@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     Address, Env,
 };
@@ -45,6 +45,10 @@ fn test_deposit_moves_tokens_into_vault() {
     assert_eq!(token_client.balance(&merchant), FLOAT - 600_000);
 }
 
+/// Deposits are deliberately merchant-only (see docs/SECURITY_MODEL.md): the
+/// vault only ever holds the merchant's own funds, so a third party cannot
+/// contribute float — dust or otherwise — that the merchant has not authorised.
+/// This test pins that guarantee so it cannot be relaxed by accident.
 #[test]
 fn test_deposit_from_non_merchant_fails() {
     let (env, client, _merchant, _token) = setup(100);
@@ -62,29 +66,39 @@ fn test_refund_happy_path() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &120_000, &0);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000);
 
     let token_client = TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&buyer), 120_000);
     assert_eq!(token_client.balance(&client.address), 380_000);
 
     let record = client.get_refund(&payment_ref).unwrap();
-    assert_eq!(record.amount, 120_000);
+    assert_eq!(record.amount_refunded, 120_000);
     assert_eq!(record.recipient, buyer);
 }
 
 #[test]
-fn test_double_refund_same_payment_ref_fails() {
+fn test_partial_refunds_cumulative_within_ceiling() {
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &0);
 
+    // A 300-unit payment refunded in two partials plus one boundary call.
+    client.refund(&payment_ref, &buyer, &100, &0, &300);
+    client.refund(&payment_ref, &buyer, &150, &0, &300);
+    client.refund(&payment_ref, &buyer, &50, &0, &300);
+
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 300);
+    // Summing the partials lands exactly on the ceiling.
+    assert_eq!(record.payment_amount, 300);
+
+    // One more call, even a single unit, is now past the ceiling.
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &0),
-        Err(Ok(Error::AlreadyRefunded))
+        client.try_refund(&payment_ref, &buyer, &1, &0, &300),
+        Err(Ok(Error::ExceedsPayment))
     );
 }
 
@@ -99,7 +113,7 @@ fn test_refund_outside_window_fails() {
     let buyer = Address::generate(&env);
     // Paid at ledger 100 with a 100-ledger window: expired at 200, now 500.
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &100),
+        client.try_refund(&payment_ref, &buyer, &100, &100, &100),
         Err(Ok(Error::WindowExpired))
     );
 }
@@ -114,7 +128,7 @@ fn test_refund_at_window_boundary_succeeds() {
     let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
     let buyer = Address::generate(&env);
     // current (200) == paid_at (100) + window (100): still inside the window.
-    client.refund(&payment_ref, &buyer, &100, &100);
+    client.refund(&payment_ref, &buyer, &100, &100, &100);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -127,8 +141,73 @@ fn test_zero_window_disables_expiry() {
 
     let payment_ref = BytesN::from_array(&env, &[3u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &0);
+    client.refund(&payment_ref, &buyer, &100, &0, &100);
     assert!(client.get_refund(&payment_ref).is_some());
+}
+
+/// The `RefundV2` guard entry's TTL must be sized to the refund window, not a
+/// flat `TTL_EXTEND` (~30 days): otherwise a window longer than that flat
+/// interval can outlive the guard that is supposed to police it, so the
+/// entry can go stale (and become eligible for archival) while `refund`
+/// would still accept further calls for that payment on policy grounds.
+/// See `refund_record_ttl_extend_to`.
+#[test]
+fn test_long_window_extends_guard_past_flat_ttl() {
+    let window = TTL_EXTEND * 3;
+    let (env, client, merchant, _token) = setup(window);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[10u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000);
+
+    let ttl_after_refund = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::RefundV2(payment_ref.clone()))
+    });
+    assert!(
+        ttl_after_refund > TTL_EXTEND,
+        "guard TTL ({ttl_after_refund}) was not sized to the window ({window}); \
+         it must outlast the flat TTL_EXTEND ({TTL_EXTEND}) whenever the window does"
+    );
+
+    // Jump past where the old flat TTL_EXTEND would have left the guard
+    // entry eligible for archival, but still well inside the window.
+    env.ledger()
+        .with_mut(|li| li.sequence_number = TTL_EXTEND + 10_000);
+
+    // A further partial refund for the same payment must still see the prior
+    // cumulative total: the guard entry must not have gone missing.
+    client.refund(&payment_ref, &buyer, &50_000, &0, &300_000);
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 150_000);
+}
+
+/// `window == 0` means "no time bound" for `refund` itself (see
+/// `test_zero_window_disables_expiry`); the guard entry's TTL must match
+/// that by extending to the network's actual maximum TTL rather than the
+/// flat `TTL_EXTEND`, so an unbounded refund policy is never quietly capped
+/// by the guard aging out first.
+#[test]
+fn test_zero_window_extends_guard_to_max_ttl() {
+    let (env, client, merchant, _token) = setup(0);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[11u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000);
+
+    let ttl_after_refund = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::RefundV2(payment_ref.clone()))
+    });
+    assert!(
+        ttl_after_refund > TTL_EXTEND * 2,
+        "guard TTL ({ttl_after_refund}) for an unbounded window was not \
+         extended past the flat TTL_EXTEND ({TTL_EXTEND})"
+    );
 }
 
 #[test]
@@ -138,8 +217,10 @@ fn test_refund_exceeding_float_fails() {
 
     let payment_ref = BytesN::from_array(&env, &[4u8; 32]);
     let buyer = Address::generate(&env);
+    // payment_amount >= amount so the ceiling check passes and the float
+    // shortage is what gets reported.
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &10_000, &0),
+        client.try_refund(&payment_ref, &buyer, &10_000, &0, &10_000),
         Err(Ok(Error::InsufficientFloat))
     );
 }
@@ -175,12 +256,12 @@ fn test_set_refund_window_takes_effect() {
     let payment_ref = BytesN::from_array(&env, &[5u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &100),
+        client.try_refund(&payment_ref, &buyer, &100, &100, &100),
         Err(Ok(Error::WindowExpired))
     );
 
     client.set_refund_window(&1000);
-    client.refund(&payment_ref, &buyer, &100, &100);
+    client.refund(&payment_ref, &buyer, &100, &100, &100);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -198,7 +279,7 @@ fn test_uninitialized_calls_fail() {
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(
-        client.try_refund(&payment_ref, &addr, &100, &0),
+        client.try_refund(&payment_ref, &addr, &100, &0, &100),
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(
@@ -221,7 +302,7 @@ fn test_refund_requires_merchant_auth() {
     env.set_auths(&[]);
     let payment_ref = BytesN::from_array(&env, &[8u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &0);
+    client.refund(&payment_ref, &buyer, &100, &0, &100);
 }
 
 #[test]
@@ -243,11 +324,11 @@ fn test_refund_invalid_amount_fails() {
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &0, &0),
+        client.try_refund(&payment_ref, &buyer, &0, &0, &100),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &-100, &0),
+        client.try_refund(&payment_ref, &buyer, &-100, &0, &100),
         Err(Ok(Error::InvalidAmount))
     );
 }
@@ -286,7 +367,7 @@ fn test_refund_when_paused_fails() {
     let payment_ref = BytesN::from_array(&env, &[10u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &0),
+        client.try_refund(&payment_ref, &buyer, &100, &0, &100),
         Err(Ok(Error::Paused))
     );
 }
@@ -332,7 +413,7 @@ fn test_extend_refund_ttl_succeeds() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &120_000, &0);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000);
 
     // This shouldn't fail since the refund exists.
     client.extend_refund_ttl(&payment_ref);
@@ -341,7 +422,7 @@ fn test_extend_refund_ttl_succeeds() {
 #[test]
 fn test_events_emitted() {
     use soroban_sdk::testutils::Events;
-    use soroban_sdk::{vec, IntoVal, Symbol};
+    use soroban_sdk::{vec, IntoVal, Map, Symbol, Val};
     let (env, client, merchant, _token) = setup(100);
 
     client.deposit(&merchant, &500_000);
@@ -361,10 +442,28 @@ fn test_events_emitted() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
 
-    client.refund(&payment_ref, &buyer, &120_000, &0);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000);
 
     let refund_events = env.events().all().filter_by_contract(&client.address);
-    let refund_record = client.get_refund(&payment_ref);
+    // The refund event carries the per-call amount and the running cumulative
+    // total, so an indexer knows the state without summing history (#99).
+    let mut refund_data = Map::<Val, Val>::new(&env);
+    refund_data.set(
+        Symbol::new(&env, "amount").into_val(&env),
+        120_000i128.into_val(&env),
+    );
+    refund_data.set(
+        Symbol::new(&env, "cumulative_refunded").into_val(&env),
+        120_000i128.into_val(&env),
+    );
+    refund_data.set(
+        Symbol::new(&env, "recipient").into_val(&env),
+        buyer.clone().into_val(&env),
+    );
+    refund_data.set(
+        Symbol::new(&env, "ledger").into_val(&env),
+        env.ledger().sequence().into_val(&env),
+    );
     assert_eq!(
         refund_events,
         vec![
@@ -372,7 +471,7 @@ fn test_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "refund_event"), payment_ref.clone()).into_val(&env),
-                refund_record.into_val(&env)
+                refund_data.into_val(&env)
             )
         ]
     );
@@ -393,6 +492,84 @@ fn test_events_emitted() {
 }
 
 #[test]
+fn test_pause_unpause_refund_window_events_emitted() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{vec, IntoVal, Map, Symbol, Val};
+
+    let (env, client, _merchant, _token) = setup(100);
+    let empty_data: Map<Val, Val> = Map::new(&env);
+
+    env.ledger().with_mut(|li| li.sequence_number = 500);
+    client.pause();
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "pause_event"), 500u32).into_val(&env),
+                empty_data.clone().into_val(&env)
+            )
+        ]
+    );
+
+    env.ledger().with_mut(|li| li.sequence_number = 600);
+    client.unpause();
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "unpause_event"), 600u32).into_val(&env),
+                empty_data.clone().into_val(&env)
+            )
+        ]
+    );
+
+    env.ledger().with_mut(|li| li.sequence_number = 700);
+    client.set_refund_window(&300);
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (
+                    Symbol::new(&env, "refund_window_updated_event"),
+                    100u32,
+                    300u32
+                )
+                    .into_val(&env),
+                empty_data.into_val(&env)
+            )
+        ]
+    );
+}
+
+/// The commit hash embedded via contractmeta must be real provenance, not the
+/// silent "unknown" fallback, in a normal repository build (see build.rs).
+#[test]
+fn test_commit_meta_is_well_formed() {
+    let sha = env!("GIT_SHA");
+    assert_ne!(sha, "unknown", "GIT_SHA must not fall back to 'unknown'");
+    assert_eq!(sha.len(), 40, "GIT_SHA should be 40 hex chars, got: {sha}");
+    assert!(
+        sha.bytes().all(|b| b.is_ascii_hexdigit()),
+        "GIT_SHA contains non-hex chars: {sha}"
+    );
+
+    let dirty = env!("GIT_DIRTY");
+    assert!(
+        dirty == "0" || dirty == "1",
+        "GIT_DIRTY must be '0' or '1', got: {dirty}"
+    );
+}
+
+#[test]
 #[should_panic(expected = "HostError")]
 fn test_refund_without_trustline() {
     let (env, client, merchant, _token) = setup(100);
@@ -405,7 +582,7 @@ fn test_refund_without_trustline() {
     ));
 
     // stranger has no trustline.
-    client.refund(&payment_ref, &stranger, &120_000, &0);
+    client.refund(&payment_ref, &stranger, &120_000, &0, &120_000);
 }
 
 // ── Two-step admin transfer tests ──────────────────────────────────────────
@@ -617,4 +794,55 @@ fn test_admin_transfer_events_emitted() {
             )
         ]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Shared Test Vectors (Issue #184)
+// ---------------------------------------------------------------------------
+
+#[path = "refund_vectors.rs"]
+mod refund_vectors;
+
+#[test]
+fn test_shared_refund_vectors_match_typescript_sdk() {
+    let (env, client, merchant, _token) = setup(1000);
+    client.deposit(&merchant, &1_000_000);
+
+    let recipient = Address::generate(&env);
+
+    for v in refund_vectors::VECTORS {
+        let payment_ref = BytesN::from_array(&env, &v.payment_ref);
+        // `payment_amount` (the ceiling) is not part of the shared vectors,
+        // which predate partial refunds; pass the amount itself so a vector's
+        // `expected_success` outcome is preserved.
+        let res = client.try_refund(
+            &payment_ref,
+            &recipient,
+            &v.amount,
+            &v.paid_at_ledger,
+            &v.amount,
+        );
+
+        assert_eq!(
+            res.is_ok(),
+            v.expected_success,
+            "vector {:?}: contract returned is_ok={}, expected={}",
+            v.name,
+            res.is_ok(),
+            v.expected_success
+        );
+    }
+}
+
+#[test]
+fn test_shared_refund_vectors_cover_both_outcomes() {
+    assert!(refund_vectors::VECTORS.iter().any(|v| v.expected_success));
+    assert!(refund_vectors::VECTORS.iter().any(|v| !v.expected_success));
+}
+
+#[test]
+fn test_shared_refund_vectors_include_live_testnet_refund() {
+    let live = &refund_vectors::VECTORS[0];
+    assert!(live.expected_success);
+    assert!(live.tx_hash.is_some());
 }
