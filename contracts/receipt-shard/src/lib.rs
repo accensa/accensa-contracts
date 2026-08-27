@@ -49,6 +49,11 @@ pub struct BatchRecord {
 const TTL_EXTEND: u32 = 518_400;
 const TTL_THRESHOLD: u32 = 100;
 
+/// Maximum valid Merkle proof length. Matches the router's `MAX_PROOF_LEN`.
+/// A batch of N leaves produces a tree of depth ⌈log₂(N)⌉. For
+/// MAX_BATCH_SIZE = 1000 (router constant), that is 10.
+const MAX_PROOF_LEN: u32 = 10;
+
 #[contract]
 pub struct ReceiptShard;
 
@@ -130,6 +135,9 @@ impl ReceiptShard {
         leaf: BytesN<32>,
         proof: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
+        if proof.len() > MAX_PROOF_LEN {
+            return Err(Error::ProofTooLong);
+        }
         let batch = Self::get_batch(env.clone(), batch_id)?;
         let mut computed_hash = leaf.to_array();
 

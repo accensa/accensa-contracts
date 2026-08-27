@@ -574,6 +574,589 @@ fn test_anchor_and_prune_events_emitted() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Ring buffer tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_root_buffer_starts_empty() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let buffer = client.get_root_buffer();
+    assert_eq!(buffer.len(), 0);
+}
+
+#[test]
+fn test_root_buffer_grows_with_anchors() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let r1 = BytesN::from_array(&env, &[1u8; 32]);
+    let r2 = BytesN::from_array(&env, &[2u8; 32]);
+    client.anchor_batch(&r1, &1, &0, &10);
+    client.anchor_batch(&r2, &1, &11, &20);
+
+    let buffer = client.get_root_buffer();
+    assert_eq!(buffer.len(), 2);
+    assert_eq!(buffer.get(0).unwrap(), r1);
+    assert_eq!(buffer.get(1).unwrap(), r2);
+}
+
+#[test]
+fn test_verify_receipt_by_root_succeeds() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let leaf = BytesN::from_array(&env, &[7u8; 32]);
+    let _batch_id = client.anchor_batch(&leaf, &1, &0, &10);
+
+    // Single-leaf tree: root == leaf, empty proof.
+    assert!(client.verify_receipt_by_root(&leaf, &leaf, &vec![&env]));
+}
+
+#[test]
+fn test_verify_receipt_by_root_with_merkle_proof() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let l1 = BytesN::from_array(&env, &[1u8; 32]);
+    let l2 = BytesN::from_array(&env, &[2u8; 32]);
+    let n12 = hash_pair(&env, &l1, &l2);
+
+    let _batch_id = client.anchor_batch(&n12, &2, &0, &100);
+
+    // Verify l1 against the root n12.
+    assert!(client.verify_receipt_by_root(&n12, &l1, &vec![&env, l2.clone()]));
+    assert!(client.verify_receipt_by_root(&n12, &l2, &vec![&env, l1.clone()]));
+}
+
+#[test]
+fn test_verify_receipt_by_root_rejects_unknown_root() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let r1 = BytesN::from_array(&env, &[1u8; 32]);
+    client.anchor_batch(&r1, &1, &0, &10);
+
+    let unknown = BytesN::from_array(&env, &[99u8; 32]);
+    assert_eq!(
+        client.try_verify_receipt_by_root(&unknown, &r1, &vec![&env]),
+        Err(Ok(Error::RootNotFound))
+    );
+}
+
+#[test]
+fn test_verify_receipt_by_root_rejects_wrong_proof() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let l1 = BytesN::from_array(&env, &[1u8; 32]);
+    let l2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root = hash_pair(&env, &l1, &l2);
+    client.anchor_batch(&root, &2, &0, &100);
+
+    let forged = BytesN::from_array(&env, &[99u8; 32]);
+    assert!(!client.verify_receipt_by_root(&root, &forged, &vec![&env, l2.clone()]));
+}
+
+#[test]
+fn test_verify_receipt_by_root_rejects_swapped_proof() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let l1 = BytesN::from_array(&env, &[1u8; 32]);
+    let l2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root = hash_pair(&env, &l1, &l2);
+    client.anchor_batch(&root, &2, &0, &100);
+
+    // Use wrong sibling.
+    let wrong = BytesN::from_array(&env, &[88u8; 32]);
+    assert!(!client.verify_receipt_by_root(&root, &l1, &vec![&env, wrong]));
+}
+
+#[test]
+fn test_root_buffer_evicts_oldest_when_full() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    // Fill the buffer to capacity.
+    let mut roots = Vec::new(&env);
+    for i in 0..ROOT_BUFFER_SIZE {
+        let root = BytesN::from_array(&env, &[i as u8; 32]);
+        roots.push_back(root.clone());
+        client.anchor_batch(&root, &1, &0, &1);
+    }
+
+    let buffer = client.get_root_buffer();
+    assert_eq!(buffer.len(), ROOT_BUFFER_SIZE);
+    assert_eq!(buffer.get(0).unwrap(), BytesN::from_array(&env, &[0u8; 32]));
+
+    // Anchor one more — oldest (index 0) should be evicted.
+    let new_root = BytesN::from_array(&env, &[255u8; 32]);
+    client.anchor_batch(&new_root, &1, &0, &1);
+
+    let buffer = client.get_root_buffer();
+    assert_eq!(buffer.len(), ROOT_BUFFER_SIZE);
+    // First entry is now [1u8; 32] (the second root we anchored).
+    assert_eq!(buffer.get(0).unwrap(), BytesN::from_array(&env, &[1u8; 32]));
+    // Last entry is the new root.
+    assert_eq!(buffer.get((ROOT_BUFFER_SIZE - 1) as u32).unwrap(), new_root);
+}
+
+#[test]
+fn test_verify_receipt_by_root_works_for_eviction_boundary() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    // Anchor ROOT_BUFFER_SIZE + 1 batches, tracking all roots.
+    let mut roots = Vec::new(&env);
+    for i in 0..=ROOT_BUFFER_SIZE {
+        let root = BytesN::from_array(&env, &[i as u8; 32]);
+        roots.push_back(root.clone());
+        client.anchor_batch(&root, &1, &0, &1);
+    }
+
+    // The first root (index 0) was evicted — verification should fail.
+    assert_eq!(
+        client.try_verify_receipt_by_root(
+            &roots.get(0).unwrap(),
+            &roots.get(0).unwrap(),
+            &vec![&env]
+        ),
+        Err(Ok(Error::RootNotFound))
+    );
+
+    // The second root (index 1) is still in the buffer — should succeed.
+    assert!(client.verify_receipt_by_root(
+        &roots.get(1).unwrap(),
+        &roots.get(1).unwrap(),
+        &vec![&env]
+    ));
+
+    // The last root (index ROOT_BUFFER_SIZE) should also succeed.
+    let last = roots.get(ROOT_BUFFER_SIZE).unwrap();
+    assert!(client.verify_receipt_by_root(&last, &last, &vec![&env]));
+}
+
+#[test]
+fn test_get_root_buffer_size() {
+    let (_env, client, _merchant) = setup();
+    assert_eq!(client.get_root_buffer_size(), ROOT_BUFFER_SIZE);
+    assert_eq!(client.get_root_buffer_size(), 100);
+}
+
+#[test]
+fn test_verify_receipt_by_root_before_init_fails() {
+    let (env, client, _merchant) = setup();
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    assert_eq!(
+        client.try_verify_receipt_by_root(&root, &root, &vec![&env]),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_existing_verify_receipt_still_works_with_buffer() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let l1 = BytesN::from_array(&env, &[1u8; 32]);
+    let l2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root = hash_pair(&env, &l1, &l2);
+    let batch_id = client.anchor_batch(&root, &2, &0, &100);
+
+    // The original batch_id-based verification still works.
+    assert!(client.verify_receipt(&batch_id, &l1, &vec![&env, l2.clone()]));
+    assert!(client.verify_receipt(&batch_id, &l2, &vec![&env, l1.clone()]));
+}
+
+// ---------------------------------------------------------------------------
+// Proof-length bounds tests
+// ---------------------------------------------------------------------------
+
+/// Build a chain-hash proof of `depth` siblings and the corresponding root.
+/// Each level pairs the current accumulator with a deterministic sibling,
+/// using the same sorted-pair SHA-256 the contract expects.
+fn build_chain_proof(env: &Env, leaf: &BytesN<32>, depth: u32) -> (BytesN<32>, Vec<BytesN<32>>) {
+    let mut proof = Vec::new(env);
+    let mut acc = leaf.clone();
+    for i in 0..depth {
+        let mut sibling_bytes = [0u8; 32];
+        sibling_bytes[0] = (i + 1) as u8;
+        let sibling = BytesN::from_array(env, &sibling_bytes);
+        acc = hash_pair(env, &acc, &sibling);
+        proof.push_back(sibling);
+    }
+    (acc, proof)
+}
+
+#[test]
+fn test_verify_receipt_empty_proof_succeeds() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    // Single-leaf batch: root == leaf, empty proof.
+    let leaf = BytesN::from_array(&env, &[42u8; 32]);
+    let batch_id = client.anchor_batch(&leaf, &1, &0, &10);
+    assert!(client.verify_receipt(&batch_id, &leaf, &vec![&env]));
+}
+
+#[test]
+fn test_verify_receipt_at_bound_succeeds() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let leaf = BytesN::from_array(&env, &[7u8; 32]);
+    let (root, proof) = build_chain_proof(&env, &leaf, MAX_PROOF_LEN);
+
+    assert_eq!(proof.len(), MAX_PROOF_LEN);
+    let batch_id = client.anchor_batch(&root, &1000, &0, &1000);
+    assert!(client.verify_receipt(&batch_id, &leaf, &proof));
+}
+
+#[test]
+fn test_verify_receipt_one_over_bound_fails() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let leaf = BytesN::from_array(&env, &[7u8; 32]);
+    let (root, proof) = build_chain_proof(&env, &leaf, MAX_PROOF_LEN + 1);
+
+    assert_eq!(proof.len(), MAX_PROOF_LEN + 1);
+    let batch_id = client.anchor_batch(&root, &1000, &0, &1000);
+    assert_eq!(
+        client.try_verify_receipt(&batch_id, &leaf, &proof),
+        Err(Ok(Error::ProofTooLong))
+    );
+}
+
+#[test]
+fn test_verify_receipt_by_root_at_bound_succeeds() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let leaf = BytesN::from_array(&env, &[7u8; 32]);
+    let (root, proof) = build_chain_proof(&env, &leaf, MAX_PROOF_LEN);
+
+    client.anchor_batch(&root, &1000, &0, &1000);
+    assert!(client.verify_receipt_by_root(&root, &leaf, &proof));
+}
+
+#[test]
+fn test_verify_receipt_by_root_one_over_bound_fails() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let leaf = BytesN::from_array(&env, &[7u8; 32]);
+    let (root, proof) = build_chain_proof(&env, &leaf, MAX_PROOF_LEN + 1);
+
+    client.anchor_batch(&root, &1000, &0, &1000);
+    assert_eq!(
+        client.try_verify_receipt_by_root(&root, &leaf, &proof),
+        Err(Ok(Error::ProofTooLong))
+    );
+}
+
+#[test]
+fn test_verify_receipt_valid_deep_proof() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let leaf = BytesN::from_array(&env, &[5u8; 32]);
+    // Depth 5: well within the bound, still a meaningful proof.
+    let (root, proof) = build_chain_proof(&env, &leaf, 5);
+
+    assert_eq!(proof.len(), 5);
+    let batch_id = client.anchor_batch(&root, &32, &0, &32);
+    assert!(client.verify_receipt(&batch_id, &leaf, &proof));
+    assert!(client.verify_receipt_by_root(&root, &leaf, &proof));
+}
+
+#[test]
+fn test_get_max_proof_len() {
+    let (_env, client, _merchant) = setup();
+    assert_eq!(client.get_max_proof_len(), MAX_PROOF_LEN);
+    assert_eq!(client.get_max_proof_len(), 10);
+}
+
+// ---------------------------------------------------------------------------
+// Rate-limiting tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_first_anchor_always_succeeds() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_min_anchor_interval(&60);
+
+    // First anchor — no previous timestamp stored, should succeed.
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1000;
+    });
+    assert_eq!(client.anchor_batch(&root, &1, &0, &10), 1);
+}
+
+#[test]
+fn test_anchor_rejected_within_interval() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_min_anchor_interval(&60);
+
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1000;
+    });
+    client.anchor_batch(&root1, &1, &0, &10);
+
+    // Second anchor at the same timestamp — should be rate-limited.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 11;
+        li.timestamp = 1000;
+    });
+    assert_eq!(
+        client.try_anchor_batch(&root2, &1, &11, &20),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+}
+
+#[test]
+fn test_anchor_succeeds_after_interval() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_min_anchor_interval(&60);
+
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1000;
+    });
+    client.anchor_batch(&root1, &1, &0, &10);
+
+    // Exactly at the boundary (1000 + 60 = 1060) — should succeed.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 20;
+        li.timestamp = 1060;
+    });
+    assert_eq!(client.anchor_batch(&root2, &1, &11, &20), 2);
+}
+
+#[test]
+fn test_anchor_rejected_one_second_before_boundary() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_min_anchor_interval(&60);
+
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root3 = BytesN::from_array(&env, &[3u8; 32]);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1000;
+    });
+    client.anchor_batch(&root1, &1, &0, &10);
+
+    // One second before boundary (1059 < 1060) — should be rate-limited.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 20;
+        li.timestamp = 1059;
+    });
+    assert_eq!(
+        client.try_anchor_batch(&root2, &1, &11, &20),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+
+    // Exactly at boundary — should succeed. batch_id is 2 because root2 was rejected.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 21;
+        li.timestamp = 1060;
+    });
+    assert_eq!(client.anchor_batch(&root3, &1, &21, &30), 2);
+}
+
+#[test]
+fn test_interval_zero_disables_rate_limit() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    // Interval is 0 by default.
+
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1000;
+    });
+    client.anchor_batch(&root1, &1, &0, &10);
+
+    // Same timestamp — should succeed because interval is 0.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 11;
+        li.timestamp = 1000;
+    });
+    assert_eq!(client.anchor_batch(&root2, &1, &11, &20), 2);
+}
+
+#[test]
+fn test_changing_interval_takes_effect() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root3 = BytesN::from_array(&env, &[3u8; 32]);
+
+    // First anchor with interval = 0.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1000;
+    });
+    client.anchor_batch(&root1, &1, &0, &10);
+
+    // Second anchor at same time — succeeds (interval = 0).
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 11;
+        li.timestamp = 1000;
+    });
+    client.anchor_batch(&root2, &1, &11, &20);
+
+    // Now set interval to 60.
+    client.set_min_anchor_interval(&60);
+
+    // Third anchor at same time — should be rate-limited now.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 12;
+        li.timestamp = 1000;
+    });
+    assert_eq!(
+        client.try_anchor_batch(&root3, &1, &21, &30),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_set_min_anchor_interval_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register(ReceiptAnchor, ());
+    let client = ReceiptAnchorClient::new(&env, &contract_id);
+    let merchant = Address::generate(&env);
+
+    env.mock_all_auths();
+    init(&env, &client, &merchant);
+
+    env.set_auths(&[]);
+    client.set_min_anchor_interval(&60);
+}
+
+#[test]
+fn test_set_min_anchor_interval_requires_init() {
+    let (_env, client, _merchant) = setup();
+    assert_eq!(
+        client.try_set_min_anchor_interval(&60),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_set_min_anchor_interval_enforces_cap() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    // At the cap — should succeed.
+    client.set_min_anchor_interval(&MAX_ANCHOR_INTERVAL);
+    assert_eq!(client.get_min_anchor_interval(), MAX_ANCHOR_INTERVAL);
+
+    // Over the cap — should fail with BatchTooLarge (reusing existing error).
+    assert_eq!(
+        client.try_set_min_anchor_interval(&(MAX_ANCHOR_INTERVAL + 1)),
+        Err(Ok(Error::BatchTooLarge))
+    );
+}
+
+#[test]
+fn test_get_min_anchor_interval_default() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    assert_eq!(client.get_min_anchor_interval(), 0);
+}
+
+#[test]
+fn test_rate_limit_with_large_interval() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_min_anchor_interval(&3600); // 1 hour
+
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root3 = BytesN::from_array(&env, &[3u8; 32]);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1000;
+    });
+    client.anchor_batch(&root1, &1, &0, &10);
+
+    // 30 minutes later — still rate-limited.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 100;
+        li.timestamp = 2800;
+    });
+    assert_eq!(
+        client.try_anchor_batch(&root2, &1, &11, &20),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+
+    // 1 hour later — should succeed. batch_id is 2 because root2 was rejected.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 100;
+        li.timestamp = 4600;
+    });
+    assert_eq!(client.anchor_batch(&root3, &1, &21, &30), 2);
+}
+
+#[test]
+fn test_rate_limit_resets_after_successful_anchor() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_min_anchor_interval(&60);
+
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root3 = BytesN::from_array(&env, &[3u8; 32]);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 10;
+        li.timestamp = 1000;
+    });
+    client.anchor_batch(&root1, &1, &0, &10);
+
+    // Advance past interval.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 20;
+        li.timestamp = 1060;
+    });
+    client.anchor_batch(&root2, &1, &11, &20);
+
+    // Immediately try again — should be rate-limited (last anchor was at 1060).
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 21;
+        li.timestamp = 1060;
+    });
+    assert_eq!(
+        client.try_anchor_batch(&root3, &1, &21, &30),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+}
+
 /// The commit hash embedded via contractmeta must be real provenance, not the
 /// silent "unknown" fallback, in a normal repository build (see build.rs).
 #[test]

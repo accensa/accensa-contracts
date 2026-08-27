@@ -369,12 +369,52 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "LastAnchorTime"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "MinAnchorInterval"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "PrunedUpTo"
                           }
                         ]
                       },
                       "val": {
                         "u64": "2"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "RootBuffer"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "bytes": "0707070707070707070707070707070707070707070707070707070707070707"
+                          }
+                        ]
                       }
                     },
                     {
@@ -901,6 +941,20 @@
           "last_modified_ledger_seq": 0,
           "data": {
             "contract_code": {
+              "ext": "v0",
+              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "code": ""
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
               "ext": {
                 "v1": {
                   "ext": "v0",
@@ -914,8 +968,8 @@
                     "n_data_segments": 1,
                     "n_elem_segments": 1,
                     "n_imports": 20,
-                    "n_exports": 10,
-                    "n_data_segment_bytes": 1055
+                    "n_exports": 12,
+                    "n_data_segment_bytes": 1195
                   }
                 }
               },

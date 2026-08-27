@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     Address, Env,
 };
@@ -145,6 +145,71 @@ fn test_zero_window_disables_expiry() {
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
+/// The `RefundV2` guard entry's TTL must be sized to the refund window, not a
+/// flat `TTL_EXTEND` (~30 days): otherwise a window longer than that flat
+/// interval can outlive the guard that is supposed to police it, so the
+/// entry can go stale (and become eligible for archival) while `refund`
+/// would still accept further calls for that payment on policy grounds.
+/// See `refund_record_ttl_extend_to`.
+#[test]
+fn test_long_window_extends_guard_past_flat_ttl() {
+    let window = TTL_EXTEND * 3;
+    let (env, client, merchant, _token) = setup(window);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[10u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000);
+
+    let ttl_after_refund = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::RefundV2(payment_ref.clone()))
+    });
+    assert!(
+        ttl_after_refund > TTL_EXTEND,
+        "guard TTL ({ttl_after_refund}) was not sized to the window ({window}); \
+         it must outlast the flat TTL_EXTEND ({TTL_EXTEND}) whenever the window does"
+    );
+
+    // Jump past where the old flat TTL_EXTEND would have left the guard
+    // entry eligible for archival, but still well inside the window.
+    env.ledger()
+        .with_mut(|li| li.sequence_number = TTL_EXTEND + 10_000);
+
+    // A further partial refund for the same payment must still see the prior
+    // cumulative total: the guard entry must not have gone missing.
+    client.refund(&payment_ref, &buyer, &50_000, &0, &300_000);
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 150_000);
+}
+
+/// `window == 0` means "no time bound" for `refund` itself (see
+/// `test_zero_window_disables_expiry`); the guard entry's TTL must match
+/// that by extending to the network's actual maximum TTL rather than the
+/// flat `TTL_EXTEND`, so an unbounded refund policy is never quietly capped
+/// by the guard aging out first.
+#[test]
+fn test_zero_window_extends_guard_to_max_ttl() {
+    let (env, client, merchant, _token) = setup(0);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[11u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000);
+
+    let ttl_after_refund = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::RefundV2(payment_ref.clone()))
+    });
+    assert!(
+        ttl_after_refund > TTL_EXTEND * 2,
+        "guard TTL ({ttl_after_refund}) for an unbounded window was not \
+         extended past the flat TTL_EXTEND ({TTL_EXTEND})"
+    );
+}
+
 #[test]
 fn test_refund_exceeding_float_fails() {
     let (env, client, merchant, _token) = setup(100);
@@ -195,8 +260,19 @@ fn test_set_refund_window_takes_effect() {
         Err(Ok(Error::WindowExpired))
     );
 
-    client.set_refund_window(&1000);
-    client.refund(&payment_ref, &buyer, &100, &100, &100);
+    client.propose_policy(&1000);
+    // Cannot execute yet — timelock has not expired.
+    assert_eq!(
+        client.try_execute_policy(),
+        Err(Ok(Error::TimelockNotExpired))
+    );
+
+    // Advance past the timelock (500 + 17_280 = 17_780).
+    env.ledger().with_mut(|li| li.sequence_number += 17_280);
+    client.execute_policy();
+
+    // paid_at=17_780, window=1000, current=17_780 → still inside the window.
+    client.refund(&payment_ref, &buyer, &100, &(env.ledger().sequence()), &100);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -222,9 +298,10 @@ fn test_uninitialized_calls_fail() {
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(
-        client.try_set_refund_window(&10),
+        client.try_propose_policy(&10),
         Err(Ok(Error::NotInitialized))
     );
+    assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
 }
 
 #[test]
@@ -465,7 +542,7 @@ fn test_pause_unpause_refund_window_events_emitted() {
     );
 
     env.ledger().with_mut(|li| li.sequence_number = 700);
-    client.set_refund_window(&300);
+    client.propose_policy(&300);
 
     assert_eq!(
         env.events().all().filter_by_contract(&client.address),
@@ -473,13 +550,16 @@ fn test_pause_unpause_refund_window_events_emitted() {
             &env,
             (
                 client.address.clone(),
-                (
-                    Symbol::new(&env, "refund_window_updated_event"),
-                    100u32,
-                    300u32
-                )
-                    .into_val(&env),
-                empty_data.into_val(&env)
+                (Symbol::new(&env, "policy_proposed_event"), 300u32).into_val(&env),
+                soroban_sdk::map![
+                    &env,
+                    (Symbol::new(&env, "proposed_at_ledger"), 700u32),
+                    (
+                        Symbol::new(&env, "execute_after_ledger"),
+                        700u32 + 17_280u32
+                    ),
+                ]
+                .into_val(&env)
             )
         ]
     );
@@ -542,8 +622,8 @@ fn test_accept_admin_transfers_role() {
     client.transfer_admin(&new_admin);
     client.accept_admin();
 
-    // New admin can call admin-only functions (set_refund_window needs no token balance).
-    client.set_refund_window(&200);
+    // New admin can call admin-only functions (propose_policy needs no token balance).
+    client.propose_policy(&200);
 }
 
 #[test]
@@ -588,8 +668,8 @@ fn test_cancel_then_reinitiate_works() {
     client.transfer_admin(&admin_b);
     client.accept_admin();
 
-    // B is now admin — set_refund_window should work.
-    client.set_refund_window(&200);
+    // B is now admin — propose_policy should work.
+    client.propose_policy(&200);
 }
 
 #[test]
@@ -604,7 +684,7 @@ fn test_overwrite_pending_admin() {
 
     // Accept — B should become admin.
     client.accept_admin();
-    client.set_refund_window(&200);
+    client.propose_policy(&200);
 }
 
 #[test]
@@ -616,7 +696,7 @@ fn test_old_admin_cannot_act_after_transfer() {
     client.accept_admin();
 
     // New admin can call admin-only functions.
-    client.set_refund_window(&200);
+    client.propose_policy(&200);
 }
 
 #[test]
@@ -726,6 +806,190 @@ fn test_admin_transfer_events_emitted() {
                 )
                     .into_val(&env),
                 empty_data.into_val(&env)
+            )
+        ]
+    );
+}
+
+// ── Policy timelock tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_propose_and_execute_policy_happy_path() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    client.propose_policy(&200);
+
+    let proposal = client.get_pending_policy().unwrap();
+    assert_eq!(proposal.window, 200);
+    assert_eq!(proposal.proposed_at_ledger, env.ledger().sequence());
+
+    // Advance past the timelock.
+    env.ledger().with_mut(|li| li.sequence_number += 17_280);
+    client.execute_policy();
+
+    assert!(client.get_pending_policy().is_none());
+}
+
+#[test]
+fn test_execute_policy_before_timelock_fails() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    client.propose_policy(&200);
+
+    // Advance only partway through the timelock.
+    env.ledger().with_mut(|li| li.sequence_number = 10_000);
+
+    assert_eq!(
+        client.try_execute_policy(),
+        Err(Ok(Error::TimelockNotExpired))
+    );
+}
+
+#[test]
+fn test_execute_policy_at_exact_boundary_succeeds() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    client.propose_policy(&200);
+
+    // proposed_at_ledger = 1, timelock = 17_280, so execute at 1 + 17_280 = 17_281.
+    env.ledger().with_mut(|li| li.sequence_number = 17_281);
+    client.execute_policy();
+
+    assert!(client.get_pending_policy().is_none());
+}
+
+#[test]
+fn test_execute_policy_without_proposal_fails() {
+    let (_env, client, _merchant, _token) = setup(100);
+
+    assert_eq!(client.try_execute_policy(), Err(Ok(Error::NoPendingPolicy)));
+}
+
+#[test]
+fn test_propose_policy_overwrites_existing() {
+    let (_env, client, _merchant, _token) = setup(100);
+
+    client.propose_policy(&200);
+    client.propose_policy(&500);
+
+    let proposal = client.get_pending_policy().unwrap();
+    assert_eq!(proposal.window, 500);
+}
+
+#[test]
+fn test_execute_policy_applies_new_window() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    // Window = 100. Paid at ledger 1. Current ledger 300 > 1+100=101 => expired.
+    env.ledger().with_mut(|li| li.sequence_number = 300);
+
+    let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
+    let buyer = Address::generate(&env);
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &100, &1, &100),
+        Err(Ok(Error::WindowExpired))
+    );
+
+    // Propose and execute a wider window.
+    client.propose_policy(&20_000);
+    env.ledger().with_mut(|li| li.sequence_number += 17_280);
+    client.execute_policy();
+
+    // Now the refund succeeds: current ~17_580, paid_at 1, window 20_000.
+    client.refund(&payment_ref, &buyer, &100, &1, &100);
+    assert!(client.get_refund(&payment_ref).is_some());
+}
+
+#[test]
+fn test_propose_policy_uninitialized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(RefundVault, ());
+    let client = RefundVaultClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_propose_policy(&100),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_execute_policy_uninitialized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(RefundVault, ());
+    let client = RefundVaultClient::new(&env, &contract_id);
+
+    assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+#[should_panic]
+fn test_propose_policy_requires_auth() {
+    let (env, client, _merchant, _token) = setup(100);
+    env.set_auths(&[]);
+    client.propose_policy(&200);
+}
+
+#[test]
+#[should_panic]
+fn test_execute_policy_requires_auth() {
+    let (env, client, _merchant, _token) = setup(100);
+    client.propose_policy(&200);
+    env.set_auths(&[]);
+    client.execute_policy();
+}
+
+#[test]
+fn test_get_policy_timelock() {
+    assert_eq!(RefundVault::get_policy_timelock(), 17_280);
+}
+
+#[test]
+fn test_policy_events_emitted() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{vec, IntoVal, Symbol};
+
+    let (env, client, _merchant, _token) = setup(100);
+
+    client.propose_policy(&200);
+
+    let current = env.ledger().sequence();
+    let events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        events,
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "policy_proposed_event"), 200u32).into_val(&env),
+                soroban_sdk::map![
+                    &env,
+                    (Symbol::new(&env, "proposed_at_ledger"), current),
+                    (
+                        Symbol::new(&env, "execute_after_ledger"),
+                        current + 17_280u32
+                    ),
+                ]
+                .into_val(&env)
+            )
+        ]
+    );
+
+    env.ledger().with_mut(|li| li.sequence_number += 17_280);
+    client.execute_policy();
+
+    let events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        events,
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "policy_executed_event"), 200u32).into_val(&env),
+                soroban_sdk::Map::<Symbol, soroban_sdk::Val>::new(&env).into_val(&env)
             )
         ]
     );

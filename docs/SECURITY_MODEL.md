@@ -90,10 +90,27 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
   total past the ceiling is rejected with an `ExceedsPayment` error, and a
   record written by the legacy single-refund rule is treated the same way. There
   is no code path that pays the same amount twice for one payment.
+- **Guard persistence:** This ceiling only holds while the `RefundV2` record it
+  depends on is actually live. The record's TTL is now sized to the
+  merchant's configured `refund_window_ledgers` (extended to the network's
+  maximum TTL when the window is `0`, i.e. "no time bound") rather than a
+  flat interval, so the guard cannot expire while `refund` would still accept
+  a call against that payment on policy grounds — see "TTL Strategy" in
+  [Storage Audit](storage-audit.md) for the mechanism and why the naive flat
+  extension was silently a no-op. What remains unverified against a live
+  network (only checked against this SDK's test host) is whether an entry
+  that *does* go archived — i.e. outlives even the window-sized TTL, or is
+  simply never restored — causes `refund` to fail closed (a host trap on
+  accessing an archived entry) or fail open (a stale read). The test host
+  auto-heals expired entries rather than modeling archival, so it cannot
+  distinguish the two. Treat this as an open item for anyone auditing against
+  testnet/mainnet directly, and see #122 for a nonce-based alternative that
+  would not depend on the answer either way.
 
 ### Proof Forgery
 - **Threat:** An attacker tries to claim a refund for a non-existent or altered receipt.
 - **Mitigation:** The contract utilizes a sorted-pair Merkle tree. Every refund request requires a cryptographic inclusion proof that must perfectly resolve to the anchored root hash. Modifying the receipt or the proof will result in a mismatched root, causing the transaction to revert.
+- **Proof length bound:** `verify_receipt` and `verify_receipt_by_root` reject proofs longer than `MAX_PROOF_LEN` (derived from `MAX_BATCH_SIZE` via `⌈log₂(MAX_BATCH_SIZE)⌉`). A proof exceeding this bound is structurally impossible for any batch this contract could have anchored, so it is rejected with `ProofTooLong` rather than consuming resources hashing an invalid input.
 
 ### Window Expiry Evasion
 - **Threat:** An attacker attempts to process a refund after the designated refund window has expired.

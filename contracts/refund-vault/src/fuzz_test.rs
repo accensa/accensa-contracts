@@ -248,8 +248,8 @@ fn execute(
                 model.paused = !model.paused;
             }
             Op::SetWindow { window } => {
-                // set_refund_window is not gated on pause.
-                client.set_refund_window(window);
+                // propose_policy is not gated on pause; execute requires timelock.
+                let _ = client.try_propose_policy(window);
                 model.window = *window;
             }
             Op::Deposit { amount } => {

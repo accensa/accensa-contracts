@@ -755,10 +755,9 @@ fn test_yield_deployed_event() {
     vault_client.deposit(&merchant, &5_000_000);
     vault_client.deploy_to_yield(&2_000_000);
 
-    // Note: `env.events().all()` returns only the events of the last contract
-    // invocation, so this asserts on the deploy invocation's events alone.
+    let events = env.events().all().filter_by_contract(&vault_client.address);
     assert_eq!(
-        env.events().all().filter_by_contract(&vault_client.address),
+        events,
         vec![
             &env,
             (
@@ -768,9 +767,9 @@ fn test_yield_deployed_event() {
                     strategy_addr.clone()
                 )
                     .into_val(&env),
-                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 2_000_000i128)]
+                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 2_000_000i128),]
                     .into_val(&env)
-            ),
+            )
         ]
     );
 }
@@ -790,16 +789,16 @@ fn test_yield_harvested_event() {
 
     vault_client.harvest_yield();
 
-    // `env.events().all()` returns only the last invocation's events (the harvest).
+    let events = env.events().all().filter_by_contract(&vault_client.address);
     assert_eq!(
-        env.events().all().filter_by_contract(&vault_client.address),
+        events,
         vec![
             &env,
             (
                 vault_client.address.clone(),
                 (Symbol::new(&env, "yield_harvested_event"),).into_val(&env),
-                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 200_000i128)].into_val(&env)
-            ),
+                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 200_000i128),].into_val(&env)
+            )
         ]
     );
 }

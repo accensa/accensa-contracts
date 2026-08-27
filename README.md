@@ -69,11 +69,17 @@ they were charged correctly, with no trusted API in the path.
 | Function | Purpose |
 |---|---|
 | `initialize(merchant)` | Binds the contract to a merchant admin address. |
-| `anchor_batch(root, count, period_start, period_end) -> u64` | Anchors a batch root, returns its `batch_id`. Merchant auth required. `count` must be $\le$ 1000 (`MAX_BATCH_SIZE`). |
+| `anchor_batch(root, count, period_start, period_end) -> u64` | Anchors a batch root, returns its `batch_id`. Merchant auth required. `count` must be $\le$ 1000 (`MAX_BATCH_SIZE`). Rate-limited if `min_anchor_interval > 0`. |
 | `get_batch(batch_id) -> BatchRecord` | Reads an anchored batch. |
 | `get_batch_count() -> u64` | Returns the total number of anchored batches. Read-only. |
 | `get_max_batch_size() -> u32` | Returns `MAX_BATCH_SIZE` (currently 1000). Read-only; clients should discover the limit via this getter rather than hard-coding it. |
-| `verify_receipt(batch_id, leaf, proof) -> bool` | Verifies a receipt against the anchored root. Read-only, free to call. |
+| `set_min_anchor_interval(interval)` | Sets the minimum seconds between anchors (0 = disabled, max 86,400). Merchant auth required. |
+| `get_min_anchor_interval() -> u32` | Returns the current minimum anchor interval in seconds. Read-only. |
+| `verify_receipt(batch_id, leaf, proof) -> bool` | Verifies a receipt against the anchored root. Read-only, free to call. Returns `ProofTooLong` if the proof exceeds `MAX_PROOF_LEN` (10). |
+| `verify_receipt_by_root(root, leaf, proof) -> bool` | Verifies a receipt against any root in the historical ring buffer. Returns `ProofTooLong` if the proof exceeds `MAX_PROOF_LEN`. |
+| `get_root_buffer() -> Vec<BytesN<32>>` | Returns the current ring buffer of historical roots. Read-only. |
+| `get_root_buffer_size() -> u32` | Returns `ROOT_BUFFER_SIZE` (currently 100). Read-only. |
+| `get_max_proof_len() -> u32` | Returns `MAX_PROOF_LEN` (currently 10). Read-only; clients should discover the limit via this getter. |
 | `extend_batch_ttl(batch_id)` | Extends the TTL of a batch to prevent archival. Publicly callable. |
 | `prune_batches(before_ledger)` | Deletes anchored batches older than `before_ledger` to reclaim rent. Merchant auth required. |
 
@@ -109,7 +115,10 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 | `deposit(from, amount)` | Merchant tops up float. |
 | `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. |
 | `withdraw(amount, to)` | Merchant withdraws float. |
-| `set_refund_window(ledgers)` | Updates the window; `0` disables expiry. |
+| `propose_policy(ledgers)` | Proposes a new refund window; subject to timelock. |
+| `execute_policy()` | Executes a pending policy change after the timelock. |
+| `get_pending_policy()` | Returns the current pending policy proposal, if any. |
+| `get_policy_timelock()` | Returns the policy timelock delay in ledgers (read-only). |
 | `get_refund(payment_ref) -> Option<RefundRecord>` | Looks up a refund. |
 | `pause()` | Pauses operations for emergency stops. Merchant auth required. |
 | `unpause()` | Resumes paused operations. Merchant auth required. |
