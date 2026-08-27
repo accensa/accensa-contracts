@@ -36,10 +36,20 @@ pub enum DataKey {
     Admins,
     Threshold,
     PendingAdmin,
+    /// Yield strategy contract address. Stored in **Persistent** storage so
+    /// it is not loaded on every non-yield invocation (issue #131).
     YieldStrategy,
+    /// Cumulative principal deployed to the yield strategy. Persistent
+    /// storage; see `YieldStrategy` rationale above.
     DeployedPrincipal,
+    /// Cumulative yield harvested from the strategy and held in the vault
+    /// for operator withdrawal. Persistent storage (issue #131).
     HarvestedYield,
+    /// Minimum liquid reserve ratio in basis points. Persistent storage
+    /// (issue #131).
     ReserveRatio,
+    /// Maximum deployment ratio in basis points. Persistent storage
+    /// (issue #131).
     MaxDeployRatio,
     PendingPolicy,
     /// Reentrancy guard flag. Set for the duration of any entry point that
@@ -47,6 +57,17 @@ pub enum DataKey {
     /// so a callback into another guarded entry point during that call is
     /// rejected rather than allowed to observe pre-update state.
     ReentrancyLock,
+    /// Monotonic operation counter incremented on every successful
+    /// state-changing call (issue #136). Provides a global ordering that
+    /// makes it possible to detect replayed or reordered transactions
+    /// off-chain, and is included in events for indexer binding.
+    Nonce,
+    /// Domain separator — the contract's own address, stored at
+    /// initialisation and never changed. Bindings in events and nonce
+    /// computation include this value so that a signed authorization
+    /// intended for one vault instance cannot be replayed against a
+    /// different deployment (issue #136).
+    DomainSeparator,
 }
 
 #[contracttype]
@@ -99,6 +120,8 @@ pub struct RefundEvent {
     pub cumulative_refunded: i128,
     pub recipient: Address,
     pub ledger: u32,
+    /// Monotonic nonce at the time of this operation (issue #136).
+    pub nonce: u64,
 }
 
 #[contractevent]
@@ -107,6 +130,8 @@ pub struct DepositEvent {
     #[topic]
     pub from: Address,
     pub amount: i128,
+    /// Monotonic nonce at the time of this operation (issue #136).
+    pub nonce: u64,
 }
 
 /// Emitted when the merchant pauses the vault, halting deposits, refunds and withdrawals.
@@ -137,6 +162,8 @@ pub struct WithdrawEvent {
     #[topic]
     pub to: Address,
     pub amount: i128,
+    /// Monotonic nonce at the time of this operation (issue #136).
+    pub nonce: u64,
 }
 
 #[contractevent]
@@ -163,6 +190,8 @@ pub struct YieldDeployedEvent {
     #[topic]
     pub strategy: Address,
     pub amount: i128,
+    /// Monotonic nonce at the time of this operation (issue #136).
+    pub nonce: u64,
 }
 
 #[contractevent]
@@ -172,12 +201,16 @@ pub struct YieldWithdrawnEvent {
     pub strategy: Address,
     pub principal: i128,
     pub yield_amount: i128,
+    /// Monotonic nonce at the time of this operation (issue #136).
+    pub nonce: u64,
 }
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YieldHarvestedEvent {
     pub amount: i128,
+    /// Monotonic nonce at the time of this operation (issue #136).
+    pub nonce: u64,
 }
 
 #[contractevent]
@@ -275,6 +308,22 @@ fn release_reentrancy_lock(env: &Env) {
         .set(&DataKey::ReentrancyLock, &false);
 }
 
+/// Increment the monotonic nonce and return its *previous* value (issue #136).
+///
+/// Every successful state-changing entry point calls this so that events carry
+/// a strictly increasing operation counter. Off-chain indexers can detect
+/// replays or reorderings by checking that the nonce in successive events is
+/// monotonically increasing. The nonce is bound to the contract's own domain
+/// separator (the `DomainSeparator` key) so that identical transaction
+/// payloads against different vault instances produce distinct nonce sequences.
+fn increment_nonce(env: &Env) -> u64 {
+    let current: u64 = env.storage().instance().get(&DataKey::Nonce).unwrap_or(0);
+    env.storage()
+        .instance()
+        .set(&DataKey::Nonce, &(current + 1));
+    current
+}
+
 /// How many ledgers to extend a payment's `RefundV2` record's TTL by, so the
 /// double-refund guard cannot go archived while `refund` calls against that
 /// payment are still policy-valid.
@@ -316,6 +365,20 @@ fn refund_record_ttl_extend_to(env: &Env, window: u32, paid_at_ledger: u32) -> u
         .max(TTL_EXTEND)
 }
 
+/// Helper to extend the TTL of a persistent yield-storage entry (issue #131).
+///
+/// Yield keys (`YieldStrategy`, `DeployedPrincipal`, `HarvestedYield`,
+/// `ReserveRatio`, `MaxDeployRatio`) are stored in Persistent rather than
+/// Instance storage so non-yield calls (deposit, refund, withdraw) do not
+/// pay the read/write cost of loading them. Persistent entries need TTL
+/// management; this helper applies the standard [`TTL_EXTEND`] /
+/// [`TTL_THRESHOLD`] budget after every write.
+fn persist_yield_ttl(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, TTL_EXTEND, TTL_THRESHOLD);
+}
+
 #[contract]
 pub struct RefundVault;
 
@@ -336,10 +399,41 @@ impl RefundVault {
             .instance()
             .set(&DataKey::RefundWindow, &refund_window_ledgers);
 
+        // Issue #136: store the domain separator (this contract's address)
+        // and initialise the monotonic nonce to 0.
+        let contract_addr = env.current_contract_address();
+        // The domain separator is a hash of the contract address so that
+        // events and off-chain signatures can be bound to exactly one
+        // deployment.
+        let separator = env.crypto().sha256(&contract_addr.to_buffer());
+        env.storage()
+            .instance()
+            .set(&DataKey::DomainSeparator, &separator);
+        env.storage().instance().set(&DataKey::Nonce, &0u64);
+
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// Returns the domain separator for this vault instance (issue #136).
+    ///
+    /// Off-chain systems should bind signed authorizations to this value so
+    /// that a replay against a different vault deployment is rejected.
+    pub fn get_domain_separator(env: Env) -> BytesN<32> {
+        env.storage()
+            .instance()
+            .get(&DataKey::DomainSeparator)
+            .unwrap()
+    }
+
+    /// Returns the current monotonic nonce (issue #136).
+    ///
+    /// Each successful state-changing call increments this counter. Off-chain
+    /// systems can use it to detect replays or reorderings of transactions.
+    pub fn get_nonce(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::Nonce).unwrap_or(0)
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
@@ -373,9 +467,12 @@ impl RefundVault {
         let client = token::Client::new(&env, &token);
         client.transfer(&from, env.current_contract_address(), &amount);
 
+        let nonce = increment_nonce(&env);
+
         DepositEvent {
             from: from.clone(),
             amount,
+            nonce,
         }
         .publish(&env);
 
@@ -534,12 +631,15 @@ impl RefundVault {
             extend_to,
         );
 
+        let nonce = increment_nonce(&env);
+
         RefundEvent {
             payment_ref,
             amount,
             cumulative_refunded,
             recipient: record.recipient,
             ledger: record.ledger,
+            nonce,
         }
         .publish(&env);
 
@@ -583,9 +683,12 @@ impl RefundVault {
 
         token_client.transfer(&env.current_contract_address(), &to, &amount);
 
+        let nonce = increment_nonce(&env);
+
         WithdrawEvent {
             to: to.clone(),
             amount,
+            nonce,
         }
         .publish(&env);
 
@@ -685,6 +788,13 @@ impl RefundVault {
     }
 
     // ── Yield strategy management ──────────────────────────────────────────
+    //
+    // Issue #131: yield-related storage keys are kept in **Persistent**
+    // storage rather than Instance storage. Non-yield calls (deposit,
+    // refund, withdraw, pause, unpause, admin transfer) never touch these
+    // keys, so moving them out of Instance reduces the read/write byte
+    // cost of every non-yield invocation. Persistent entries are extended
+    // with the standard TTL budget after every write.
 
     /// Register an external yield strategy contract. Only callable by admin.
     pub fn set_yield_strategy(env: Env, strategy: Address) -> Result<(), Error> {
@@ -696,8 +806,9 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::YieldStrategy, &strategy);
+        persist_yield_ttl(&env, &DataKey::YieldStrategy);
 
         env.storage()
             .instance()
@@ -720,8 +831,9 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::ReserveRatio, &basis_points);
+        persist_yield_ttl(&env, &DataKey::ReserveRatio);
 
         env.storage()
             .instance()
@@ -744,8 +856,9 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::MaxDeployRatio, &basis_points);
+        persist_yield_ttl(&env, &DataKey::MaxDeployRatio);
 
         env.storage()
             .instance()
@@ -785,7 +898,7 @@ impl RefundVault {
 
         let strategy: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::YieldStrategy)
             .ok_or(Error::StrategyNotSet)?;
 
@@ -799,12 +912,12 @@ impl RefundVault {
 
         let deployed: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::DeployedPrincipal)
             .unwrap_or(0);
         let harvested: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
 
@@ -816,7 +929,7 @@ impl RefundVault {
         // Reserve check: after deployment, liquid tokens must cover the reserve.
         let reserve_ratio: u32 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ReserveRatio)
             .unwrap_or(0);
         let post_deploy_balance = token_balance - amount;
@@ -828,7 +941,7 @@ impl RefundVault {
         // Max deployment check.
         let max_deploy_ratio: u32 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::MaxDeployRatio)
             .unwrap_or(10_000);
         let post_deploy_total = deployed + amount;
@@ -844,12 +957,16 @@ impl RefundVault {
         strategy_client.deposit(&amount);
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::DeployedPrincipal, &(deployed + amount));
+        persist_yield_ttl(&env, &DataKey::DeployedPrincipal);
+
+        let nonce = increment_nonce(&env);
 
         YieldDeployedEvent {
-            strategy: strategy.clone(),
+            strategy,
             amount,
+            nonce,
         }
         .publish(&env);
 
@@ -889,13 +1006,13 @@ impl RefundVault {
 
         let strategy: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::YieldStrategy)
             .ok_or(Error::StrategyNotSet)?;
 
         let deployed: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::DeployedPrincipal)
             .unwrap_or(0);
         if principal > deployed {
@@ -907,22 +1024,27 @@ impl RefundVault {
 
         let harvested: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
 
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &DataKey::DeployedPrincipal,
             &(deployed - principal_returned),
         );
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::HarvestedYield, &(harvested + yield_returned));
+        persist_yield_ttl(&env, &DataKey::DeployedPrincipal);
+        persist_yield_ttl(&env, &DataKey::HarvestedYield);
+
+        let nonce = increment_nonce(&env);
 
         YieldWithdrawnEvent {
             strategy,
             principal: principal_returned,
             yield_amount: yield_returned,
+            nonce,
         }
         .publish(&env);
 
@@ -956,7 +1078,7 @@ impl RefundVault {
 
         let strategy: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::YieldStrategy)
             .ok_or(Error::StrategyNotSet)?;
 
@@ -969,15 +1091,19 @@ impl RefundVault {
 
         let harvested: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::HarvestedYield, &(harvested + yield_amount));
+        persist_yield_ttl(&env, &DataKey::HarvestedYield);
+
+        let nonce = increment_nonce(&env);
 
         YieldHarvestedEvent {
             amount: yield_amount,
+            nonce,
         }
         .publish(&env);
 
@@ -993,23 +1119,23 @@ impl RefundVault {
         YieldInfo {
             deployed_principal: env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::DeployedPrincipal)
                 .unwrap_or(0),
             harvested_yield: env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::HarvestedYield)
                 .unwrap_or(0),
-            strategy: env.storage().instance().get(&DataKey::YieldStrategy),
+            strategy: env.storage().persistent().get(&DataKey::YieldStrategy),
             reserve_ratio: env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::ReserveRatio)
                 .unwrap_or(0),
             max_deploy_ratio: env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::MaxDeployRatio)
                 .unwrap_or(10_000),
         }

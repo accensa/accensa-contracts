@@ -10,6 +10,20 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+- **Cryptographic hardening for `RefundVault`** (issue #136): a domain
+  separator (`get_domain_separator`) bound to the contract address at
+  initialisation, and a monotonic operation nonce (`get_nonce`) incremented
+  on every successful state-changing call (`deposit`, `refund`, `withdraw`,
+  `deploy_to_yield`, `withdraw_from_yield`, `harvest_yield`). Events now
+  carry the nonce so off-chain indexers can detect replays or reorderings.
+  Separate vault instances produce distinct domain separators, preventing
+  cross-contract replay of signed authorisations.
+- **`RefundVault` storage optimisation** (issue #131): yield-related keys
+  (`YieldStrategy`, `DeployedPrincipal`, `HarvestedYield`, `ReserveRatio`,
+  `MaxDeployRatio`) moved from Instance to Persistent storage. Non-yield
+  calls (`deposit`, `refund`, `withdraw`, `pause`, admin transfer) no
+  longer load these keys, reducing per-invocation read/write bytes.
+  Persistent entries receive TTL bumping on every write.
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the

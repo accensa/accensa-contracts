@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, Env,
+    Address, BytesN, Env,
 };
 
 const FLOAT: i128 = 1_000_000;
@@ -529,12 +529,18 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
     // core operations use fresh calls because replaying the same refund after
     // a successful call would correctly exceed its payment ceiling.
     client.unpause();
-    assert_eq!(contract_outcome(client.try_deposit(&merchant, &100_000)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_deposit(&merchant, &100_000)),
+        Ok(())
+    );
     assert_eq!(
         contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000)),
         Ok(())
     );
-    assert_eq!(contract_outcome(client.try_withdraw(&100_000, &merchant)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_withdraw(&100_000, &merchant)),
+        Ok(())
+    );
     assert_eq!(
         contract_outcome(client.try_deploy_to_yield(&100_000)),
         Err(Error::StrategyNotSet)
@@ -592,6 +598,7 @@ fn test_events_emitted() {
 
     client.deposit(&merchant, &500_000);
 
+    // Deposit event now carries a monotonic nonce (issue #136).
     assert_eq!(
         env.events().all().filter_by_contract(&client.address),
         vec![
@@ -599,7 +606,12 @@ fn test_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "deposit_event"), merchant.clone()).into_val(&env),
-                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 500_000i128)].into_val(&env)
+                soroban_sdk::map![
+                    &env,
+                    (Symbol::new(&env, "amount"), 500_000i128),
+                    (Symbol::new(&env, "nonce"), 0u64),
+                ]
+                .into_val(&env)
             )
         ]
     );
@@ -610,8 +622,8 @@ fn test_events_emitted() {
     client.refund(&payment_ref, &buyer, &120_000, &0, &120_000);
 
     let refund_events = env.events().all().filter_by_contract(&client.address);
-    // The refund event carries the per-call amount and the running cumulative
-    // total, so an indexer knows the state without summing history (#99).
+    // The refund event carries the per-call amount, the running cumulative
+    // total, and a monotonic nonce (#136).
     let mut refund_data = Map::<Val, Val>::new(&env);
     refund_data.set(
         Symbol::new(&env, "amount").into_val(&env),
@@ -628,6 +640,10 @@ fn test_events_emitted() {
     refund_data.set(
         Symbol::new(&env, "ledger").into_val(&env),
         env.ledger().sequence().into_val(&env),
+    );
+    refund_data.set(
+        Symbol::new(&env, "nonce").into_val(&env),
+        1u64.into_val(&env),
     );
     assert_eq!(
         refund_events,
@@ -650,7 +666,12 @@ fn test_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "withdraw_event"), merchant.clone()).into_val(&env),
-                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 100_000i128)].into_val(&env)
+                soroban_sdk::map![
+                    &env,
+                    (Symbol::new(&env, "amount"), 100_000i128),
+                    (Symbol::new(&env, "nonce"), 2u64),
+                ]
+                .into_val(&env)
             )
         ]
     );
@@ -1212,13 +1233,7 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     let contract_addr = client.address.clone();
 
     // Refunding to vault address must return SelfTransfer error
-    let res = client.try_refund(
-        &payment_ref,
-        &contract_addr,
-        &50_000,
-        &0,
-        &50_000,
-    );
+    let res = client.try_refund(&payment_ref, &contract_addr, &50_000, &0, &50_000);
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
     // Payment ref must remain unconsumed / not recorded
@@ -1278,7 +1293,10 @@ fn test_set_token_succeeds_when_vault_is_empty() {
 
     // Now deposit using the new token
     client.deposit(&merchant, &200_000);
-    assert_eq!(TokenClient::new(&env, &new_token).balance(&client.address), 200_000);
+    assert_eq!(
+        TokenClient::new(&env, &new_token).balance(&client.address),
+        200_000
+    );
 }
 
 #[test]
@@ -1310,4 +1328,121 @@ fn test_set_token_requires_admin_auth() {
     // Let's verify with mock_all_auths reset
     env.mock_all_auths();
     assert!(client.try_set_token(&new_token).is_ok());
+}
+
+// ── Domain Separator and Nonce Tests (Issue #136) ────────────────────────
+
+#[test]
+fn test_domain_separator_is_set_on_initialize() {
+    let (_env, client, _merchant, _token) = setup(100);
+    // The domain separator should be a valid 32-byte hash.
+    let sep = client.get_domain_separator();
+    // It should not be all zeros (a real SHA-256 hash).
+    assert_ne!(sep.to_array(), [0u8; 32]);
+}
+
+#[test]
+fn test_domain_separator_differs_per_instance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let merchant = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin);
+    let token = sac.address();
+    StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
+
+    let id_a = env.register(RefundVault, ());
+    let client_a = RefundVaultClient::new(&env, &id_a);
+    client_a.initialize(&merchant, &token, &100);
+
+    let id_b = env.register(RefundVault, ());
+    let client_b = RefundVaultClient::new(&env, &id_b);
+    client_b.initialize(&merchant, &token, &100);
+
+    // Different deployments must have different domain separators.
+    assert_ne!(
+        client_a.get_domain_separator(),
+        client_b.get_domain_separator()
+    );
+}
+
+#[test]
+fn test_nonce_starts_at_zero() {
+    let (_env, client, _merchant, _token) = setup(100);
+    assert_eq!(client.get_nonce(), 0);
+}
+
+#[test]
+fn test_nonce_increments_on_deposit() {
+    let (env, client, merchant, _token) = setup(100);
+    assert_eq!(client.get_nonce(), 0);
+    client.deposit(&merchant, &100_000);
+    assert_eq!(client.get_nonce(), 1);
+}
+
+#[test]
+fn test_nonce_increments_on_refund() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let nonce_before = client.get_nonce();
+    let payment_ref = BytesN::from_array(&env, &[0xAAu8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100, &0, &100);
+    assert_eq!(client.get_nonce(), nonce_before + 1);
+}
+
+#[test]
+fn test_nonce_increments_on_withdraw() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let nonce_before = client.get_nonce();
+    client.withdraw(&100_000, &merchant);
+    assert_eq!(client.get_nonce(), nonce_before + 1);
+}
+
+#[test]
+fn test_nonce_does_not_increment_on_failed_operation() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let nonce_before = client.get_nonce();
+    // Failed deposit (invalid amount) must not increment nonce.
+    let _ = client.try_deposit(&merchant, &0);
+    assert_eq!(client.get_nonce(), nonce_before);
+}
+
+/// Demonstrates that nonce increments are strictly monotonically increasing,
+/// which is the core replay-detection property (issue #136).
+#[test]
+fn test_nonce_is_strictly_monotonic() {
+    let (env, client, merchant, _token) = setup(100);
+    let mut seen_nonces = std::vec::Vec::new();
+
+    // Deposit #1
+    client.deposit(&merchant, &500_000);
+    seen_nonces.push(client.get_nonce());
+
+    // Deposit #2
+    client.deposit(&merchant, &100_000);
+    seen_nonces.push(client.get_nonce());
+
+    // Withdraw
+    client.withdraw(&50_000, &merchant);
+    seen_nonces.push(client.get_nonce());
+
+    // Refund
+    let payment_ref = BytesN::from_array(&env, &[0xBBu8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &10_000, &0, &10_000);
+    seen_nonces.push(client.get_nonce());
+
+    // Every successive nonce must be strictly greater than the previous one.
+    for window in seen_nonces.windows(2) {
+        assert!(
+            window[1] > window[0],
+            "nonce must be strictly monotonic: got {:?}",
+            seen_nonces
+        );
+    }
+    // Final nonce must be 4 (four successful state-changing calls).
+    assert_eq!(client.get_nonce(), 4);
 }
