@@ -1211,6 +1211,7 @@ fn test_shared_refund_vectors_include_live_testnet_refund() {
 
 #[test]
 fn test_refund_to_contract_address_fails_self_transfer() {
+    use soroban_sdk::testutils::Events;
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -1232,6 +1233,7 @@ fn test_refund_to_contract_address_fails_self_transfer() {
 
 #[test]
 fn test_withdraw_to_contract_address_fails_self_transfer() {
+    use soroban_sdk::testutils::Events;
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -1301,7 +1303,7 @@ fn test_set_token_fails_when_vault_is_funded() {
 #[test]
 fn test_set_token_requires_admin_auth() {
     let (env, client, _merchant, _token) = setup(100);
-    let stranger = Address::generate(&env);
+    let _stranger = Address::generate(&env);
 
     let new_token_admin = Address::generate(&env);
     let new_sac = env.register_stellar_asset_contract_v2(new_token_admin);
