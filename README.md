@@ -9,6 +9,7 @@
   </p>
   <p>
     <a href="DEPLOYMENTS.md"><strong>Live on Testnet</strong></a> ·
+    <a href="docs/BENCHMARKS.md"><strong>Benchmarks</strong></a> ·
     <a href="https://accensa.github.io/accensa-app/docs/contracts/overview"><strong>Documentation</strong></a> ·
     <a href="https://accensa-dashboard.vercel.app"><strong>Dashboard</strong></a> ·
     <a href="https://github.com/accensa/accensa-app"><strong>accensa-app</strong></a>
@@ -258,6 +259,15 @@ The dashboard, indexer, and SDK that drive these contracts live in
 
 Tests run against the Soroban test environment on every push, alongside
 `cargo fmt --check` and `cargo clippy -D warnings`. CI does not swallow failures.
+
+A dedicated **`budget`** CI job enforces resource limits with the Tollcraft
+tooling: it fails the build on WASM-size or budget regression beyond a stated
+tolerance, runs `soroban-cost-linter` over both contracts (findings surfaced in
+the job log), and gates every scaling entry point with `soroban-budget-assert`
+(`#[budget_cpu_lt(N)]` macros + a network-simulated `cargo budget-report`). The
+measured per-function CPU/memory/read/write costs and the headroom against the
+network limits — including the measured justification for `MAX_BATCH_SIZE = 1000`
+— are published in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 Both contracts carry property-based fuzz suites (`src/fuzz_test.rs`) that generate
 random operation sequences and assert invariants after every step — pruning stays a

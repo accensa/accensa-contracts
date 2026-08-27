@@ -143,6 +143,124 @@ jobs:
         # Ensures that the testutils budget harness compiles and works.
         run: cargo test -p testutils --profile release-with-logs
 
+  budget:
+    name: budget-limits
+    runs-on: ubuntu-latest
+    env:
+      # Stated tolerance for committed baselines. A measured value that exceeds
+      # baseline * (1 + tolerance) fails the build. Wasm size: 10%. Budget
+      # assertions (Tier A macros / Tier B --check): 15% (see budget.toml).
+      WASM_SIZE_TOLERANCE: 0.10
+      # Pinned tool versions (Tollcraft). Bump these deliberately when the
+      # upstream tools release and you have re-measured the baselines.
+      SOROBAN_COST_LINTER_TAG: v0.1.1
+      SOROBAN_COST_LINTER_NIGHTLY: nightly-2026-04-16
+      DYLINT_VERSION: 6.0.1
+      # soroban-budget-assert is distributed from git (not crates.io). Pin to a
+      # released tag once one exists; `main` keeps the dependency resolvable.
+      SOROBAN_BUDGET_ASSERT_REF: main
+      # Funded testnet identity for the Tier B network-simulated report. Empty in
+      # forks / untrusted runs, so the network step is skipped there.
+      STELLAR_TESTNET_SECRET: ${{ secrets.STELLAR_TESTNET_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust (stable + wasm)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - name: Cache cargo
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-budget-${{ hashFiles('**/Cargo.lock') }}
+
+      # --- Build every contract to WASM (needed by the Tier A macro suite) ---
+      - name: Wasm build
+        run: cargo build --target wasm32v1-none --release
+
+      # --- WASM size ceiling (committed baseline + tolerance) ---
+      - name: Enforce WASM size budget
+        run: |
+          TOL=$WASM_SIZE_TOLERANCE
+          FAILED=0
+          PCT=$(awk "BEGIN{printf \"%.0f\", $TOL*100}")
+          echo "### WASM Build Sizes" >> $GITHUB_STEP_SUMMARY
+          echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
+
+          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm"; do
+            name="${pair%%:*}"; wasm="${pair##*:}"
+            SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
+            BUDGET=$(jq -r ".$name" .wasm-budget.json)
+            CEIL=$(awk "BEGIN{printf \"%d\", $BUDGET*(1+$TOL)}")
+            if [ "$SIZE" -gt "$CEIL" ]; then
+              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
+              FAILED=1
+            else
+              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "Error: WASM size budget exceeded beyond the stated tolerance." >&2
+            exit 1
+          fi
+
+      # --- Stage 1: soroban-cost-linter (static analysis, findings surfaced) ---
+      - name: Install soroban-cost-linter (pinned)
+        run: |
+          rustup toolchain install "$SOROBAN_COST_LINTER_NIGHTLY" --component rustc-dev llvm-tools-preview
+          cargo install cargo-dylint dylint-link --version "$DYLINT_VERSION" --locked
+          cargo +"$SOROBAN_COST_LINTER_NIGHTLY" install \
+            --git https://github.com/Tollcraft/soroban-cost-linter.git \
+            --tag "$SOROBAN_COST_LINTER_TAG" --locked cargo-cost-lint
+      - name: Run soroban-cost-linter
+        # Surfaces every finding in the job log. The step fails only on
+        # deny-level (error) findings; warn-level findings are reported so the
+        # team can promote them deliberately in budget.toml. Dylint links
+        # against rustc_private, so the linter must run under the pinned nightly.
+        run: |
+          echo "### soroban-cost-linter findings" >> $GITHUB_STEP_SUMMARY
+          cargo +"$SOROBAN_COST_LINTER_NIGHTLY" cost-lint --workspace --format text | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+      # --- Stage 2: soroban-budget-assert Tier A (local, per-PR gate) ---
+      - name: Run Tier A budget assertions
+        # Compiles the contracts for the host and runs the `#[budget_cpu_lt(N)]`
+        # macro tests. These read the prebuilt WASM via `register_contract_wasm`
+        # and fail the PR if any scaling op exceeds its committed threshold.
+        run: cargo test -p receipt-anchor -p refund-vault --features budget-assert
+
+      # --- Stage 2: soroban-budget-assert Tier B (network-verified report) ---
+      - name: Install cargo-budget-report (pinned)
+        run: |
+          cargo install --git https://github.com/Tollcraft/soroban-budget-assert.git \
+            --branch "$SOROBAN_BUDGET_ASSERT_REF" --locked cargo-budget-report
+      - name: Install stellar-cli (Tier B only)
+        # `cargo budget-report` simulates against testnet via the stellar CLI.
+        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
+        run: cargo install --locked stellar-cli
+      - name: Run cargo budget-report (Tier B)
+        # Requires a funded testnet identity; only runs in the repo's own runs
+        # where the secret is set. `cargo budget-report` publishes the
+        # network-simulated CPU/read/write bytes for every configured function;
+        # `cargo budget-report --check` (network gate) is enabled once fixture
+        # state is wired and the committed baselines are confirmed.
+        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
+        run: |
+          echo "$STELLAR_TESTNET_SECRET" | stellar keys add alice --network testnet --secret-key-stdin
+          cargo budget-report --check --json | tee budget-report.json
+          echo "### Tier B budget report" >> $GITHUB_STEP_SUMMARY
+          cat budget-report.json >> $GITHUB_STEP_SUMMARY
+      - name: Upload Tier B report
+        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-report-${{ github.sha }}
+          path: budget-report.json
+
   build-wasm:
     name: build-wasm
     runs-on: ubuntu-latest

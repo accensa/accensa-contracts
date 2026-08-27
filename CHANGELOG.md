@@ -10,6 +10,19 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+- **Resource-budget CI with the Tollcraft tooling** (issue #20 follow-up):
+  a `budget` job in `.github/workflows/ci.yml` fails the build on WASM-size or
+  budget regression beyond a stated tolerance. It runs `soroban-cost-linter`
+  (`cargo cost-lint`) over both contracts with findings surfaced in the job
+  log, and gates every scaling entry point (`anchor_batch` at count 1 / 500 /
+  1000, `verify_receipt` at proof depths 1 and 10, `prune_batches` over 100
+  deletes, and `refund` / `deposit` on `RefundVault`) with
+  `soroban-budget-assert` `#[budget_cpu_lt(N)]` Tier A macros plus a
+  network-simulated `cargo budget-report` Tier B step. Baselines are committed
+  (`.wasm-budget.json`, `budget.toml`, and `contracts/*/src/budget_test.rs`) and
+  updated only by an explicit change. Measured per-function CPU/memory/read/write
+  costs and headroom — including the measured justification for
+  `MAX_BATCH_SIZE = 1000` — are published in `docs/BENCHMARKS.md`.
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the
