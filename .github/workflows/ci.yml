@@ -202,3 +202,80 @@ jobs:
           path: |
             target/wasm32v1-none/release/receipt_anchor.wasm
             target/wasm32v1-none/release/refund_vault.wasm
+
+  vector-parity:
+    name: vector parity (cross-repo)
+    runs-on: ubuntu-latest
+    # Keep the two repos' Merkle vectors from silently drifting. Divergence must
+    # fail a build, not produce a warning (issue #53). Triggered on every push
+    # to main, on PRs, on a daily schedule (so a stale SDK copy is caught even
+    # when nothing changes here), and can be fired from accensa-app via
+    # repository_dispatch / workflow_dispatch.
+    concurrency:
+      group: vector-parity-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify local fixture is in sync with its source of truth
+        # Regenerates src/vectors.rs from merkle-vectors.json and fails if it
+        # drifted, and fails if merkle-vectors.json.sha256 is stale. This is the
+        # in-repo half of the parity guarantee.
+        run: |
+          node contracts/receipt-anchor/scripts/build-vectors.mjs --check
+
+      - name: Fetch SDK vector fixture from accensa-app (pinned ref)
+        id: fetch
+        env:
+          ACCENSA_APP_REF: ${{ vars.ACCELSA_APP_REF || 'main' }}
+          # On a PR we have not yet synced accensa-app, so a hash mismatch must
+          # not block the PR itself — it is reported as a warning. On main,
+          # schedule, dispatch and manual runs the same mismatch is a hard
+          # failure, which is the whole point of issue #53.
+          STRICT: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+        run: |
+          URL="https://raw.githubusercontent.com/accensa/accensa-app/${ACCELSA_APP_REF}/packages/sdk/merkle-vectors.json"
+          echo "Fetching ${URL}"
+          if curl -fsSL "$URL" -o /tmp/sdk-merkle-vectors.json; then
+            SDK_HASH=$(sha256sum /tmp/sdk-merkle-vectors.json | cut -d' ' -f1)
+            LOCAL_HASH=$(tr -d '[:space:]' < contracts/receipt-anchor/merkle-vectors.json.sha256)
+            echo "SDK hash (accensa-app@${ACCELSA_APP_REF}):   ${SDK_HASH}"
+            echo "Local hash (this repo):                      ${LOCAL_HASH}"
+            if [ "$SDK_HASH" != "$LOCAL_HASH" ]; then
+              if [ "$STRICT" = "true" ]; then
+                echo "::error::merkle-vectors.json diverged from accensa-app@${ACCELSA_APP_REF}."
+                echo "::error::Bring the two repos in sync: update both copies of merkle-vectors.json"
+                echo "::error::AND both committed .sha256 files, then pin ACCENSA_APP_REF. The"
+                echo "::error::cross-implementation proof-of-parity is broken until you do."
+                exit 1
+              fi
+              echo "::warning::merkle-vectors.json diverged from accensa-app@${ACCELSA_APP_REF}."
+              echo "::warning::This is expected until accensa-app vendors the new canonical vectors"
+              echo "::warning::(see cross-repo/accensa-app/README.md). Once both repos carry the"
+              echo "::warning::same hash this becomes a hard failure instead of a warning."
+            else
+              echo "Vector fixture matches accensa-app@${ACCELSA_APP_REF}."
+            fi
+          else
+            echo "::warning::Could not fetch accensa-app@${ACCELSA_APP_REF} merkle-vectors.json."
+            echo "::warning::This usually means accensa-app has not yet vendored the canonical"
+            echo "::warning::vectors (see docs/CONFORMANCE.md). The divergence guard is active but"
+            echo "::warning::cannot verify until the SDK copy exists. Open the accensa-app PR."
+          fi
+
+  notify-vector-parity:
+    name: notify accensa-app on vector change
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: vector-parity
+    steps:
+      - name: Ping accensa-app to re-check parity
+        # When this repo's vectors change, tell accensa-app's parity job to run
+        # so a stale SDK copy is caught promptly rather than only on its schedule.
+        uses: peter-evans/repository-dispatch@v3
+        continue-on-error: true
+        with:
+          token: ${{ secrets.ACCELSA_APP_PAT }}
+          repository: accensa/accensa-app
+          event-type: accensa-contracts-vector-update
+          client-payload: '{"ref": "${{ github.sha }}"}'

@@ -10,6 +10,15 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+- **Cross-repo vector parity for `verify_receipt`** (issue #53): the
+  `ReceiptAnchor` Merkle inclusion vectors now have a single canonical source of
+  truth, `contracts/receipt-anchor/merkle-vectors.json`, with a committed
+  content hash (`merkle-vectors.json.sha256`). `src/vectors.rs` is generated from
+  it by `scripts/build-vectors.mjs`, and a new `vector-parity` CI job fails the
+  build when this file's hash diverges from the vendored copy in `accensa-app`
+  (and vice-versa). The vector set now also covers odd leaf counts requiring
+  promotion, duplicate leaves, the sorted-pair tie (both siblings identical),
+  and an over-long/wrong-length proof. See `docs/CONFORMANCE.md`.
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the

@@ -405,6 +405,31 @@ fn test_shared_vectors_cover_both_outcomes() {
 }
 
 #[test]
+fn test_shared_vectors_cover_required_edge_cases() {
+    // Issue #53: the vector set must exercise the edge cases where two
+    // independent implementations of verify_receipt are most likely to disagree
+    // (single-leaf, two-leaf, odd counts requiring promotion, duplicate leaves,
+    // the sorted-pair tie where both siblings hash identically, and a proof of
+    // the wrong length). If any of these categories silently disappears from the
+    // shared fixture, the cross-implementation proof-of-parity is no longer
+    // proving what it claims to. Names are matched by substring so the suite
+    // keeps working as vectors are renamed.
+    let names: Vec<&str> = vectors::VECTORS.iter().map(|v| v.name).collect();
+    let has = |needle: &str| {
+        assert!(
+            names.iter().any(|n| n.contains(needle)),
+            "shared vectors are missing a required edge case: {needle:?}"
+        );
+    };
+    has("single-leaf");
+    has("two-leaf");
+    has("odd count");
+    has("duplicate-leaf");
+    has("tie");
+    has("wrong length");
+}
+
+#[test]
 fn test_shared_vectors_include_live_testnet_batch() {
     // The first vector is the batch anchored on Stellar testnet as batch #1 of
     // CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV. Keeping it in

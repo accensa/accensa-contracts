@@ -33,3 +33,10 @@ graph TD
 
 ### Trade-offs
 - **Loss of Positional Data:** We can prove a receipt is in the batch, but we cannot prove *where* it is in the batch (its exact index). For our use case (receipt inclusion verification), this index is irrelevant, making the trade-off highly favorable.
+
+## See also
+
+The sorted-pair convention above is exactly what the shared conformance vectors
+exercise. How those vectors are kept identical between the Rust contract and the
+TypeScript SDK — and what that parity does and does not prove — is documented in
+[`docs/CONFORMANCE.md`](CONFORMANCE.md) (issue #53).
