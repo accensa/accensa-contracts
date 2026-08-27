@@ -11,6 +11,15 @@ use soroban_sdk::{
 const FLOAT: i128 = 1_000_000;
 const WINDOW: u32 = 100;
 
+/// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
+/// wasm32v1-none --release` before these tests run (see
+/// `.github/workflows/ci.yml` and the README's "Build and test" section).
+/// `ReceiptAnchor::anchor_batch` factory-deploys shards from a real installed
+/// wasm hash, so this integration test needs the same wasm the unit tests do.
+mod shard_wasm {
+    soroban_sdk::contractimport!(file = "../../target/wasm32v1-none/release/receipt_shard.wasm");
+}
+
 struct TestEnv<'a> {
     env: Env,
     anchor: ReceiptAnchorClient<'a>,
@@ -32,7 +41,8 @@ fn setup<'a>() -> TestEnv<'a> {
 
     let anchor_id = env.register(ReceiptAnchor, ());
     let anchor = ReceiptAnchorClient::new(&env, &anchor_id);
-    anchor.initialize(&merchant);
+    let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
+    anchor.initialize(&merchant, &shard_wasm_hash);
 
     let vault_id = env.register(RefundVault, ());
     let vault = RefundVaultClient::new(&env, &vault_id);
@@ -67,6 +77,75 @@ fn hash_pair(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> BytesN<32> {
     BytesN::from_array(env, &digest)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// README invariant: "Refunds outlive pruned batches"
+// -------------------------------------------------------------------------------------
+#[test]
+fn readme_claim_refunds_outlive_pruned_batches() {
+    let TestEnv {
+        env,
+        anchor,
+        vault,
+        merchant,
+        token: _,
+    } = setup();
+
+    // Anchor a single-leaf batch.
+    let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
+    let leaf = payment_ref.clone();
+    anchor.anchor_batch(&leaf.clone(), &1, &0, &100);
+
+    // Fast-forward and prune the batch (anchored at ledger 10, so prune < 150).
+    env.ledger().with_mut(|li| li.sequence_number = 200);
+    anchor.prune_batches(&150);
+    assert!(anchor.try_get_batch(&1).is_err(), "batch should be pruned");
+
+    // The vault is unaffected: refunding the same payment_ref still works,
+    // provided it falls within the refund window (paid_at_ledger >= 100 here).
+    vault.deposit(&merchant, &500_000);
+    let buyer = Address::generate(&env);
+    vault.refund(&payment_ref, &buyer, &100, &150, &100);
+
+    let record = vault.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 100);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// README invariant: "payment_ref ↔ receipt-leaf"
+// -------------------------------------------------------------------------------------
+#[test]
+fn readme_claim_payment_ref_is_receipt_leaf() {
+    let TestEnv {
+        env,
+        anchor,
+        vault,
+        merchant,
+        token: _,
+    } = setup();
+
+    let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
+    let leaf = payment_ref.clone(); // The leaf IS the payment_ref.
+
+    let sibling = BytesN::from_array(&env, &[10u8; 32]);
+    let root = hash_pair(&env, &leaf, &sibling);
+
+    anchor.anchor_batch(&root, &2, &0, &100);
+    let proof = vec![&env, sibling.clone()];
+    assert!(anchor.verify_receipt(&1, &leaf, &proof));
+
+    vault.deposit(&merchant, &500_000);
+    let buyer = Address::generate(&env);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+
+    // Both contracts agree: verify_receipt accepts the leaf and get_refund
+    // returns a record keyed by the same bytes.
+    assert!(anchor.verify_receipt(&1, &leaf, &proof));
+    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Remaining cross-contract behaviour (kept from the previous suite)
+// -------------------------------------------------------------------------------------
 #[test]
 fn test_happy_path_and_payment_ref_correspondence() {
     let TestEnv {
@@ -77,34 +156,22 @@ fn test_happy_path_and_payment_ref_correspondence() {
         token: _,
     } = setup();
 
-    // 1. The happy path across both contracts.
-    // 2. payment_ref correspondence:
-    // The payment_ref used in RefundVault is EXACTLY the leaf hash used in ReceiptAnchor.
-    // This explicitly documents the join between the two contracts.
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
-    let leaf = payment_ref.clone(); // The leaf IS the payment_ref
+    let leaf = payment_ref.clone();
 
     let sibling = BytesN::from_array(&env, &[8u8; 32]);
     let root = hash_pair(&env, &leaf, &sibling);
 
-    // Anchor the batch
     anchor.anchor_batch(&root, &2, &0, &100);
-
-    // The agent can verify the receipt
     let proof = vec![&env, sibling.clone()];
     assert!(anchor.verify_receipt(&1, &leaf, &proof));
 
-    // Merchant deposits float
     vault.deposit(&merchant, &500_000);
-
-    // Later, the payment is refunded
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100);
 
-    // Assert that anchoring and refunding are independent:
-    // The anchored receipt still verifies afterwards.
     assert!(anchor.verify_receipt(&1, &leaf, &proof));
-    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount, 100);
+    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }
 
 #[test]
@@ -117,40 +184,26 @@ fn test_refund_of_payment_in_pruned_batch() {
         token: _,
     } = setup();
 
-    // 3. Refund of a payment in a pruned batch.
-    // Intended behaviour: Refunds outlive their anchored batch. The vault's records
-    // are persistent and independent of the anchor's pruned batches. A refund can
-    // arrive and be processed even if the original anchor batch is gone, as long as
-    // it satisfies the refund window policy.
-
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let leaf = payment_ref.clone();
 
-    let root = leaf.clone(); // Single leaf tree
+    let root = leaf.clone();
     anchor.anchor_batch(&root, &1, &0, &100);
 
-    // Fast forward to prune the batch (assume anchored_ledger is 10)
     env.ledger().with_mut(|li| li.sequence_number = 200);
-    anchor.prune_batches(&150); // Prunes batches anchored before ledger 150
-
-    // Ensure it's pruned
+    anchor.prune_batches(&150);
     assert!(anchor.try_get_batch(&1).is_err());
 
-    // Merchant deposits float
     vault.deposit(&merchant, &500_000);
-
-    // Issue refund - it should succeed even though the batch is pruned,
-    // as long as the paid_at_ledger is within the refund window (window is 100).
-    // Ledger is 200, window is 100, so paid_at_ledger must be >= 100.
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &150);
+    vault.refund(&payment_ref, &buyer, &100, &150, &100);
 
-    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount, 100);
+    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4)")]
-fn test_double_refund_with_valid_receipt_proof() {
+#[should_panic(expected = "Error(Contract, #19)")]
+fn test_full_refund_then_exceed_payment() {
     let TestEnv {
         env,
         anchor,
@@ -158,11 +211,6 @@ fn test_double_refund_with_valid_receipt_proof() {
         merchant,
         token: _,
     } = setup();
-
-    // 4. Double refund with a valid receipt proof.
-    // A valid Merkle proof does not create a second refund path.
-    // We demonstrate this by trying to refund twice. (The proof itself is off-chain
-    // to the vault, the vault only cares about the payment_ref).
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let leaf = payment_ref.clone();
@@ -173,12 +221,12 @@ fn test_double_refund_with_valid_receipt_proof() {
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
 
-    // First refund succeeds
-    vault.refund(&payment_ref, &buyer, &100, &0);
-    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount, 100);
+    // First refund takes a partial; a second past the ceiling is rejected.
+    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 
-    // Second refund fails with AlreadyRefunded
-    vault.refund(&payment_ref, &buyer, &100, &0);
+    // Over the ceiling -> Error(Contract, #19) ExceedsPayment.
+    vault.refund(&payment_ref, &buyer, &100, &0, &100);
 }
 
 #[test]
@@ -191,18 +239,14 @@ fn test_pause_interaction() {
         token: _,
     } = setup();
 
-    // 5. Pause interaction.
-    // A paused vault while anchoring continues; assert anchoring is unaffected.
-
-    // Pause the vault
     vault.pause();
 
-    // Try a vault operation - it should fail
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    assert!(vault.try_refund(&payment_ref, &buyer, &100, &0).is_err());
+    assert!(vault
+        .try_refund(&payment_ref, &buyer, &100, &0, &100)
+        .is_err());
 
-    // Anchoring continues unaffected
     let root = payment_ref.clone();
     anchor.anchor_batch(&root, &1, &0, &100);
 
@@ -220,9 +264,6 @@ fn test_ttl_archival_across_both() {
         token: _,
     } = setup();
 
-    // 6. TTL/archival across both.
-    // extend_batch_ttl and extend_refund_ttl operating on records for the same logical payment.
-
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let root = payment_ref.clone();
 
@@ -230,12 +271,11 @@ fn test_ttl_archival_across_both() {
     vault.deposit(&merchant, &500_000);
 
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100);
 
-    // Anyone can extend the TTL of both independently
     anchor.extend_batch_ttl(&1);
     vault.extend_refund_ttl(&payment_ref);
 
     assert!(anchor.verify_receipt(&1, &payment_ref, &vec![&env]));
-    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount, 100);
+    assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }

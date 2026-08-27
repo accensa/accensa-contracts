@@ -132,6 +132,9 @@
                 },
                 {
                   "u32": 100
+                },
+                {
+                  "i128": "100"
                 }
               ]
             }
@@ -283,7 +286,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Refund"
+                    "symbol": "RefundV2"
                   },
                   {
                     "bytes": "0505050505050505050505050505050505050505050505050505050505050505"
@@ -295,7 +298,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "amount"
+                      "symbol": "amount_refunded"
                     },
                     "val": {
                       "i128": "100"
@@ -307,6 +310,22 @@
                     },
                     "val": {
                       "u32": 500
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paid_at_ledger"
+                    },
+                    "val": {
+                      "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "payment_amount"
+                    },
+                    "val": {
+                      "i128": "100"
                     }
                   },
                   {
@@ -350,6 +369,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "ReentrancyLock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {

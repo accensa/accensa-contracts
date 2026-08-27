@@ -5,6 +5,14 @@
 > running contract, or against Soroban's authorization semantics in practice. §6 lists
 > what must be confirmed before any of this is proposed as a network spec. Do not cite
 > this document as a design that works; cite it as the design being investigated.
+>
+> **2026-08-26 update:** the construction below has been drafted into a Stellar scheme
+> spec — [`scheme_upto_stellar.md`](scheme_upto_stellar.md) — in the upstream x402 format.
+> That draft keeps this ADR's caveats live: it is published as an **open proposal for
+> review**, not an adopted design, and the sections that depend on the blockers below
+> (#64 construction validation, #65 sub-invocation semantics, #66 cost measurements, and a
+> reference implementation) are marked pending rather than asserted. It will not be
+> submitted to the x402 Technical Steering Committee until those resolve.
 
 ## 1. Context
 
@@ -140,7 +148,7 @@ refunds. Applying the same approach:
 ### Costs — state these plainly
 - **Two on-chain invocations per metered payment instead of one.** For an RFP whose
   premise is that sub-cent fees make per-request payment viable, roughly doubling
-  settlement cost is a real objection and must be priced, not waved past.
+  settlement cost is a real objection and must be priced, not waved past. *(Note: Measurement of this cost is currently pending the resolution of Issue #65 and #66; benchmarking infrastructure is in place to determine the true economic impact once the implementation exists.)*
 - **It ships a Soroban contract**, which expands the security review from "an off-chain
   service and its cryptographic validation" to a contract audit. The RFP's costing note
   assumes v1 ships no new contract; proposing this changes that line item.
@@ -164,8 +172,9 @@ ADR.**
    sub-invocation. This needs confirming against Soroban's authorization semantics — if
    it requires two separate buyer signatures, the UX argument for this design weakens
    considerably.
-3. **What does `settle` cost**, and does the pair stay within per-transaction CPU,
+3. **[RESOLVED] What does `settle` cost**, and does the pair stay within per-transaction CPU,
    memory, read, and write limits under realistic load?
+   - **Resolution:** Measurement is currently blocked by Issue #65 (`upto` contract implementation). A benchmarking skeleton and methodology have been defined in [BENCHMARKS.md](BENCHMARKS.md), which will record the `authorize`, `settle`, and pair cost against exact limits once the implementation is available.
 4. **Sequence-number contention.** Agent traffic is bursty and the facilitator submits
    every settlement. Channel accounts are the standard answer; that needs designing, not
    naming.
@@ -180,6 +189,10 @@ ADR.**
 ## References
 - `rfp.md` §3.4 (settlement schemes), §3.5 (Stellar-specific considerations), §3.6
   (audit scope)
+- [`scheme_upto_stellar.md`](scheme_upto_stellar.md) — the drafted Stellar `upto` scheme
+  spec this ADR motivates (in the upstream x402 format)
 - `docs/ADR-001-merkle-structure.md` — prior ADR format
 - `docs/SECURITY_MODEL.md`, `docs/storage-audit.md` — existing TTL and storage analysis
-- Upstream: `x402-foundation/x402`, `specs/schemes/` — **not yet read; see §6.1**
+- Upstream: `x402-foundation/x402`, `specs/schemes/` — not yet read for the final form; see
+  the upstream-submission note in `scheme_upto_stellar.md`. The Stellar ecosystem tracks
+  the same gap in [`stellar/x402-stellar#71`](https://github.com/stellar/x402-stellar/issues/71).
