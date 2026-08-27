@@ -2,6 +2,9 @@
 name = "receipt-anchor"
 version = "0.2.0"
 edition = "2021"
+description = "Accensa Receipt Anchor Contract"
+repository = "https://github.com/accensa/accensa-contracts"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

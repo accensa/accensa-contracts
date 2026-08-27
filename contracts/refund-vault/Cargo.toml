@@ -2,6 +2,9 @@
 name = "refund-vault"
 version = "0.2.0"
 edition = "2021"
+description = "Accensa Refund Vault Contract"
+repository = "https://github.com/accensa/accensa-contracts"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

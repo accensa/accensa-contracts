@@ -27,6 +27,7 @@ pub enum Error {
     RefundNotFound = 9,
     MetadataTooLong = 10,
     AmountExceedsMax = 11,
+    InvalidRecipient = 12,
 }
 
 #[contracttype]
@@ -172,6 +173,10 @@ impl RefundVault {
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+
+        if recipient == env.current_contract_address() {
+            return Err(Error::InvalidRecipient);
         }
 
         let merchant: Address = env
@@ -349,6 +354,22 @@ impl RefundVault {
             TTL_THRESHOLD,
             TTL_EXTEND,
         );
+        Ok(())
+    }
+
+    pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        env.storage().instance().set(&DataKey::Token, &new_token);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 }
