@@ -23,7 +23,7 @@ Soroban provides three storage classes:
 | DataKey | Class | Contents | Size | Justification |
 |---|---|---|---|---|
 | `Admin` | Instance | `Address` (Merchant) | Small | Required for authentication of merchant operations (`deposit`, `refund`, `withdraw`, `pause`). |
-| `Token` | Instance | `Address` (USDC SAC) | Small | The underlying asset contract address. Crucial for token transfers. |
+| `Token` | Instance | `Address` (SEP-41 token contract; the USDC SAC by default) | Small | The underlying asset contract address. The vault is token-agnostic — any SEP-41 token is accepted — but each vault instance is bound to exactly one token. Crucial for token transfers. |
 | `RefundWindow` | Instance | `u32` (Ledgers) | Small | Global policy parameter determining refund eligibility. |
 | `IsPaused` | Instance | `bool` | Small | Emergency halt flag. Must be immediately available at all times. |
 | `Metadata` | Instance | Reserved | Variable | Reserved for future contract configuration or metadata. |
@@ -33,6 +33,12 @@ Soroban provides three storage classes:
 | `Refund(BytesN<32>)`| Persistent | `RefundRecord` | ~100 bytes | Tracks executed refunds (amount, recipient, ledger). Critical to prevent replay attacks (double-refunding the same payment). If this were Temporary, it could expire and allow a second refund. If archived, it remains a tombstone that prevents re-creation until restored. |
 
 *Note: The `Metadata`, `RefundMax`, `Admins`, and `Threshold` keys are defined in the `DataKey` enum for future compatibility and expansion, though some may currently be inactive in the logic.*
+
+### Token Generality
+
+`RefundVault` is deliberately token-agnostic. `initialize` binds one instance to one token contract, and the vault never assumes anything about that token beyond SEP-41. In particular it does **not** assume seven decimals: all amounts (`deposit`, `refund`, `withdraw`) are raw integer units in the token's smallest unit, and the float-bound check compares those units directly against the vault's token balance. A 0- or 2-decimal SEP-41 token therefore behaves identically to a 7-decimal Stellar Asset Contract — the vault performs no decimal arithmetic of its own. Converting human-readable amounts into the token's smallest unit is the responsibility of the merchant and the facilitator, not the contract.
+
+This matches the conclusion in `accensa-app` (the facilitator): one vault is bound to one token, so a merchant settling in multiple assets deploys one vault per asset. The full lifecycle (deposit → refund → withdraw) and the float-bound check are exercised against a non-7-decimal token in `token_agnostic_tests.rs`, along with the smallest unit, `i128` extremes, and a refund exactly equal to the float.
 
 ## TTL Strategy
 

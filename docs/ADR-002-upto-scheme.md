@@ -5,6 +5,14 @@
 > running contract, or against Soroban's authorization semantics in practice. §6 lists
 > what must be confirmed before any of this is proposed as a network spec. Do not cite
 > this document as a design that works; cite it as the design being investigated.
+>
+> **2026-08-26 update:** the construction below has been drafted into a Stellar scheme
+> spec — [`scheme_upto_stellar.md`](scheme_upto_stellar.md) — in the upstream x402 format.
+> That draft keeps this ADR's caveats live: it is published as an **open proposal for
+> review**, not an adopted design, and the sections that depend on the blockers below
+> (#64 construction validation, #65 sub-invocation semantics, #66 cost measurements, and a
+> reference implementation) are marked pending rather than asserted. It will not be
+> submitted to the x402 Technical Steering Committee until those resolve.
 
 ## 1. Context
 
@@ -140,7 +148,7 @@ refunds. Applying the same approach:
 ### Costs — state these plainly
 - **Two on-chain invocations per metered payment instead of one.** For an RFP whose
   premise is that sub-cent fees make per-request payment viable, roughly doubling
-  settlement cost is a real objection and must be priced, not waved past.
+  settlement cost is a real objection and must be priced, not waved past. *(Note: Measurement of this cost is currently pending the resolution of Issue #65 and #66; benchmarking infrastructure is in place to determine the true economic impact once the implementation exists.)*
 - **It ships a Soroban contract**, which expands the security review from "an off-chain
   service and its cryptographic validation" to a contract audit. The RFP's costing note
   assumes v1 ships no new contract; proposing this changes that line item.
@@ -164,32 +172,26 @@ ADR.**
    sub-invocation. This needs confirming against Soroban's authorization semantics — if
    it requires two separate buyer signatures, the UX argument for this design weakens
    considerably.
-3. **What does `settle` cost**, and does the pair stay within per-transaction CPU,
+3. **[RESOLVED] What does `settle` cost**, and does the pair stay within per-transaction CPU,
    memory, read, and write limits under realistic load?
-4. **[RESOLVED] Sequence-number contention.** 
-   - **Resolution:** The existing multi-signer pool mechanism is currently sufficient.
-   - **Mechanism:** As implemented in the `accensa/x402-facilitator-stellar` repository, the facilitator supports an array of signers with round-robin `selectSigner` rotation, along with an optional `feeBumpSigner` that decouples fee payment from sequence-number management (Evidence: Implementation - `src/facilitator.js`). 
-   - **Impact of `upto`:** The proposed `upto` design requires two on-chain invocations per metered payment instead of one (`authorize` and `settle`). This logically doubles the transaction submission demand per metered payment compared to exact payments.
-   - **Channel Accounts:** Because the signer pool already distributes sequence number contention across an array of addresses, channel accounts are not required at this time. 
-   - **Sizing & Measurement:** *Assumption:* We assume the signer array can scale horizontally to meet burst throughput. Empirical sizing and benchmarking of the signer pool under burst traffic remains future work before production deployment.
-
-5. **[RESOLVED] Refund interaction.** 
-   - **Resolution:** `RefundVault` requires no changes for `upto`; it operates on the actual settled payment amount rather than the authorization cap (Evidence: Implementation - `RefundVault::refund` does not validate against an upfront cap, but relies on the administrator to supply the correct refund amount). 
-   - **Refundable Amount:** The refundable amount is the actual settled amount, not the authorized cap. The off-chain accounting layer must derive and pass this settled amount to the vault.
-   - **Payment Reference:** The `payment_ref` generation remains stable and available during settlement for use as the refund key.
-   - **Unsettled/Expired Authorizations:** An authorization that expires or is never settled does not result in a token transfer, so there are no funds to refund. These records simply expire on-chain and are pruned without `RefundVault` interaction.
-   - **Changes Required:** None.
-
-6. **[RESOLVED] Who Authorizes?** 
-   - **Resolution:** The facilitator must submit the `authorize` operation.
-   - **Mechanism:** The buyer signs an authorization entry for the `authorize` invocation. The facilitator receives this authority and submits the transaction, paying the network fees (Evidence: Specification/Assumption - Fee sponsorship aligns with `extra.areFeesSponsored`). 
-   - **Buyer Requirements:** This approach ensures the buyer only needs to hold the payment asset, avoiding the requirement to hold XLM for transaction fees or manage Stellar sequence numbers.
-   - **Security Boundaries:** The facilitator is safely bounded because the authorization is scoped to the exact invocation arguments (recipient, amount cap) and bounded by the `signatureExpirationLedger` and on-chain `expiry`. Replay is prevented natively by the Soroban auth framework and the `consumed` state.
-   - **UX Trade-off:** If the buyer were to submit `authorize` directly, they would need to fund their wallet with XLM and handle native network submissions, breaking the abstracted UX where agents only care about the payment asset.
+   - **Resolution:** Measurement is currently blocked by Issue #65 (`upto` contract implementation). A benchmarking skeleton and methodology have been defined in [BENCHMARKS.md](BENCHMARKS.md), which will record the `authorize`, `settle`, and pair cost against exact limits once the implementation is available.
+4. **Sequence-number contention.** Agent traffic is bursty and the facilitator submits
+   every settlement. Channel accounts are the standard answer; that needs designing, not
+   naming.
+5. **Refund interaction.** `RefundVault` in this repo keys refunds on a payment
+   reference. If an `upto` payment settles for less than its cap, what is the refundable
+   amount — and does anything need to change here?
+6. **Does the facilitator need `authorize` at all**, or can the buyer call it directly?
+   Fee sponsorship (`extra.areFeesSponsored`) suggests the facilitator submits, but that
+   should follow from the spec rather than convenience.
 
 ## References
 - `rfp.md` §3.4 (settlement schemes), §3.5 (Stellar-specific considerations), §3.6
   (audit scope)
+- [`scheme_upto_stellar.md`](scheme_upto_stellar.md) — the drafted Stellar `upto` scheme
+  spec this ADR motivates (in the upstream x402 format)
 - `docs/ADR-001-merkle-structure.md` — prior ADR format
 - `docs/SECURITY_MODEL.md`, `docs/storage-audit.md` — existing TTL and storage analysis
-- Upstream: `x402-foundation/x402`, `specs/schemes/` — **not yet read; see §6.1**
+- Upstream: `x402-foundation/x402`, `specs/schemes/` — not yet read for the final form; see
+  the upstream-submission note in `scheme_upto_stellar.md`. The Stellar ecosystem tracks
+  the same gap in [`stellar/x402-stellar#71`](https://github.com/stellar/x402-stellar/issues/71).
