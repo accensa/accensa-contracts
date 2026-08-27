@@ -1,0 +1,13 @@
+# List of revisions to ignore during git blame.
+#
+# Configure git to use this file for this repository by running:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: add rustfmt.toml and clippy.toml to pin code style and lints (#190)
+4e652a55b27e56f501d12d1c61a37f4d47353792
+
+# style(contracts): apply standard formatting
+247701b56fdc4553e150514c4314cbb560f2c34c
+
+# style(contracts): fix formatting and clippy warnings caught by CI
+a6831e584976b37f8ebe3448f2bf58d1089ef611

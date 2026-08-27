@@ -1,12 +1,25 @@
 [workspace]
 members = [
+    "contracts/common",
+    "contracts/multisig-account",
     "contracts/receipt-anchor",
+    "contracts/receipt-shard",
     "contracts/refund-vault",
+    "contracts/testutils",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 soroban-sdk = "27.0.4"
+accensa-common = { path = "contracts/common" }
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+
+
 
 [profile.release]
 opt-level = "z"

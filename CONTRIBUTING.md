@@ -11,12 +11,25 @@ We welcome contributions from the community! Whether it's a bug fix, new feature
 5. **Create a new branch** for your feature or bug fix (`git checkout -b feature/my-new-feature` or `bugfix/issue-123`).
 6. **Make your changes** and test them thoroughly.
 
+### Ignoring Mechanical Formatting Revisions in Git Blame
+
+This repository contains a `.git-blame-ignore-revs` file to filter out mechanical formatting and lint sweeps when inspecting line history with `git blame`.
+
+To enable it locally for your clone, run:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+
 ## Submitting a Pull Request
 
 - Ensure your code follows the existing Rust style conventions.
 - Run all local build and test commands (e.g., `cargo build --target wasm32v1-none --release`, `cargo test`) before submitting.
 - Provide a clear and descriptive PR title and description.
 - Link to any relevant open issues in your PR description (e.g. `Closes #123`).
+- **Changelog Enforcement**: Any PR modifying contract source code (`contracts/**/src/**`) must include an entry in [`CHANGELOG.md`](CHANGELOG.md) under `## [Unreleased]`.
+  - **Escape Hatch**: If a PR contains genuinely internal or non-functional changes (e.g. refactoring, comments, or internal tests) that do not warrant a user-facing changelog entry, attach the `skip-changelog` label to your pull request to bypass the CI check.
 - Wait for a maintainer to review your PR. Address any feedback as needed.
 
 ## Reporting Bugs and Requesting Features
