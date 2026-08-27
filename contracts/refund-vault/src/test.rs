@@ -3,7 +3,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger},
+    testutils::{Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     Address, BytesN, Env,
 };
@@ -953,7 +953,7 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     assert!(client.get_refund(&payment_ref).is_none());
 
     let events = env.events().all().filter_by_contract(&client.address);
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.events.len(), 1);
 }
 
 #[test]
@@ -967,7 +967,7 @@ fn test_withdraw_to_contract_address_fails_self_transfer() {
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
     let events = env.events().all().filter_by_contract(&client.address);
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.events.len(), 1);
 }
 
 #[test]
