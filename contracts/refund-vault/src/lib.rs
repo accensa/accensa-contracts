@@ -45,6 +45,8 @@ pub enum DataKey {
     /// so a callback into another guarded entry point during that call is
     /// rejected rather than allowed to observe pre-update state.
     ReentrancyLock,
+    /// Address of the settlement contract for verifying upto payments.
+    SettlementContract,
 }
 
 #[contracttype]
@@ -70,6 +72,20 @@ pub struct YieldInfo {
     pub strategy: Option<Address>,
     pub reserve_ratio: u32,
     pub max_deploy_ratio: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettlementState {
+    NotFound,
+    Unsettled(u32), // expiry
+    Settled(i128, u32), // amount, ledger
+}
+
+/// Interface for the external upto settlement contract.
+#[contractclient(name = "UptoSettlementClient")]
+pub trait UptoSettlement {
+    fn get_settlement(env: Env, payment_id: BytesN<32>) -> SettlementState;
 }
 
 /// Emitted when a (possibly partial) refund is made from the vault float.
@@ -462,6 +478,144 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Refund part (or all) of an upto payment verified on-chain.
+    ///
+    /// Reads the actual settled amount and the settlement ledger directly from
+    /// the configured `SettlementContract`, enforcing the hard ceiling on
+    /// cumulative refunds without trusting the caller.
+    pub fn refund_upto(
+        env: Env,
+        payment_ref: BytesN<32>,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            return Err(Error::Paused);
+        }
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Refund(payment_ref.clone()))
+        {
+            return Err(Error::ExceedsPayment);
+        }
+
+        let settlement_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::SettlementContract)
+            .ok_or(Error::NotInitialized)?;
+            
+        let client = UptoSettlementClient::new(&env, &settlement_addr);
+        let state = client.get_settlement(&payment_ref);
+        
+        let (record_ceiling, paid_at_ledger) = match state {
+            SettlementState::NotFound => {
+                return Err(Error::PaymentNotFound);
+            }
+            SettlementState::Settled(settled_amt, ledger) => (settled_amt, ledger),
+            SettlementState::Unsettled(expiry) => {
+                if env.ledger().sequence() > expiry {
+                    return Err(Error::AuthorizationExpired);
+                } else {
+                    return Err(Error::AuthorizationUnsettled);
+                }
+            }
+        };
+
+        let window: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .unwrap();
+        if window > 0 {
+            let current_ledger = env.ledger().sequence();
+            if current_ledger > paid_at_ledger + window {
+                return Err(Error::WindowExpired);
+            }
+        }
+
+        let existing: Option<RefundRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RefundV2(payment_ref.clone()));
+            
+        let previous_refunded = match existing {
+            Some(rec) => rec.amount_refunded,
+            None => 0i128,
+        };
+
+        if previous_refunded.checked_add(amount).is_none()
+            || record_ceiling <= 0
+            || previous_refunded + amount > record_ceiling
+        {
+            return Err(Error::ExceedsPayment);
+        }
+
+        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &token_addr);
+        let balance = token_client.balance(&env.current_contract_address());
+        if balance < amount {
+            return Err(Error::InsufficientFloat);
+        }
+
+        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+
+        let cumulative_refunded = previous_refunded + amount;
+        let current_ledger = env.ledger().sequence();
+        let record = RefundRecord {
+            amount_refunded: cumulative_refunded,
+            payment_amount: record_ceiling,
+            paid_at_ledger,
+            recipient: recipient.clone(),
+            ledger: current_ledger,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::RefundV2(payment_ref.clone()), &record);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RefundV2(payment_ref.clone()),
+            TTL_THRESHOLD,
+            TTL_EXTEND,
+        );
+
+        RefundEvent {
+            payment_ref,
+            amount,
+            cumulative_refunded,
+            recipient: record.recipient,
+            ledger: record.ledger,
+        }
+        .publish(&env);
+
+        release_reentrancy_lock(&env);
+        Ok(())
+    }
+
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
         acquire_reentrancy_lock(&env)?;
 
@@ -540,6 +694,24 @@ impl RefundVault {
         env.storage()
             .persistent()
             .get(&DataKey::RefundV2(payment_ref))
+    }
+
+    pub fn set_settlement_contract(env: Env, contract: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SettlementContract, &contract);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
     }
 
     // ── Yield strategy management ──────────────────────────────────────────

@@ -72,4 +72,12 @@ pub enum Error {
     /// a wasm-level invocation failure or a value that failed to decode.
     /// Distinct from `BatchNotFound`, which a shard returns deliberately.
     ShardCallFailed = 102,
+    /// The specified payment reference was not found.
+    PaymentNotFound = 21,
+    /// The authorization exists but has not settled yet.
+    AuthorizationUnsettled = 22,
+    /// The authorization expired without settling.
+    AuthorizationExpired = 23,
+    /// A cross-contract settlement call failed or returned an unexpected format.
+    SettlementCallFailed = 24,
 }

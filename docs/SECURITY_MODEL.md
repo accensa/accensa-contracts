@@ -105,8 +105,8 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
 
 ### Upto Payments and Refund Ceilings
 - **Threat:** A buyer who authorized a metered cap (e.g. 100) but only settled a fraction (e.g. 40) attempts to claim a refund up to the authorization cap (100).
-- **Mitigation:** The `RefundVault` does not execute cross-contract reads to determine refund amounts. Instead, the vault relies entirely on the Admin (Merchant) to supply the correct settled amount as the `amount` parameter when calling `refund()`. The trust boundary explicitly requires the off-chain system to derive the actual settled amount and cap the refund at that value. Authorization caps do not create refundable balances, and unsettled or expired authorizations cannot be refunded.
-- **Partial Refund Policy:** Refunds remain strictly single-shot. Even for metered `upto` payments, `RefundVault` enforces one refund per `payment_ref`.
+- **Mitigation:** The `RefundVault` enforces refund ceilings natively on-chain for metered `upto` payments. It executes a cross-contract read against the configured `SettlementContract` to verify the authoritative settled amount and ledger. The vault uses this verified on-chain data, completely ignoring any ceiling supplied by the caller. Unsettled or expired authorizations are rejected, preventing refunds before a final amount is established.
+- **Partial Refund Policy:** Refunds natively support partial disbursements. A single payment may be refunded across multiple calls; the vault maintains a cumulative running total in storage and enforces that `cumulative_refunded <= actual_settled_amount`.
 
 ## Storage Security
 

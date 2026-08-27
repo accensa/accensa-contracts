@@ -781,3 +781,104 @@ fn test_shared_refund_vectors_include_live_testnet_refund() {
     assert!(live.expected_success);
     assert!(live.tx_hash.is_some());
 }
+
+#[contract]
+pub struct MockSettlement;
+#[contractimpl]
+impl UptoSettlement for MockSettlement {
+    fn get_settlement(env: Env, payment_id: BytesN<32>) -> SettlementState {
+        env.storage().instance().get(&payment_id).unwrap_or(SettlementState::NotFound)
+    }
+}
+
+fn setup_mock_settlement(env: &Env) -> Address {
+    env.register(MockSettlement, ())
+}
+
+#[test]
+fn test_refund_upto_happy_path() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let settlement_addr = setup_mock_settlement(&env);
+    client.set_settlement_contract(&settlement_addr);
+
+    let payment_ref = BytesN::from_array(&env, &[12u8; 32]);
+    let buyer = Address::generate(&env);
+
+    // Mock the settlement state
+    env.as_contract(&settlement_addr, || {
+        env.storage().instance().set(&payment_ref, &SettlementState::Settled(200_000, env.ledger().sequence()));
+    });
+
+    client.refund_upto(&payment_ref, &buyer, &120_000);
+
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&buyer), 120_000);
+    
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 120_000);
+    assert_eq!(record.payment_amount, 200_000);
+}
+
+#[test]
+fn test_refund_upto_unsettled_fails() {
+    let (env, client, merchant, _) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let settlement_addr = setup_mock_settlement(&env);
+    client.set_settlement_contract(&settlement_addr);
+
+    let payment_ref = BytesN::from_array(&env, &[13u8; 32]);
+    let buyer = Address::generate(&env);
+
+    env.as_contract(&settlement_addr, || {
+        env.storage().instance().set(&payment_ref, &SettlementState::Unsettled(env.ledger().sequence() + 10));
+    });
+
+    assert_eq!(
+        client.try_refund_upto(&payment_ref, &buyer, &120_000),
+        Err(Ok(Error::AuthorizationUnsettled))
+    );
+}
+
+#[test]
+fn test_refund_upto_expired_fails() {
+    let (env, client, merchant, _) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let settlement_addr = setup_mock_settlement(&env);
+    client.set_settlement_contract(&settlement_addr);
+
+    let payment_ref = BytesN::from_array(&env, &[14u8; 32]);
+    let buyer = Address::generate(&env);
+
+    env.as_contract(&settlement_addr, || {
+        env.storage().instance().set(&payment_ref, &SettlementState::Unsettled(env.ledger().sequence() + 10));
+    });
+
+    env.ledger().with_mut(|li| li.sequence_number += 20);
+
+    assert_eq!(
+        client.try_refund_upto(&payment_ref, &buyer, &120_000),
+        Err(Ok(Error::AuthorizationExpired))
+    );
+}
+
+#[test]
+fn test_refund_upto_exceeds_ceiling() {
+    let (env, client, merchant, _) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let settlement_addr = setup_mock_settlement(&env);
+    client.set_settlement_contract(&settlement_addr);
+
+    let payment_ref = BytesN::from_array(&env, &[15u8; 32]);
+    let buyer = Address::generate(&env);
+
+    env.as_contract(&settlement_addr, || {
+        env.storage().instance().set(&payment_ref, &SettlementState::Settled(100_000, env.ledger().sequence()));
+    });
+
+    assert_eq!(
+        client.try_refund_upto(&payment_ref, &buyer, &120_000),
+        Err(Ok(Error::ExceedsPayment))
+    );
+}
