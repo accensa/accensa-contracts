@@ -120,6 +120,14 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
 - **Threat:** An attacker tries to refund a negative amount to cause an underflow or steal funds.
 - **Mitigation:** Explicit validation ensures that the `amount` is strictly greater than zero (`InvalidAmount` error) before executing token transfers, preventing unintended arithmetic behaviors or logical exploits.
 
+### Self-Transfer and Phantom Refunds
+- **Threat:** An indexer or batch pipeline bug supplies the contract's own address as `recipient` in `refund` (or as `to` in `withdraw`). A self-transfer leaves float untouched while permanently consuming the `payment_ref` and emitting a `RefundEvent` for funds the buyer never received.
+- **Mitigation:** Both `refund` and `withdraw` explicitly validate that `recipient != env.current_contract_address()` and `to != env.current_contract_address()`, rejecting violations with `Error::SelfTransfer` before any persistent state is written or events emitted.
+- **`recipient == merchant` decision:** Refunding to the merchant's own address is permitted by design. A merchant may be testing automated refund workflows, acting as buyer in self-settlement flows, or executing an explicit accounting reversal. Because float does leave the contract and transfers to the merchant balance, the transfer is real and non-phantom.
+
+### Token Address Changeability
+- **Guarantee:** A vault initialized with an incorrect token address can be recovered via `set_token` if and only if the vault holds zero balance (`balance == 0`). If the vault contains any active float (`balance > 0`), `set_token` is rejected with `Error::FloatNotEmpty`. This allows correction of deployment-time typos without ever permitting an admin to swap the underlying asset out from under a funded vault.
+
 ## Storage Security
 
 For details on how storage archival and persistence affect the security model (such as preventing replay attacks via persistent tombstoning), see the [Storage Audit](storage-audit.md).

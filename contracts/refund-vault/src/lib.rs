@@ -386,6 +386,28 @@ impl RefundVault {
         Ok(())
     }
 
+    pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let current_token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &current_token);
+        let balance = token_client.balance(&env.current_contract_address());
+        if balance > 0 {
+            return Err(Error::FloatNotEmpty);
+        }
+
+        env.storage().instance().set(&DataKey::Token, &new_token);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
     /// Refund part (or all) of an original payment.
     ///
     /// `payment_amount` is the original payment amount and therefore the hard
@@ -425,7 +447,7 @@ impl RefundVault {
         }
 
         if recipient == env.current_contract_address() {
-            return Err(Error::InvalidRecipient);
+            return Err(Error::SelfTransfer);
         }
 
         let merchant: Address = env
@@ -539,6 +561,10 @@ impl RefundVault {
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+
+        if to == env.current_contract_address() {
+            return Err(Error::SelfTransfer);
         }
 
         let merchant: Address = env

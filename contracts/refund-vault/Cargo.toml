@@ -1,10 +1,10 @@
 [package]
 name = "refund-vault"
 version = "0.3.0"
-edition = "2021"
-description = "Accensa Refund Vault Contract"
-repository = "https://github.com/accensa/accensa-contracts"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Policy-bounded merchant refund vault for x402 on Stellar"
 
 [lints]
 workspace = true
