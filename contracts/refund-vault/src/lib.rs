@@ -316,6 +316,13 @@ fn refund_record_ttl_extend_to(env: &Env, window: u32, paid_at_ledger: u32) -> u
         .max(TTL_EXTEND)
 }
 
+/// Helper to extend the TTL of a persistent yield-storage entry (issue #131).
+fn persist_yield_ttl(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, TTL_EXTEND, TTL_THRESHOLD);
+}
+
 #[contract]
 pub struct RefundVault;
 
@@ -685,6 +692,13 @@ impl RefundVault {
     }
 
     // ── Yield strategy management ──────────────────────────────────────────
+    //
+    // Issue #131: yield-related storage keys are kept in **Persistent**
+    // storage rather than Instance storage. Non-yield calls (deposit,
+    // refund, withdraw, pause, unpause, admin transfer) never touch these
+    // keys, so moving them out of Instance reduces the read/write byte
+    // cost of every non-yield invocation. Persistent entries are extended
+    // with the standard TTL budget after every write.
 
     /// Register an external yield strategy contract. Only callable by admin.
     pub fn set_yield_strategy(env: Env, strategy: Address) -> Result<(), Error> {
@@ -696,8 +710,9 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::YieldStrategy, &strategy);
+        persist_yield_ttl(&env, &DataKey::YieldStrategy);
 
         env.storage()
             .instance()
@@ -720,8 +735,9 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::ReserveRatio, &basis_points);
+        persist_yield_ttl(&env, &DataKey::ReserveRatio);
 
         env.storage()
             .instance()
@@ -744,8 +760,9 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::MaxDeployRatio, &basis_points);
+        persist_yield_ttl(&env, &DataKey::MaxDeployRatio);
 
         env.storage()
             .instance()
@@ -785,7 +802,7 @@ impl RefundVault {
 
         let strategy: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::YieldStrategy)
             .ok_or(Error::StrategyNotSet)?;
 
@@ -799,12 +816,12 @@ impl RefundVault {
 
         let deployed: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::DeployedPrincipal)
             .unwrap_or(0);
         let harvested: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
 
@@ -816,7 +833,7 @@ impl RefundVault {
         // Reserve check: after deployment, liquid tokens must cover the reserve.
         let reserve_ratio: u32 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ReserveRatio)
             .unwrap_or(0);
         let post_deploy_balance = token_balance - amount;
@@ -828,7 +845,7 @@ impl RefundVault {
         // Max deployment check.
         let max_deploy_ratio: u32 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::MaxDeployRatio)
             .unwrap_or(10_000);
         let post_deploy_total = deployed + amount;
@@ -844,8 +861,9 @@ impl RefundVault {
         strategy_client.deposit(&amount);
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::DeployedPrincipal, &(deployed + amount));
+        persist_yield_ttl(&env, &DataKey::DeployedPrincipal);
 
         YieldDeployedEvent {
             strategy: strategy.clone(),
@@ -889,13 +907,13 @@ impl RefundVault {
 
         let strategy: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::YieldStrategy)
             .ok_or(Error::StrategyNotSet)?;
 
         let deployed: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::DeployedPrincipal)
             .unwrap_or(0);
         if principal > deployed {
@@ -907,17 +925,19 @@ impl RefundVault {
 
         let harvested: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
 
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &DataKey::DeployedPrincipal,
             &(deployed - principal_returned),
         );
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::HarvestedYield, &(harvested + yield_returned));
+        persist_yield_ttl(&env, &DataKey::DeployedPrincipal);
+        persist_yield_ttl(&env, &DataKey::HarvestedYield);
 
         YieldWithdrawnEvent {
             strategy,
@@ -956,7 +976,7 @@ impl RefundVault {
 
         let strategy: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::YieldStrategy)
             .ok_or(Error::StrategyNotSet)?;
 
@@ -969,12 +989,13 @@ impl RefundVault {
 
         let harvested: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::HarvestedYield, &(harvested + yield_amount));
+        persist_yield_ttl(&env, &DataKey::HarvestedYield);
 
         YieldHarvestedEvent {
             amount: yield_amount,
@@ -993,23 +1014,23 @@ impl RefundVault {
         YieldInfo {
             deployed_principal: env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::DeployedPrincipal)
                 .unwrap_or(0),
             harvested_yield: env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::HarvestedYield)
                 .unwrap_or(0),
-            strategy: env.storage().instance().get(&DataKey::YieldStrategy),
+            strategy: env.storage().persistent().get(&DataKey::YieldStrategy),
             reserve_ratio: env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::ReserveRatio)
                 .unwrap_or(0),
             max_deploy_ratio: env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::MaxDeployRatio)
                 .unwrap_or(10_000),
         }
