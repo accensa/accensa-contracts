@@ -64,6 +64,10 @@ pub enum Error {
     /// A guarded, external-call-making entry point was re-entered while a
     /// prior invocation of any guarded entry point was still in progress.
     ReentrancyBlocked = 20,
+    /// A refund or withdraw was attempted where the recipient is the contract's own address.
+    SelfTransfer = 21,
+    /// An attempt to change the vault's token address was made while the vault holds a non-zero token balance.
+    FloatNotEmpty = 22,
     /// The requested batch does not exist (or was pruned).
     BatchNotFound = 100,
     /// A batch larger than `MAX_BATCH_SIZE` was submitted.
