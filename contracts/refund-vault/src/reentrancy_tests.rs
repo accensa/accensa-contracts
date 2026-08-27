@@ -324,7 +324,10 @@ fn setup_with_malicious_token() -> MaliciousTokenVault {
     let policy = policy_for(&env);
 
     let token_id = env.register(MaliciousToken, ());
-    let vault_id = env.register(RefundVault, (merchant.clone(), token_id.clone(), 100, policy));
+    let vault_id = env.register(
+        RefundVault,
+        (merchant.clone(), token_id.clone(), 100u32, policy),
+    );
     let client = RefundVaultClient::new(&env, &vault_id);
 
     MaliciousTokenClient::new(&env, &token_id).initialize(&merchant, &vault_id);
@@ -712,7 +715,10 @@ fn setup_with_malicious_strategy(
     StellarAssetClient::new(&env, &token).mint(&merchant, &YIELD_FLOAT);
 
     let policy = policy_for(&env);
-    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 17_280, policy));
+    let vault_id = env.register(
+        RefundVault,
+        (merchant.clone(), token.clone(), 17_280u32, policy),
+    );
     let vault_client = RefundVaultClient::new(&env, &vault_id);
 
     let strategy_id = env.register(MaliciousYieldStrategy, ());
@@ -817,7 +823,10 @@ fn setup_plain_vault() -> (Env, RefundVaultClient<'static>, Address, Address) {
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
     let policy = policy_for(&env);
-    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 100, policy));
+    let vault_id = env.register(
+        RefundVault,
+        (merchant.clone(), token.clone(), 100u32, policy),
+    );
     let client = RefundVaultClient::new(&env, &vault_id);
     client.deposit(&merchant, &FLOAT);
 

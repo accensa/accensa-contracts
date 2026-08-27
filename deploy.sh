@@ -36,37 +36,71 @@ ANCHOR_ID=$(stellar contract deploy \
   --source "$IDENTITY" --network "$NETWORK" 2>/dev/null | tail -n 1)
 echo "   ReceiptAnchor: $ANCHOR_ID"
 
-echo "🚢 Deploying RefundVault..."
-VAULT_ID=$(stellar contract deploy \
+# Issue #129: the refund vault is no longer deployed directly. A stateless
+# RefundWindowPolicy (the default policy kind) and a RefundVaultFactory (which
+# deploys individual vaults via deploy_v2 + __constructor, binding each vault to
+# the default policy) are deployed instead. The factory stores the refund_vault
+# wasm hash and uses it to spin up a merchant vault on demand.
+
+echo "🚢 Deploying RefundWindowPolicy..."
+POLICY_ID=$(stellar contract deploy \
+  --wasm target/wasm32v1-none/release/refund_window_policy.wasm \
+  --source "$IDENTITY" --network "$NETWORK" 2>/dev/null | tail -n 1)
+echo "   RefundWindowPolicy: $POLICY_ID"
+
+echo "💾 Installing RefundVault wasm (for factory deploy_v2)..."
+VAULT_WASM_HASH=$(stellar contract install \
   --wasm target/wasm32v1-none/release/refund_vault.wasm \
   --source "$IDENTITY" --network "$NETWORK" 2>/dev/null | tail -n 1)
-echo "   RefundVault: $VAULT_ID"
+echo "   RefundVault wasm hash: $VAULT_WASM_HASH"
+
+echo "🚢 Deploying RefundVaultFactory..."
+FACTORY_ID=$(stellar contract deploy \
+  --wasm target/wasm32v1-none/release/refund_vault_factory.wasm \
+  --source "$IDENTITY" --network "$NETWORK" 2>/dev/null | tail -n 1)
+echo "   RefundVaultFactory: $FACTORY_ID"
 
 echo "⚙️  Initializing ReceiptAnchor..."
 stellar contract invoke --id "$ANCHOR_ID" --source "$IDENTITY" --network "$NETWORK" \
   -- initialize --merchant "$DEPLOYER"
 
-echo "⚙️  Initializing RefundVault..."
-stellar contract invoke --id "$VAULT_ID" --source "$IDENTITY" --network "$NETWORK" \
-  -- initialize --merchant "$DEPLOYER" --token "$TOKEN" \
-  --refund_window_ledgers "$REFUND_WINDOW_LEDGERS"
+echo "⚙️  Initializing RefundVaultFactory..."
+stellar contract invoke --id "$FACTORY_ID" --source "$IDENTITY" --network "$NETWORK" \
+  -- initialize --admin "$DEPLOYER" \
+  --vault_wasm_hash "$VAULT_WASM_HASH" --default_policy "$POLICY_ID"
+
+echo "⚙️  Deploying merchant RefundVault via factory..."
+VAULT_ID=$(stellar contract invoke --id "$FACTORY_ID" --source "$IDENTITY" --network "$NETWORK" \
+  -- deploy --merchant "$DEPLOYER" --token "$TOKEN" \
+  --refund_window_ledgers "$REFUND_WINDOW_LEDGERS")
+echo "   RefundVault: $VAULT_ID"
 
 ANCHOR_WASM="target/wasm32v1-none/release/receipt_anchor.wasm"
 VAULT_WASM="target/wasm32v1-none/release/refund_vault.wasm"
+POLICY_WASM="target/wasm32v1-none/release/refund_window_policy.wasm"
+FACTORY_WASM="target/wasm32v1-none/release/refund_vault_factory.wasm"
 
 COMMIT_SHA=$(git rev-parse HEAD || echo "unknown")
 ANCHOR_VERSION=$(grep -m 1 "^version" contracts/receipt-anchor/Cargo.toml | cut -d '"' -f 2)
 VAULT_VERSION=$(grep -m 1 "^version" contracts/refund-vault/Cargo.toml | cut -d '"' -f 2)
+POLICY_VERSION=$(grep -m 1 "^version" contracts/refund-window-policy/Cargo.toml | cut -d '"' -f 2)
+FACTORY_VERSION=$(grep -m 1 "^version" contracts/refund-vault-factory/Cargo.toml | cut -d '"' -f 2)
 
 if command -v sha256sum >/dev/null 2>&1; then
   ANCHOR_HASH=$(sha256sum "$ANCHOR_WASM" | awk '{print $1}')
   VAULT_HASH=$(sha256sum "$VAULT_WASM" | awk '{print $1}')
+  POLICY_HASH=$(sha256sum "$POLICY_WASM" | awk '{print $1}')
+  FACTORY_HASH=$(sha256sum "$FACTORY_WASM" | awk '{print $1}')
 elif command -v shasum >/dev/null 2>&1; then
   ANCHOR_HASH=$(shasum -a 256 "$ANCHOR_WASM" | awk '{print $1}')
   VAULT_HASH=$(shasum -a 256 "$VAULT_WASM" | awk '{print $1}')
+  POLICY_HASH=$(shasum -a 256 "$POLICY_WASM" | awk '{print $1}')
+  FACTORY_HASH=$(shasum -a 256 "$FACTORY_WASM" | awk '{print $1}')
 else
   ANCHOR_HASH="unknown"
   VAULT_HASH="unknown"
+  POLICY_HASH="unknown"
+  FACTORY_HASH="unknown"
 fi
 
 mkdir -p "$OUT_DIR"
@@ -76,6 +110,8 @@ cat > "$OUT_FILE" <<EOF
 # Commit: $COMMIT_SHA
 NEXT_PUBLIC_RECEIPT_ANCHOR_ID=$ANCHOR_ID
 NEXT_PUBLIC_REFUND_VAULT_ID=$VAULT_ID
+NEXT_PUBLIC_REFUND_VAULT_FACTORY_ID=$FACTORY_ID
+NEXT_PUBLIC_REFUND_WINDOW_POLICY_ID=$POLICY_ID
 MERCHANT_ADDRESS=$DEPLOYER
 TOKEN_ADDRESS=$TOKEN
 REFUND_WINDOW_LEDGERS=$REFUND_WINDOW_LEDGERS
@@ -83,6 +119,10 @@ RECEIPT_ANCHOR_VERSION=$ANCHOR_VERSION
 RECEIPT_ANCHOR_WASM_HASH=$ANCHOR_HASH
 REFUND_VAULT_VERSION=$VAULT_VERSION
 REFUND_VAULT_WASM_HASH=$VAULT_HASH
+REFUND_WINDOW_POLICY_VERSION=$POLICY_VERSION
+REFUND_WINDOW_POLICY_WASM_HASH=$POLICY_HASH
+REFUND_VAULT_FACTORY_VERSION=$FACTORY_VERSION
+REFUND_VAULT_FACTORY_WASM_HASH=$FACTORY_HASH
 EOF
 
 echo ""
@@ -93,4 +133,5 @@ cat "$OUT_FILE"
 echo "==========================================================="
 echo "Recorded to $OUT_FILE — commit this file."
 echo "Explorer: https://stellar.expert/explorer/$NETWORK/contract/$ANCHOR_ID"
+echo "          https://stellar.expert/explorer/$NETWORK/contract/$FACTORY_ID"
 echo "          https://stellar.expert/explorer/$NETWORK/contract/$VAULT_ID"

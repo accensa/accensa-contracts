@@ -184,10 +184,15 @@ impl RefundVaultFactory {
             .unwrap_or(0);
         let salt = Self::vault_salt(env, index);
 
-        let vault_addr = env
-            .deployer()
-            .with_current_contract(salt)
-            .deploy_v2(wasm_hash, (merchant.clone(), token.clone(), refund_window_ledgers, policy.clone()));
+        let vault_addr = env.deployer().with_current_contract(salt).deploy_v2(
+            wasm_hash,
+            (
+                merchant.clone(),
+                token.clone(),
+                refund_window_ledgers,
+                policy.clone(),
+            ),
+        );
 
         env.storage()
             .instance()

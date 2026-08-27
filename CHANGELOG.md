@@ -23,8 +23,31 @@ breaking changes bump the **minor** version, and they are called out as such.
   `.git/HEAD`, the resolved branch ref, the index and `src/` so a cached build
   cannot report a stale hash. A `test_commit_meta_is_well_formed` test in both
   crates pins the embedded commit to 40 hex characters.
+- **`RefundVaultFactory`** (issue #129): new `refund-vault-factory` contract
+  deploys individual `RefundVault` instances via `deploy_v2` + `__constructor`,
+  storing the vault wasm hash on-chain, keeping a registry of deployed vaults
+  (`get_vault`, `get_vault_count`), and supporting both `deploy` (default
+  policy) and `deploy_with_policy` (explicit policy bind). Emits a
+  `VaultCreatedEvent` per deployment.
+- **`RefundWindowPolicy`** (issue #129): new `refund-window-policy` contract is
+  a stateless policy implementing `check_refund` (the refund-window rule,
+  window `0` meaning unbounded). It becomes the default policy deployed and
+  bound by the factory, so changing a policy rule is a new contract rather than
+  a vault redeploy.
 
 ### Changed
+
+- **⚠️ `RefundVault` is constructor-only and defers window checks to a policy
+  contract** (issue #129): `initialize` was removed in favour of
+  `__constructor(merchant, token, refund_window_ledgers, refund_policy)`,
+  mirroring `ReceiptShard` — a deployed vault is always initialised (the
+  "uninitialized" unit tests were removed; the factory rejects `deploy` before
+  `initialize` instead). `refund()` no longer evaluates the refund window
+  inline: it calls the bound policy contract via the `RefundPolicy` trait
+  (same pattern as `ReceiptAnchor`'s `ShardInterface`), mapping deliberate
+  policy rejections (`WindowExpired`) through and surfacing host-level call
+  failures as the new `accensa_common::Error::PolicyCallFailed` (302). Adds
+  `get_refund_policy()` and admin-gated `set_refund_policy()`.
 
 - **`RefundVault` token generality is documented and pinned** (issue #166): the
   vault treats all amounts as raw integer units in the token's smallest unit and

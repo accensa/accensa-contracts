@@ -32,8 +32,10 @@ fn setup() -> (Env, Address, Address, Address, Address) {
 
     let policy_id = env.register(RefundWindowPolicy, ());
     let vault_token = Address::generate(&env);
-    let vault_id = env.register(RefundVault, (multisig_id.clone(), vault_token.clone(), 100, policy_id));
-    let vault = RefundVaultClient::new(&env, &vault_id);
+    let vault_id = env.register(
+        RefundVault,
+        (multisig_id.clone(), vault_token.clone(), 100u32, policy_id),
+    );
 
     (env, vault_id, multisig_id, s1, s2)
 }

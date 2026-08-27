@@ -46,7 +46,10 @@ fn setup<'a>() -> TestEnv<'a> {
     anchor.initialize(&merchant, &shard_wasm_hash);
 
     let policy_id = env.register(RefundWindowPolicy, ());
-    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), WINDOW, policy_id));
+    let vault_id = env.register(
+        RefundVault,
+        (merchant.clone(), token.clone(), WINDOW, policy_id),
+    );
     let vault = RefundVaultClient::new(&env, &vault_id);
 
     // Initial sequence number

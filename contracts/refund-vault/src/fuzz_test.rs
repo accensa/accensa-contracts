@@ -115,7 +115,10 @@ fn setup(window: u32) -> (Env, RefundVaultClient<'static>, Address, Address) {
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
     let policy_id = env.register(RefundWindowPolicy, ());
-    let contract_id = env.register(RefundVault, (merchant.clone(), token.clone(), window, policy_id));
+    let contract_id = env.register(
+        RefundVault,
+        (merchant.clone(), token.clone(), window, policy_id),
+    );
     let client = RefundVaultClient::new(&env, &contract_id);
 
     (env, client, merchant, token)
@@ -379,7 +382,7 @@ fn execute(
                         }
                     }
                     Err(Ok(Error::InvalidAmount)) => {
-                        if !(*amount <= 0) {
+                        if *amount > 0 {
                             failures.push(format!("refund of {amount} rejected as invalid amount"));
                         }
                     }
@@ -461,7 +464,7 @@ fn execute(
                         }
                     }
                     Err(Ok(Error::InvalidAmount)) => {
-                        if !(*amount <= 0) {
+                        if *amount > 0 {
                             failures
                                 .push(format!("withdraw of {amount} rejected as invalid amount"));
                         }

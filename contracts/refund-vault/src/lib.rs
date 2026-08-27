@@ -20,7 +20,7 @@ contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
 pub enum DataKey {
     Admin,
     Token,
-RefundWindow,
+    RefundWindow,
     /// Address of the refund-policy contract every refund is routed to.
     /// Policy execution is external (see the [`RefundPolicy`] trait and the
     /// `refund-window-policy` crate), so a policy's rule can change without

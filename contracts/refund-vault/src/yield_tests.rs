@@ -214,7 +214,10 @@ fn setup_with_strategy(
 
     // Deploy vault (constructor-initialised).
     let policy_id = env.register(RefundWindowPolicy, ());
-    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 17_280, policy_id));
+    let vault_id = env.register(
+        RefundVault,
+        (merchant.clone(), token.clone(), 17_280u32, policy_id),
+    );
     let vault_client = RefundVaultClient::new(&env, &vault_id);
 
     // Deploy mock strategy.
@@ -255,20 +258,6 @@ fn test_set_yield_strategy() {
     assert_eq!(info.max_deploy_ratio, 8000);
     assert_eq!(info.deployed_principal, 0);
     assert_eq!(info.harvested_yield, 0);
-}
-
-#[test]
-fn test_set_yield_strategy_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let vault_id = env.register(RefundVault, ());
-    let vault_client = RefundVaultClient::new(&env, &vault_id);
-    let addr = Address::generate(&env);
-
-    assert_eq!(
-        vault_client.try_set_yield_strategy(&addr),
-        Err(Ok(Error::NotInitialized))
-    );
 }
 
 #[test]
@@ -334,7 +323,10 @@ fn test_deploy_without_strategy_fails() {
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
     let policy_id = env.register(RefundWindowPolicy, ());
-    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 100, policy_id));
+    let vault_id = env.register(
+        RefundVault,
+        (merchant.clone(), token.clone(), 100u32, policy_id),
+    );
     let vault_client = RefundVaultClient::new(&env, &vault_id);
     vault_client.deposit(&merchant, &500_000);
 
@@ -493,7 +485,10 @@ fn test_withdraw_without_strategy_fails() {
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
     let policy_id = env.register(RefundWindowPolicy, ());
-    let vault_id = env.register(RefundVault, (merchant.clone(), token.clone(), 100, policy_id));
+    let vault_id = env.register(
+        RefundVault,
+        (merchant.clone(), token.clone(), 100u32, policy_id),
+    );
     let vault_client = RefundVaultClient::new(&env, &vault_id);
 
     assert_eq!(

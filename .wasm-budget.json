@@ -1,4 +1,6 @@
 {
   "receipt_anchor": 24576,
-  "refund_vault": 37376
+  "refund_vault": 45056,
+  "refund_vault_factory": 16384,
+  "refund_window_policy": 8192
 }

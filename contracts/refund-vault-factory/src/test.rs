@@ -55,14 +55,16 @@ fn setup() -> Setup {
 /// Upload the real vault wasm and point the factory at it.
 fn init(s: &Setup) {
     let vault_wasm_hash = s.env.deployer().upload_contract_wasm(vault_wasm::WASM);
-    s.factory.initialize(&s.merchant, &vault_wasm_hash, &s.policy);
+    s.factory
+        .initialize(&s.merchant, &vault_wasm_hash, &s.policy);
 }
 
 #[test]
 fn test_initialize_and_getters() {
     let s = setup();
     let vault_wasm_hash = s.env.deployer().upload_contract_wasm(vault_wasm::WASM);
-    s.factory.initialize(&s.merchant, &vault_wasm_hash, &s.policy);
+    s.factory
+        .initialize(&s.merchant, &vault_wasm_hash, &s.policy);
 
     assert_eq!(s.factory.get_vault_wasm_hash(), Some(vault_wasm_hash));
     assert_eq!(s.factory.get_default_policy(), Some(s.policy.clone()));
@@ -75,7 +77,8 @@ fn test_double_initialize_fails() {
     init(&s);
     let vault_wasm_hash = s.env.deployer().upload_contract_wasm(vault_wasm::WASM);
     assert_eq!(
-        s.factory.try_initialize(&s.merchant, &vault_wasm_hash, &s.policy),
+        s.factory
+            .try_initialize(&s.merchant, &vault_wasm_hash, &s.policy),
         Err(Ok(Error::AlreadyInitialized))
     );
 }
@@ -120,7 +123,7 @@ fn test_deployed_vault_calls_into_bound_policy() {
 
     let vault_addr = s.factory.deploy(&s.merchant, &s.token, &100);
     let vault = vault_wasm::Client::new(&s.env, &vault_addr);
-    assert_eq!(vault.get_refund_policy(), s.policy);
+    assert_eq!(vault.get_refund_policy(), Some(s.policy));
 
     // Outside the 100-ledger window the bound policy rejects the refund with
     // WindowExpired — proving the vault routes its window check through the
@@ -132,7 +135,9 @@ fn test_deployed_vault_calls_into_bound_policy() {
     let buyer = Address::generate(&s.env);
     s.env.ledger().with_mut(|li| li.sequence_number = 201);
     assert!(
-        vault.try_refund(&payment_ref, &buyer, &100, &100, &100).is_err(),
+        vault
+            .try_refund(&payment_ref, &buyer, &100, &100, &100)
+            .is_err(),
         "refund past the payment's window must be rejected by the bound policy"
     );
 }
@@ -152,7 +157,7 @@ fn test_deploy_with_policy_binds_custom_policy() {
     let vault = vault_wasm::Client::new(&s.env, &vault_addr);
     assert_eq!(
         vault.get_refund_policy(),
-        custom_policy,
+        Some(custom_policy),
         "vault must be bound to the explicitly supplied policy, not the default"
     );
 }
@@ -186,11 +191,7 @@ fn test_deploy_emits_vault_created_event() {
         s.policy.clone().into_val(&s.env),
     );
 
-    let events = s
-        .env
-        .events()
-        .all()
-        .filter_by_contract(&s.factory.address);
+    let events = s.env.events().all().filter_by_contract(&s.factory.address);
     assert_eq!(
         events,
         vec![

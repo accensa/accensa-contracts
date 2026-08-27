@@ -90,10 +90,14 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build receipt-shard wasm
-        # receipt-anchor's test/clippy target imports this wasm via
-        # `contractimport!` to test the shard factory end-to-end.
-        run: cargo build -p receipt-shard --target wasm32v1-none --release
+      - name: Build wasm for cross-contract tests
+        # Cross-contract tests import these wasms via `contractimport!`:
+        # receipt-anchor imports receipt_shard; refund-vault tests import
+        # refund_vault; refund-vault-factory tests import refund_vault. The
+        # refund-window-policy wasm is deployed in-process for policy tests.
+        run: |
+          cargo build -p receipt-shard --target wasm32v1-none --release
+          cargo build -p refund-vault -p refund-vault-factory -p refund-window-policy --target wasm32v1-none --release
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
@@ -114,10 +118,13 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build receipt-shard wasm
-        # receipt-anchor's tests import this wasm via `contractimport!` to
-        # test the shard factory end-to-end.
-        run: cargo build -p receipt-shard --target wasm32v1-none --release
+      - name: Build wasm for cross-contract tests
+        # Cross-contract tests import these wasms via `contractimport!`:
+        # receipt-anchor imports receipt_shard; refund-vault tests import
+        # refund_vault; refund-vault-factory tests import refund_vault.
+        run: |
+          cargo build -p receipt-shard --target wasm32v1-none --release
+          cargo build -p refund-vault -p refund-vault-factory -p refund-window-policy --target wasm32v1-none --release
       - name: Run Tests
         run: cargo test
 
@@ -165,30 +172,28 @@ jobs:
 
       - name: Report WASM sizes & enforce size budget
         run: |
-          RECEIPT_SIZE=$(stat -c%s target/wasm32v1-none/release/receipt_anchor.wasm 2>/dev/null || stat -f%z target/wasm32v1-none/release/receipt_anchor.wasm)
-          REFUND_SIZE=$(stat -c%s target/wasm32v1-none/release/refund_vault.wasm 2>/dev/null || stat -f%z target/wasm32v1-none/release/refund_vault.wasm)
-
-          RECEIPT_BUDGET=$(jq -r '.receipt_anchor' .wasm-budget.json)
-          REFUND_BUDGET=$(jq -r '.refund_vault' .wasm-budget.json)
+          for C in receipt_anchor refund_vault refund_vault_factory refund_window_policy; do
+            SIZE=$(stat -c%s target/wasm32v1-none/release/${C}.wasm 2>/dev/null || stat -f%z target/wasm32v1-none/release/${C}.wasm)
+            BUDGET=$(jq -r ".${C}" .wasm-budget.json)
+            declare "$C"_SIZE=$SIZE
+            declare "$C"_BUDGET=$BUDGET
+          done
 
           echo "### WASM Build Sizes" >> $GITHUB_STEP_SUMMARY
           echo "| Contract | Size (bytes) | Budget (bytes) | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
 
           FAILED=0
-          if [ "$RECEIPT_SIZE" -gt "$RECEIPT_BUDGET" ]; then
-            echo "| \`receipt_anchor.wasm\` | $RECEIPT_SIZE | $RECEIPT_BUDGET | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
-            FAILED=1
-          else
-            echo "| \`receipt_anchor.wasm\` | $RECEIPT_SIZE | $RECEIPT_BUDGET | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          if [ "$REFUND_SIZE" -gt "$REFUND_BUDGET" ]; then
-            echo "| \`refund_vault.wasm\` | $REFUND_SIZE | $REFUND_BUDGET | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
-            FAILED=1
-          else
-            echo "| \`refund_vault.wasm\` | $REFUND_SIZE | $REFUND_BUDGET | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
-          fi
+          for C in receipt_anchor refund_vault refund_vault_factory refund_window_policy; do
+            eval "SIZE=\${${C}_SIZE}"
+            eval "BUDGET=\${${C}_BUDGET}"
+            if [ "$SIZE" -gt "$BUDGET" ]; then
+              echo "| \`${C}.wasm\` | $SIZE | $BUDGET | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
+              FAILED=1
+            else
+              echo "| \`${C}.wasm\` | $SIZE | $BUDGET | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
 
           if [ "$FAILED" -ne 0 ]; then
             echo "Error: WASM size budget exceeded."
@@ -202,3 +207,5 @@ jobs:
           path: |
             target/wasm32v1-none/release/receipt_anchor.wasm
             target/wasm32v1-none/release/refund_vault.wasm
+            target/wasm32v1-none/release/refund_vault_factory.wasm
+            target/wasm32v1-none/release/refund_window_policy.wasm
