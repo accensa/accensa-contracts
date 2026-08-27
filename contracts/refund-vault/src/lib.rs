@@ -364,9 +364,9 @@ impl RefundVault {
             .set(&DataKey::RefundWindow, &refund_window_ledgers);
 
         // Issue #136: domain separator and nonce.
-        let separator = env
-            .crypto()
-            .sha256(&env.current_contract_address().to_buffer());
+        let contract_addr = env.current_contract_address();
+        let addr_bytes: soroban_sdk::Bytes = contract_addr.into();
+        let separator = env.crypto().sha256(&addr_bytes);
         env.storage()
             .instance()
             .set(&DataKey::DomainSeparator, &separator);

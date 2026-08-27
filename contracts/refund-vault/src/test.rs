@@ -1,4 +1,5 @@
 #![cfg(test)]
+extern crate std;
 
 use super::*;
 use soroban_sdk::{
@@ -368,7 +369,7 @@ fn test_events_emitted_with_nonce() {
                 soroban_sdk::map![
                     &env,
                     (Symbol::new(&env, "amount"), 500_000i128),
-                    (Symbol::new(&env, "nonce"), 0u64),
+                    (Symbol::new(&env, "nonce"), 0i128),
                 ]
                 .into_val(&env)
             )
@@ -426,7 +427,7 @@ fn test_events_emitted_with_nonce() {
                 soroban_sdk::map![
                     &env,
                     (Symbol::new(&env, "amount"), 100_000i128),
-                    (Symbol::new(&env, "nonce"), 2u64),
+                    (Symbol::new(&env, "nonce"), 2i128),
                 ]
                 .into_val(&env)
             )
@@ -939,6 +940,7 @@ fn test_shared_refund_vectors_include_live_testnet_refund() {
 
 #[test]
 fn test_refund_to_contract_address_fails_self_transfer() {
+    use soroban_sdk::testutils::Events;
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -956,6 +958,7 @@ fn test_refund_to_contract_address_fails_self_transfer() {
 
 #[test]
 fn test_withdraw_to_contract_address_fails_self_transfer() {
+    use soroban_sdk::testutils::Events;
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -1017,7 +1020,7 @@ fn test_set_token_fails_when_vault_is_funded() {
 #[test]
 fn test_set_token_requires_admin_auth() {
     let (env, client, _merchant, _token) = setup(100);
-    let stranger = Address::generate(&env);
+    let _stranger = Address::generate(&env);
 
     let new_token_admin = Address::generate(&env);
     let new_sac = env.register_stellar_asset_contract_v2(new_token_admin);
@@ -1088,7 +1091,7 @@ fn test_nonce_increments_on_refund() {
 
 #[test]
 fn test_nonce_increments_on_withdraw() {
-    let (env, client, merchant, _token) = setup(100);
+    let (_env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
     let nonce_before = client.get_nonce();
     client.withdraw(&100_000, &merchant);
@@ -1097,7 +1100,7 @@ fn test_nonce_increments_on_withdraw() {
 
 #[test]
 fn test_nonce_does_not_increment_on_failed_operation() {
-    let (env, client, merchant, _token) = setup(100);
+    let (_env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
     let nonce_before = client.get_nonce();
     let _ = client.try_deposit(&merchant, &0);

@@ -710,7 +710,7 @@ fn test_yield_deployed_event() {
                 soroban_sdk::map![
                     &env,
                     (Symbol::new(&env, "amount"), 2_000_000i128),
-                    (Symbol::new(&env, "nonce"), 1u64),
+                    (Symbol::new(&env, "nonce"), 1i128),
                 ]
                 .into_val(&env)
             )
@@ -745,7 +745,7 @@ fn test_yield_harvested_event() {
                 soroban_sdk::map![
                     &env,
                     (Symbol::new(&env, "amount"), 200_000i128),
-                    (Symbol::new(&env, "nonce"), 2u64),
+                    (Symbol::new(&env, "nonce"), 2i128),
                 ]
                 .into_val(&env)
             )
