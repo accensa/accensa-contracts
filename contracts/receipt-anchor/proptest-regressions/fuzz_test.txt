@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0a4a757edf5d09feec72184b1a0393581d71e6597771e5e0582e04019e0cb60e # shrinks to ops = [Anchor { seed: 0, leaf_count: 1 }, Prune { before_ledger: 1 }, Verify { target: 730955831 }]

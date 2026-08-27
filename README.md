@@ -40,6 +40,12 @@ anyone can verify without asking the merchant. Refunds run through a vault with 
 enforced time window and double-refund protection, so the policy lives in the contract
 rather than in a support inbox.
 
+Both contracts are **immutable**: they ship with no upgrade entry point and no
+`update_current_contract_wasm`, so once deployed, nobody — not even the merchant —
+can change the refund policy or how receipts verify. This is a deliberate security
+property (see [ADR 003](docs/ADR-003-upgradeability.md)); a logic change means a
+new contract ID and the migration procedure documented there.
+
 ## Why Stellar
 
 This design is only economical on Stellar:
@@ -101,7 +107,7 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 |---|---|
 | `initialize(merchant, token, refund_window_ledgers)` | Sets admin, settlement token, and refund window. |
 | `deposit(from, amount)` | Merchant tops up float. |
-| `refund(payment_ref, recipient, amount, paid_at_ledger)` | Refunds a payment, subject to policy. |
+| `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. |
 | `withdraw(amount, to)` | Merchant withdraws float. |
 | `set_refund_window(ledgers)` | Updates the window; `0` disables expiry. |
 | `get_refund(payment_ref) -> Option<RefundRecord>` | Looks up a refund. |
@@ -114,23 +120,69 @@ Emits:
 | Event | Topics | Data |
 |---|---|---|
 | `DepositEvent` | `("deposit_event", from)` | `amount` |
-| `RefundEvent` | `("refund_event", payment_ref)` | `amount`, `recipient`, `ledger` |
+| `RefundEvent` | `("refund_event", payment_ref)` | `amount` (this call), `cumulative_refunded`, `recipient`, `ledger` |
 | `WithdrawEvent` | `("withdraw_event", to)` | `amount` |
+| `PauseEvent` | `("pause_event", ledger)` | — |
+| `UnpauseEvent` | `("unpause_event", ledger)` | — |
+| `RefundWindowUpdatedEvent` | `("refund_window_updated_event", previous_window, new_window)` | — |
 
-The `RefundEvent` data map mirrors `RefundRecord`, so an indexer decodes it with the
-same shape stored under the payment ref.
+Each partial refund emits its own `RefundEvent` carrying **both** the amount for
+that call (`amount`) and the running total (`cumulative_refunded`), so an indexer
+knows the state of a payment without summing history. `RefundRecord` stores the
+cumulative total (`amount_refunded`) plus the `payment_amount` ceiling, the
+`paid_at_ledger` the window is measured from, and the recipient.
 
-**Cross-Contract Joins**:
-- **`payment_ref` ↔ receipt-leaf**: The `payment_ref` used to key refunds is identical to the `leaf` hash of the payment receipt anchored in `ReceiptAnchor`. This 1:1 mapping guarantees that the on-chain refund explicitly corresponds to the exact payment record provided to the agent.
-- **Refunds outlive pruned batches**: Archiving or pruning a batch in `ReceiptAnchor` has no effect on the `RefundVault`. A payment can be successfully refunded even if its original anchor batch has been pruned, provided it still falls within the refund window.
+**Cross-Contract Joins** (both claims below are pinned by tests in
+`contracts/refund-vault/tests/integration_test.rs`):
+- **`payment_ref` ↔ receipt-leaf** *(covered by `readme_claim_payment_ref_is_receipt_leaf`)*: The `payment_ref` used to key refunds is identical to the `leaf` hash of the payment receipt anchored in `ReceiptAnchor`. This 1:1 mapping guarantees that the on-chain refund explicitly corresponds to the exact payment record provided to the agent.
+- **Refunds outlive pruned batches** *(covered by `readme_claim_refunds_outlive_pruned_batches`)*: Archiving or pruning a batch in `ReceiptAnchor` has no effect on the `RefundVault`. A payment can be successfully refunded even if its original anchor batch has been pruned, provided it still falls within the refund window.
 
 Enforced invariants, each covered by a test:
 
-- **No double refunds** — a `payment_ref` can only be refunded once (`AlreadyRefunded`).
-- **Time-bounded** — refunds past `refund_window_ledgers` are rejected (`WindowExpired`).
+- **Partial refunds within a ceiling** — a `payment_ref` may be refunded across
+  multiple calls, but cumulative refunds can never exceed the original
+  `payment_amount`; an over-ceiling call is rejected (`ExceedsPayment`).
+- **Window from the original payment** — the refund window is measured from
+  `paid_at_ledger` (the original payment), never extended by a partial
+  (`WindowExpired`).
 - **Float-bounded** — a refund can never exceed vault balance (`InsufficientFloat`).
-- **Merchant-only** — every state-changing call requires merchant auth (`Unauthorized`).
+- **Merchant-only** — every state-changing call requires merchant auth
+  (`Unauthorized`); the admin may be a contract account (see
+  [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)).
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
+
+## Error Codes
+
+Both contracts return errors from a **single, shared enum** in
+[`contracts/common`](contracts/common/src/lib.rs) (issue #98). Every variant has
+an explicit, distinct `u32` value, so a frontend keeps one mapping across both
+contracts instead of per-contract tables.
+
+| Code | Variant | Meaning |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` called twice. |
+| 2 | `NotInitialized` | State-changing call before `initialize`. |
+| 3 | `Unauthorized` | Caller is not the authorized merchant/admin. |
+| 4 | `AlreadyRefunded` | Payment already fully refunded under the legacy rule. |
+| 5 | `WindowExpired` | Refund window (from the original payment) has expired. |
+| 6 | `InsufficientFloat` | Vault float is insufficient. |
+| 7 | `InvalidAmount` | Amount was not strictly positive. |
+| 8 | `Paused` | Vault is paused. |
+| 9 | `RefundNotFound` | No refund record for the payment ref. |
+| 10 | `MetadataTooLong` | Metadata payload exceeded the allowed length. |
+| 11 | `AmountExceedsMax` | Amount exceeded the configured maximum. |
+| 12 | `NoPendingTransfer` | No admin transfer pending. |
+| 13 | `StrategyNotSet` | No yield strategy configured. |
+| 14 | `InsufficientReserve` | Yield deployment would breach the minimum reserve. |
+| 15 | `DeploymentExceedsMax` | Yield deployment would exceed the max ratio. |
+| 16 | `NothingToWithdraw` | Nothing to withdraw from the yield strategy. |
+| 17 | `NothingToHarvest` | Nothing to harvest from the yield strategy. |
+| 18 | `InvalidRatio` | A configured ratio was out of range. |
+| 19 | `ExceedsPayment` | Cumulative refunds would exceed the payment ceiling. |
+| 100 | `BatchNotFound` | The requested batch does not exist (or was pruned). |
+| 101 | `BatchTooLarge` | A batch larger than `MAX_BATCH_SIZE` was submitted. |
+
+Codes are stable: new variants are appended with fresh values, never renumbered.
 
 ## Storage Archival
 
@@ -207,17 +259,19 @@ The dashboard, indexer, and SDK that drive these contracts live in
 Tests run against the Soroban test environment on every push, alongside
 `cargo fmt --check` and `cargo clippy -D warnings`. CI does not swallow failures.
 
-### Resource benchmark
+Both contracts carry property-based fuzz suites (`src/fuzz_test.rs`) that generate
+random operation sequences and assert invariants after every step — pruning stays a
+contiguous prefix, Merkle verification rejects every wrong proof shape, vault float
+always equals `deposits - refunds - withdrawals`, and a `payment_ref` can never be
+refunded twice. CI runs a bounded budget; a longer profile is available locally:
 
-`ReceiptAnchor` ships a resource benchmark that anchors batches at 10, 100, 500
-and 1000 (`MAX_BATCH_SIZE`) receipts and meters CPU instructions, memory and the
-estimated resource fee per invocation against the mainnet per-transaction
-limits. It runs as a regular test; to see the CSV table and host budget
-breakdowns:
-
-```bash
-cargo test -p receipt-anchor bench -- --nocapture
+```sh
+cargo test -- --ignored          # longer profile
+FUZZ_CASES=2000 FUZZ_SEQ_LEN=256 cargo test -- --ignored   # even longer
 ```
+
+See the module headers in `contracts/*/src/fuzz_test.rs` for the approach and its
+limits.
 
 
 ## Contributing

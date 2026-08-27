@@ -1,6 +1,6 @@
 [package]
 name = "refund-vault"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [lints]
@@ -12,8 +12,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+accensa-common = { workspace = true }
 
 [dev-dependencies]
+multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
 soroban-sdk = { workspace = true, features = ["testutils"] }
 receipt-anchor = { path = "../receipt-anchor" }
