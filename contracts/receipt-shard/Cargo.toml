@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 accensa-common = { workspace = true }
 soroban-sdk = { workspace = true }
+sha2 = { version = "0.10.9", default-features = false }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
