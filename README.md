@@ -123,6 +123,11 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 | `pause()` | Pauses operations for emergency stops. Merchant auth required. |
 | `unpause()` | Resumes paused operations. Merchant auth required. |
 | `extend_refund_ttl(payment_ref)` | Extends the TTL of a refund record to prevent archival. Publicly callable. |
+| `commit(commitment: BytesN<32>)` | Merchant commits an opaque `sha256(plaintext || salt)` hash ahead of a refund/withdraw, to prevent mempool front-running. Merchant auth required. See the security model for the plaintext layout and salt. |
+| `reveal_refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount, salt)` | Reveals the plaintext + salt for a previously committed refund after `COMMIT_REVEAL_DELAY` ledgers, verifies it against the stored commitment, then executes the refund. |
+| `reveal_withdraw(amount, to, salt)` | Reveals the plaintext + salt for a previously committed withdraw after `COMMIT_REVEAL_DELAY` ledgers, verifies it, then executes the withdraw. |
+| `get_commitment(commitment: BytesN<32>) -> Option<CommitRecord>` | Returns the commit record (with `committed_at_ledger`) for a commitment, if one is pending. |
+| `get_commit_reveal_delay() -> u32` | Returns the minimum ledger delay between commit and reveal. |
 
 Emits:
 
@@ -190,6 +195,12 @@ contracts instead of per-contract tables.
 | 19 | `ExceedsPayment` | Cumulative refunds would exceed the payment ceiling. |
 | 100 | `BatchNotFound` | The requested batch does not exist (or was pruned). |
 | 101 | `BatchTooLarge` | A batch larger than `MAX_BATCH_SIZE` was submitted. |
+| 300 | `NoPendingPolicy` | No policy change is pending. |
+| 301 | `TimelockNotExpired` | The policy timelock has not yet elapsed. |
+| 302 | `CommitmentNotFound` | No commitment stored for the given hash. |
+| 303 | `CommitmentMismatch` | The revealed plaintext does not hash to the committed commitment. |
+| 304 | `CommitmentNotDue` | `COMMIT_REVEAL_DELAY` ledgers have not yet elapsed since commit. |
+| 305 | `CommitmentAlreadyUsed` | The commitment was already consumed by a successful reveal. |
 
 Codes are stable: new variants are appended with fresh values, never renumbered.
 

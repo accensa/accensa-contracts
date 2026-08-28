@@ -378,7 +378,7 @@ fn execute(
                         }
                     }
                     Err(Ok(Error::InvalidAmount)) => {
-                        if !(*amount <= 0) {
+                        if *amount > 0 {
                             failures.push(format!("refund of {amount} rejected as invalid amount"));
                         }
                     }
@@ -460,7 +460,7 @@ fn execute(
                         }
                     }
                     Err(Ok(Error::InvalidAmount)) => {
-                        if !(*amount <= 0) {
+                        if *amount > 0 {
                             failures
                                 .push(format!("withdraw of {amount} rejected as invalid amount"));
                         }

@@ -529,12 +529,18 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
     // core operations use fresh calls because replaying the same refund after
     // a successful call would correctly exceed its payment ceiling.
     client.unpause();
-    assert_eq!(contract_outcome(client.try_deposit(&merchant, &100_000)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_deposit(&merchant, &100_000)),
+        Ok(())
+    );
     assert_eq!(
         contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000)),
         Ok(())
     );
-    assert_eq!(contract_outcome(client.try_withdraw(&100_000, &merchant)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_withdraw(&100_000, &merchant)),
+        Ok(())
+    );
     assert_eq!(
         contract_outcome(client.try_deploy_to_yield(&100_000)),
         Err(Error::StrategyNotSet)
@@ -1212,22 +1218,16 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     let contract_addr = client.address.clone();
 
     // Refunding to vault address must return SelfTransfer error
-    let res = client.try_refund(
-        &payment_ref,
-        &contract_addr,
-        &50_000,
-        &0,
-        &50_000,
-    );
+    let res = client.try_refund(&payment_ref, &contract_addr, &50_000, &0, &50_000);
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
     // Payment ref must remain unconsumed / not recorded
     assert!(client.get_refund(&payment_ref).is_none());
 
-    // No refund event emitted for the contract
-    let events = env.events().all().filter_by_contract(&client.address);
-    // Only the deposit event should exist
-    assert_eq!(events.len(), 1);
+    // No tokens moved: SelfTransfer returns before any transfer, so the vault
+    // balance is exactly the deposited amount.
+    let token_client = TokenClient::new(&env, &_token);
+    assert_eq!(token_client.balance(&client.address), 500_000);
 }
 
 #[test]
@@ -1239,9 +1239,9 @@ fn test_withdraw_to_contract_address_fails_self_transfer() {
     let res = client.try_withdraw(&50_000, &contract_addr);
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
-    // Only the deposit event should exist
-    let events = env.events().all().filter_by_contract(&client.address);
-    assert_eq!(events.len(), 1);
+    // No tokens moved: the vault balance is exactly the deposited amount.
+    let token_client = TokenClient::new(&env, &_token);
+    assert_eq!(token_client.balance(&client.address), 500_000);
 }
 
 #[test]
@@ -1278,7 +1278,10 @@ fn test_set_token_succeeds_when_vault_is_empty() {
 
     // Now deposit using the new token
     client.deposit(&merchant, &200_000);
-    assert_eq!(TokenClient::new(&env, &new_token).balance(&client.address), 200_000);
+    assert_eq!(
+        TokenClient::new(&env, &new_token).balance(&client.address),
+        200_000
+    );
 }
 
 #[test]
@@ -1298,7 +1301,7 @@ fn test_set_token_fails_when_vault_is_funded() {
 #[test]
 fn test_set_token_requires_admin_auth() {
     let (env, client, _merchant, _token) = setup(100);
-    let stranger = Address::generate(&env);
+    let _stranger = Address::generate(&env);
 
     let new_token_admin = Address::generate(&env);
     let new_sac = env.register_stellar_asset_contract_v2(new_token_admin);

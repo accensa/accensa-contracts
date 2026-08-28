@@ -505,10 +505,6 @@
             "topics": [
               {
                 "symbol": "policy_proposed_event"
-                "symbol": "refund_window_updated_event"
-              },
-              {
-                "u32": 100
               },
               {
                 "u32": 200

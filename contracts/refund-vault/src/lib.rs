@@ -3,7 +3,7 @@
 use accensa_common::Error;
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, BytesN, Env,
+    xdr::ToXdr, Address, Bytes, BytesN, Env,
 };
 
 contractmeta!(key = "name", val = "RefundVault");
@@ -47,6 +47,10 @@ pub enum DataKey {
     /// so a callback into another guarded entry point during that call is
     /// rejected rather than allowed to observe pre-update state.
     ReentrancyLock,
+    /// A commit-reveal commitment (sha256 of the intended action's plaintext
+    /// + a salt) and the ledger it was recorded at. Consumed on a successful
+    /// reveal. Keyed by the commitment hash itself.
+    Commitment(BytesN<32>),
 }
 
 #[contracttype]
@@ -80,6 +84,18 @@ pub struct YieldInfo {
     pub strategy: Option<Address>,
     pub reserve_ratio: u32,
     pub max_deploy_ratio: u32,
+}
+
+/// A recorded commit-reveal commitment.
+///
+/// Stored under [`DataKey::Commitment`] (keyed by the commitment hash itself)
+/// with the ledger at which `commit` ran. A reveal is only accepted once the
+/// minimum `COMMIT_REVEAL_DELAY` has elapsed since this ledger, and the
+/// commitment is removed after a successful reveal so it cannot be replayed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitRecord {
+    pub committed_at_ledger: u32,
 }
 
 /// Emitted when a (possibly partial) refund is made from the vault float.
@@ -233,6 +249,19 @@ const TTL_EXTEND: u32 = 518_400;
 const TTL_THRESHOLD: u32 = 100;
 /// Timelock delay for policy changes in ledgers (~24 hours at 5s/ledger).
 const POLICY_TIMELOCK: u32 = 17_280;
+
+/// Minimum number of ledgers that must elapse between a `commit` and the
+/// matching `reveal_*` (~50 seconds at 5s/ledger).
+///
+/// The delay is the second half of the front-running defence (issue #128):
+/// `commit` only ever reveals an opaque hash, so a mempool observer cannot
+/// learn which payment/amount/recipient is about to be acted on and therefore
+/// cannot craft a targeted front-run. The delay forces the actor's plaintext
+/// to be disclosed only long after any front-run attempt would have had to be
+/// prepared blind. Keep it short enough to be usable (the actor still controls
+/// both the commit and the reveal) but long enough that blind front-running is
+/// not profitable.
+const COMMIT_REVEAL_DELAY: u32 = 10;
 
 /// Reentrancy guard for entry points that make an external call (a token
 /// transfer or a yield-strategy invocation).
@@ -431,6 +460,28 @@ impl RefundVault {
         paid_at_ledger: u32,
         payment_amount: i128,
     ) -> Result<(), Error> {
+        Self::do_refund(
+            env,
+            payment_ref,
+            recipient,
+            amount,
+            paid_at_ledger,
+            payment_amount,
+        )
+    }
+
+    /// The shared refund implementation, invoked both by the plain [`refund`]
+    /// entry point and by a commit-reveal [`Self::reveal_refund`] once its
+    /// commitment has been verified and the minimum delay has elapsed. Keeping
+    /// a single implementation guarantees the two paths cannot drift apart.
+    fn do_refund(
+        env: Env,
+        payment_ref: BytesN<32>,
+        recipient: Address,
+        amount: i128,
+        paid_at_ledger: u32,
+        payment_amount: i128,
+    ) -> Result<(), Error> {
         acquire_reentrancy_lock(&env)?;
 
         if env
@@ -548,6 +599,13 @@ impl RefundVault {
     }
 
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
+        Self::do_withdraw(env, amount, to)
+    }
+
+    /// The shared withdraw implementation, invoked both by the plain [`withdraw`]
+    /// entry point and by a commit-reveal [`Self::reveal_withdraw`] once its
+    /// commitment has been verified and the minimum delay has elapsed.
+    fn do_withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
         acquire_reentrancy_lock(&env)?;
 
         if env
@@ -682,6 +740,196 @@ impl RefundVault {
     /// Returns the policy timelock delay in ledgers (read-only).
     pub fn get_policy_timelock() -> u32 {
         POLICY_TIMELOCK
+    }
+
+    // ── Commit-reveal (front-running defence, issue #128) ────────────────────
+
+    /// Record a commitment for a future sensitive operation without revealing
+    /// what that operation is.
+    ///
+    /// This is the "commit" half of a commit-reveal scheme that defends
+    /// `RefundVault`'s float-moving operations against mempool front-running
+    /// (issue #128). A merchant about to refund or withdraw funds from the
+    /// vault submits only `sha256(plaintext || salt)` — an opaque 32-byte hash.
+    /// An attacker monitoring the mempool sees the hash but **not** the
+    /// payment reference, amount, or recipient, so they cannot assemble a
+    /// targeted transaction to run ahead of the merchant and manipulate the
+    /// pool first.
+    ///
+    /// The merchant then executes the operation via [`Self::reveal_refund`] /
+    /// [`Self::reveal_withdraw`] after at least [`COMMIT_REVEAL_DELAY`] ledgers
+    /// have elapsed, supplying the plaintext and salt so the contract can
+    /// verify the hash matches. Only the merchant may commit (the call carries
+    /// the same admin authorization as the operation it fronts).
+    pub fn commit(env: Env, commitment: BytesN<32>) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Commitment(commitment.clone()))
+        {
+            return Err(Error::CommitmentAlreadyUsed);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        env.storage().persistent().set(
+            &DataKey::Commitment(commitment),
+            &CommitRecord {
+                committed_at_ledger: current_ledger,
+            },
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Reveal a previously committed refund. Verifies the supplied plaintext
+    /// re-hashes to the committed value, enforces the minimum
+    /// [`COMMIT_REVEAL_DELAY`] between commit and reveal, then performs the
+    /// identical refund [`Self::refund`] would have. The commitment is consumed
+    /// on success (rolled back, along with the refund, if the refund fails).
+    pub fn reveal_refund(
+        env: Env,
+        commitment: BytesN<32>,
+        payment_ref: BytesN<32>,
+        recipient: Address,
+        amount: i128,
+        paid_at_ledger: u32,
+        payment_amount: i128,
+        salt: BytesN<32>,
+    ) -> Result<(), Error> {
+        let preimage = Self::refund_preimage(
+            &env,
+            &payment_ref,
+            &recipient,
+            &amount,
+            &paid_at_ledger,
+            &payment_amount,
+            &salt,
+        );
+        Self::verify_commitment(&env, &commitment, &preimage)?;
+        Self::do_refund(
+            env,
+            payment_ref,
+            recipient,
+            amount,
+            paid_at_ledger,
+            payment_amount,
+        )
+    }
+
+    /// Reveal a previously committed withdrawal. Enforces the same commitment
+    /// and delay rules as [`Self::reveal_refund`], then performs the identical
+    /// withdrawal [`Self::withdraw`] would have.
+    pub fn reveal_withdraw(
+        env: Env,
+        commitment: BytesN<32>,
+        amount: i128,
+        to: Address,
+        salt: BytesN<32>,
+    ) -> Result<(), Error> {
+        let preimage = Self::withdraw_preimage(&env, &amount, &to, &salt);
+        Self::verify_commitment(&env, &commitment, &preimage)?;
+        Self::do_withdraw(env, amount, to)
+    }
+
+    /// Returns the commit-reveal record for a commitment, if any (read-only).
+    pub fn get_commitment(env: Env, commitment: BytesN<32>) -> Option<CommitRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Commitment(commitment))
+    }
+
+    /// Returns the minimum commit-to-reveal delay in ledgers (read-only).
+    pub fn get_commit_reveal_delay() -> u32 {
+        COMMIT_REVEAL_DELAY
+    }
+
+    /// Verify that `commitment` was committed, that `preimage` hashes to it,
+    /// and that the min commit-to-reveal delay has elapsed, consuming the
+    /// commitment on success.
+    ///
+    /// Because a `Result::Err` returns off an invocation rolls back every
+    /// storage write it made, the successful path's removal of the commitment
+    /// is also rolled back if the downstream reveal later fails, so a failed
+    /// reveal does not burn the merchant's commitment.
+    fn verify_commitment(
+        env: &Env,
+        commitment: &BytesN<32>,
+        preimage: &Bytes,
+    ) -> Result<(), Error> {
+        let record: CommitRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Commitment(commitment.clone()))
+            .ok_or(Error::CommitmentNotFound)?;
+
+        let recomputed = env.crypto().sha256(preimage);
+        if &BytesN::<32>::from(recomputed) != commitment {
+            return Err(Error::CommitmentMismatch);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger < record.committed_at_ledger + COMMIT_REVEAL_DELAY {
+            return Err(Error::CommitmentNotDue);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Commitment(commitment.clone()));
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Canonical preimage for a refund commitment:
+    /// `sha256(payment_ref || sha256(xdr(recipient)) || amount_le_i128 ||
+    /// paid_at_ledger_le_u32 || payment_amount_le_i128 || salt)`.
+    ///
+    /// The recipient is included as a fixed 32-byte SHA-256 digest of its XDR so
+    /// the preimage layout does not depend on the variable-length on-wire
+    /// address encoding, and the numeric fields are little-endian fixed-width —
+    /// both fully reproducible off-chain by the caller constructing the
+    /// commitment.
+    fn refund_preimage(
+        env: &Env,
+        payment_ref: &BytesN<32>,
+        recipient: &Address,
+        amount: &i128,
+        paid_at_ledger: &u32,
+        payment_amount: &i128,
+        salt: &BytesN<32>,
+    ) -> Bytes {
+        let mut buf = Bytes::new(env);
+        buf.append(&Bytes::from_array(env, &payment_ref.to_array()));
+        let recipient_digest = env.crypto().sha256(&recipient.to_xdr(env)).to_array();
+        buf.append(&Bytes::from_array(env, &recipient_digest));
+        buf.append(&Bytes::from_slice(env, &amount.to_le_bytes()));
+        buf.append(&Bytes::from_slice(env, &paid_at_ledger.to_le_bytes()));
+        buf.append(&Bytes::from_slice(env, &payment_amount.to_le_bytes()));
+        buf.append(&Bytes::from_array(env, &salt.to_array()));
+        buf
+    }
+
+    /// Canonical preimage for a withdrawal commitment:
+    /// `sha256(amount_le_i128 || sha256(xdr(to)) || salt)`.
+    fn withdraw_preimage(env: &Env, amount: &i128, to: &Address, salt: &BytesN<32>) -> Bytes {
+        let mut buf = Bytes::new(env);
+        buf.append(&Bytes::from_slice(env, &amount.to_le_bytes()));
+        let to_digest = env.crypto().sha256(&to.to_xdr(env)).to_array();
+        buf.append(&Bytes::from_array(env, &to_digest));
+        buf.append(&Bytes::from_array(env, &salt.to_array()));
+        buf
     }
 
     // ── Yield strategy management ──────────────────────────────────────────
@@ -1158,6 +1406,7 @@ impl RefundVault {
     }
 }
 
+mod commit_reveal_tests;
 mod fuzz_test;
 mod reentrancy_tests;
 mod test;

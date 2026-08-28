@@ -23,6 +23,14 @@ breaking changes bump the **minor** version, and they are called out as such.
   `.git/HEAD`, the resolved branch ref, the index and `src/` so a cached build
   cannot report a stale hash. A `test_commit_meta_is_well_formed` test in both
   crates pins the embedded commit to 40 hex characters.
+- **Commit-reveal API on `RefundVault`** (issue #128): new `commit`,
+  `reveal_refund`, `reveal_withdraw`, `get_commitment` and
+  `get_commit_reveal_delay` functions. A merchant commits an opaque
+  `sha256(plaintext || salt)` hash, waits the minimum
+  `COMMIT_REVEAL_DELAY` (10 ledgers), then reveals the plaintext + salt to
+  execute the identical refund/withdraw. The commitment is consumed on success.
+  New error codes: `CommitmentNotFound` (302), `CommitmentMismatch` (303),
+  `CommitmentNotDue` (304), `CommitmentAlreadyUsed` (305).
 
 ### Changed
 
@@ -43,6 +51,16 @@ breaking changes bump the **minor** version, and they are called out as such.
   has not authorised, and `withdraw` stays merchant-only. The existing
   `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
   deliberate.
+- **Front-running of refunds/withdraws is mitigated** (issue #128): the
+  merchant no longer reveals a refund/withdraw's full parameters in a single
+  callable transaction. Instead they `commit` an opaque `sha256(plaintext ||
+  salt)` hash on-chain first and only `reveal` the plaintext + salt after the
+  minimum `COMMIT_REVEAL_DELAY`. A mempool observer cannot reconstruct or
+  reorder the operation from the commitment alone. The `commit` on the revealed
+  plaintext is verified against the stored hash (`CommitmentMismatch` on
+  mismatch) and consumed on success, so a front-running replay is impossible.
+  Security audit tests in `commit_reveal_tests.rs` pin the delay boundary, the
+  mismatch rejection and the opacity of the commitment.
 
 ## [0.3.0] — 2026-08-26
 

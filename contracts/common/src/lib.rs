@@ -86,4 +86,12 @@ pub enum Error {
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
     TimelockNotExpired = 301,
+    /// A commit-reveal reveal referenced a commitment that was never committed.
+    CommitmentNotFound = 302,
+    /// The revealed plaintext does not match the committed hash.
+    CommitmentMismatch = 303,
+    /// The minimum commit-to-reveal ledger delay has not yet elapsed.
+    CommitmentNotDue = 304,
+    /// The commitment was already consumed by a prior reveal.
+    CommitmentAlreadyUsed = 305,
 }

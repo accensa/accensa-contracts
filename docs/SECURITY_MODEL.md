@@ -107,6 +107,38 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
   testnet/mainnet directly, and see #122 for a nonce-based alternative that
   would not depend on the answer either way.
 
+### Front-Running / Ordering Attacks
+- **Threat:** A mempool observer (e.g. a validator, MEV bot, or bundled
+  submitter) sees the merchant's in-flight `refund`/`withdraw` transaction and
+  reorders, bundles, or fronts it to their advantage — extracting value, forcing
+  the operation to fail, or learning the exact repayment the merchant intends to
+  make.
+- **Mitigation (commit-reveal, issue #128):** the merchant no longer broadcasts
+  the full parameters of a refund or withdraw in a single callable transaction.
+  First `commit(commitment)` stores an opaque `sha256(plaintext || salt)` hash
+  on chain under `DataKey::Commitment`; the plaintext (the payment ref,
+  recipient, amount, ledger and a caller-chosen 32-byte salt) is never revealed
+  at commit time. After at least `COMMIT_REVEAL_DELAY` (10) ledgers have
+  elapsed, `reveal_refund` / `reveal_withdraw` re-derive
+  `sha256(plaintext || salt)` from the supplied plaintext + salt, verify it
+  against the stored commitment (`CommitmentMismatch` on a wrong guess, so a
+  front-running guess can never execute the real operation), and then run the
+  identical refund/withdraw. The commitment is consumed on success
+  (`CommitmentAlreadyUsed` on reuse), so a replayed or reordered reveal cannot
+  authorise a second payout.
+- **Why the delay closes the window:** commit and reveal are separate
+  transactions. Even if an attacker front-runs the *reveal*, it carries the
+  full plaintext, so the execution is identical regardless of ordering; and
+  since the *commit* reveals only a one-way hash, an attacker cannot learn or
+  reconstruct the merchant's intent early enough to front-run meaningfully. The
+  commit was made merchant-only (`merchant.require_auth`), so no third party can
+  pin a commitment that blocks the merchant's own later reveal.
+- **Security audit tests:** `commit_reveal_tests.rs` in
+  `contracts/refund-vault` pins the minimum-delay boundary (reveal before the
+  delay → `CommitmentNotDue`), the plaintext-mismatch rejection
+  (`CommitmentMismatch`), duplicate-commit rejection, merchant-only `commit`,
+  and the opacity of the on-chain commitment.
+
 ### Proof Forgery
 - **Threat:** An attacker tries to claim a refund for a non-existent or altered receipt.
 - **Mitigation:** The contract utilizes a sorted-pair Merkle tree. Every refund request requires a cryptographic inclusion proof that must perfectly resolve to the anchored root hash. Modifying the receipt or the proof will result in a mismatched root, causing the transaction to revert.
