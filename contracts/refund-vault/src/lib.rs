@@ -3,7 +3,7 @@
 use accensa_common::Error;
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, BytesN, Env,
+    Address, BytesN, Env, Vec,
 };
 
 contractmeta!(key = "name", val = "RefundVault");
@@ -15,6 +15,16 @@ contractmeta!(
 contractmeta!(key = "commit", val = env!("GIT_SHA"));
 
 contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefundParam {
+    pub payment_ref: BytesN<32>,
+    pub recipient: Address,
+    pub amount: i128,
+    pub paid_at_ledger: u32,
+    pub payment_amount: i128,
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -322,6 +332,9 @@ fn persist_yield_ttl(env: &Env, key: &DataKey) {
         .persistent()
         .extend_ttl(key, TTL_EXTEND, TTL_THRESHOLD);
 }
+/// Maximum number of refund requests allowed in a single `process_batch` call.
+/// Bounds CPU and memory usage to ensure the transaction stays within Soroban limits.
+const MAX_REFUND_BATCH_SIZE: u32 = 100;
 
 #[contract]
 pub struct RefundVault;
@@ -464,6 +477,24 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        Self::refund_internal(
+            &env,
+            &payment_ref,
+            &recipient,
+            amount,
+            paid_at_ledger,
+            payment_amount,
+        )
+    }
+
+    fn refund_internal(
+        env: &Env,
+        payment_ref: &BytesN<32>,
+        recipient: &Address,
+        amount: i128,
+        paid_at_ledger: u32,
+        payment_amount: i128,
+    ) -> Result<(), Error> {
         // Legacy record: the payment was fully refunded under the single-refund
         // rule. Reject explicitly rather than mis-decoding the old shape.
         if env
@@ -506,13 +537,13 @@ impl RefundVault {
         }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
+        let token_client = token::Client::new(env, &token_addr);
         let balance = token_client.balance(&env.current_contract_address());
         if balance < amount {
             return Err(Error::InsufficientFloat);
         }
 
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+        token_client.transfer(&env.current_contract_address(), recipient, &amount);
 
         let cumulative_refunded = previous_refunded + amount;
         let current_ledger = env.ledger().sequence();
@@ -542,16 +573,60 @@ impl RefundVault {
         );
 
         RefundEvent {
-            payment_ref,
+            payment_ref: payment_ref.clone(),
             amount,
             cumulative_refunded,
             recipient: record.recipient,
             ledger: record.ledger,
         }
-        .publish(&env);
+        .publish(env);
 
         release_reentrancy_lock(&env);
         Ok(())
+    }
+
+    /// Processes a batch of refund requests in a single transaction.
+    ///
+    /// Design choice: Best-effort execution model with per-item result booleans.
+    /// Each refund is invoked via `refund_internal` logic to ensure code reuse
+    /// and strict adherence to pause, auth, window, and balance constraints.
+    /// If an individual refund fails (e.g. `AlreadyRefunded` or `WindowExpired`), it records `false`
+    /// for that item and continues processing subsequent items rather than aborting the entire batch.
+    /// This allows valid refunds in a multi-item batch to complete successfully.
+    pub fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error> {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            return Err(Error::Paused);
+        }
+
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        if refunds.len() > MAX_REFUND_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+
+        let mut results = Vec::new(&env);
+        for item in refunds.into_iter() {
+            let res = Self::refund_internal(
+                &env,
+                &item.payment_ref,
+                &item.recipient,
+                item.amount,
+                item.paid_at_ledger,
+                item.payment_amount,
+            );
+            results.push_back(res.is_ok());
+        }
+        Ok(results)
     }
 
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
@@ -1179,8 +1254,11 @@ impl RefundVault {
     }
 }
 
+#[cfg(test)]
 mod fuzz_test;
+#[cfg(test)]
 mod reentrancy_tests;
+#[cfg(test)]
 mod test;
 mod token_agnostic_tests;
 mod yield_tests;

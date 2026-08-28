@@ -45,4 +45,19 @@ When writing an indexer against these contracts, you should:
 - Subscribe specifically by the topics documented in [`docs/EVENTS.md`](docs/EVENTS.md).
 - Tolerate unknown fields in the event data map to allow for non-breaking additions in the future.
 
+## Resource Cost Baselines & Re-baselining
+
+This repository enforces contract resource cost regression gates in unit and fuzz tests (e.g. `contracts/receipt-anchor/src/fuzz_test.rs` and `contracts/refund-vault/src/fuzz_test.rs`). These tests assert that host CPU instruction costs and memory byte allocations for critical operations (`anchor_batch`, `verify_receipt`, and `refund`) remain within a 15% headroom of documented baselines.
+
+If a legitimate contract modification or optimization increases resource usage and triggers a cost regression failure in CI:
+
+1. **Verify Necessity**: Confirm that the cost increase is expected and cannot be mitigated through code optimization.
+2. **Measure New Baseline**: Run the cost regression tests locally with unoptimized debug builds:
+   ```bash
+   cargo test --package receipt-anchor benchmark_gas_and_cpu_instructions
+   cargo test --package refund-vault test_refund_resource_cost_budget
+   ```
+3. **Update Constants**: Update the baseline constants (`ANCHOR_BATCH_BASELINE_CPU`, `ANCHOR_BATCH_BASELINE_MEM`, `VERIFY_RECEIPT_BASELINE_CPU`, `VERIFY_RECEIPT_BASELINE_MEM`, `REFUND_BASELINE_CPU`, `REFUND_BASELINE_MEM`) in the respective `fuzz_test.rs` files to reflect the new measured values.
+4. **Document in PR**: In your pull request description, explicitly note the baseline update, state the measured values before and after, and explain why the increased resource consumption is necessary.
+
 Thank you for helping make Accensa better!
