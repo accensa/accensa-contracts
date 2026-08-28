@@ -119,7 +119,7 @@ jobs:
         # test the shard factory end-to-end.
         run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run Tests
-        run: cargo test
+        run: cargo test --workspace
 
   benchmarks:
     name: benchmark-budgets

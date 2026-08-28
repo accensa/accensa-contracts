@@ -3,7 +3,7 @@
 use accensa_common::Error;
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, BytesN, Env,
+    Address, BytesN, Env, Vec,
 };
 
 contractmeta!(key = "name", val = "RefundVault");
@@ -15,6 +15,16 @@ contractmeta!(
 contractmeta!(key = "commit", val = env!("GIT_SHA"));
 
 contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefundParam {
+    pub payment_ref: BytesN<32>,
+    pub recipient: Address,
+    pub amount: i128,
+    pub paid_at_ledger: u32,
+    pub payment_amount: i128,
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -332,6 +342,10 @@ fn refund_record_ttl_extend_to(env: &Env, window: u32, paid_at_ledger: u32) -> u
         .max(TTL_EXTEND)
 }
 
+/// Maximum number of refund requests allowed in a single `process_batch` call.
+/// Bounds CPU and memory usage to ensure the transaction stays within Soroban limits.
+const MAX_REFUND_BATCH_SIZE: u32 = 100;
+
 #[contract]
 pub struct RefundVault;
 
@@ -402,6 +416,28 @@ impl RefundVault {
         Ok(())
     }
 
+    pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let current_token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &current_token);
+        let balance = token_client.balance(&env.current_contract_address());
+        if balance > 0 {
+            return Err(Error::FloatNotEmpty);
+        }
+
+        env.storage().instance().set(&DataKey::Token, &new_token);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
     /// Refund part (or all) of an original payment.
     ///
     /// `payment_amount` is the original payment amount and therefore the hard
@@ -440,6 +476,10 @@ impl RefundVault {
             return Err(Error::InvalidAmount);
         }
 
+        if recipient == env.current_contract_address() {
+            return Err(Error::SelfTransfer);
+        }
+
         let merchant: Address = env
             .storage()
             .instance()
@@ -447,6 +487,24 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        Self::refund_internal(
+            &env,
+            &payment_ref,
+            &recipient,
+            amount,
+            paid_at_ledger,
+            payment_amount,
+        )
+    }
+
+    fn refund_internal(
+        env: &Env,
+        payment_ref: &BytesN<32>,
+        recipient: &Address,
+        amount: i128,
+        paid_at_ledger: u32,
+        payment_amount: i128,
+    ) -> Result<(), Error> {
         // Legacy record: the payment was fully refunded under the single-refund
         // rule. Reject explicitly rather than mis-decoding the old shape.
         if env
@@ -489,13 +547,13 @@ impl RefundVault {
         }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
+        let token_client = token::Client::new(env, &token_addr);
         let balance = token_client.balance(&env.current_contract_address());
         if balance < amount {
             return Err(Error::InsufficientFloat);
         }
 
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+        token_client.transfer(&env.current_contract_address(), recipient, &amount);
 
         let cumulative_refunded = previous_refunded + amount;
         let current_ledger = env.ledger().sequence();
@@ -525,13 +583,13 @@ impl RefundVault {
         );
 
         RefundEvent {
-            payment_ref,
+            payment_ref: payment_ref.clone(),
             amount,
             cumulative_refunded,
             recipient: record.recipient,
             ledger: record.ledger,
         }
-        .publish(&env);
+        .publish(env);
 
         release_reentrancy_lock(&env);
         Ok(())
@@ -689,6 +747,10 @@ impl RefundVault {
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+
+        if to == env.current_contract_address() {
+            return Err(Error::SelfTransfer);
         }
 
         let merchant: Address = env
@@ -1290,8 +1352,11 @@ impl RefundVault {
     }
 }
 
+#[cfg(test)]
 mod fuzz_test;
+#[cfg(test)]
 mod reentrancy_tests;
+#[cfg(test)]
 mod test;
 mod token_agnostic_tests;
 mod yield_tests;

@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, Env,
+    vec, Address, Env,
 };
 
 const FLOAT: i128 = 1_000_000;
@@ -405,6 +405,159 @@ fn test_unpause_requires_merchant_auth() {
     let (env, client, _merchant, _token) = setup(100);
     env.set_auths(&[]);
     client.unpause();
+}
+
+// ── Paused-state invariant (issue #80) ────────────────────────────────────
+//
+// Holistic coverage for the emergency-stop guarantee: the vault is
+// initialized, funded, and strictly paused by the admin. Every state-changing
+// operation on the public surface (deposit, refund, withdraw, and the yield
+// surface) is replayed while paused and must be rejected with `Error::Paused`
+// without mutating any state. After `unpause()` the exact same operations
+// must resume their normal outcomes, proving the lock is temporary and
+// reversible.
+
+/// Normalizes a `try_*` client invocation into the contract-level outcome.
+/// A host-level failure (auth abort, conversion error) cannot occur for these
+/// calls under `mock_all_auths` with valid arguments, so it surfaces as a
+/// panic rather than being conflated with a contract error.
+fn contract_outcome<T>(
+    result: Result<Result<(), T>, Result<Error, soroban_sdk::InvokeError>>,
+) -> Result<(), Error> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Err(Ok(e)) => Err(e),
+        Ok(Err(_)) | Err(Err(_)) => panic!("unexpected host-level failure"),
+    }
+}
+
+/// One state-changing operation of the vault's public surface.
+struct PausedSurfaceOp<'a> {
+    name: &'static str,
+    invoke: &'a dyn Fn() -> Result<(), Error>,
+}
+
+#[test]
+fn test_paused_state_blocks_and_preserves_every_operation() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &600_000);
+    let token_client = TokenClient::new(&env, &token);
+
+    let payment_ref = BytesN::from_array(&env, &[0x80u8; 32]);
+    let buyer = Address::generate(&env);
+
+    // Every IsPaused-gated operation, with arguments that would succeed while
+    // the vault is unpaused.
+    let operations = [
+        PausedSurfaceOp {
+            name: "deposit",
+            invoke: &|| contract_outcome(client.try_deposit(&merchant, &100_000)),
+        },
+        PausedSurfaceOp {
+            name: "refund",
+            invoke: &|| {
+                contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000))
+            },
+        },
+        PausedSurfaceOp {
+            name: "withdraw",
+            invoke: &|| contract_outcome(client.try_withdraw(&100_000, &merchant)),
+        },
+        PausedSurfaceOp {
+            name: "deploy_to_yield",
+            invoke: &|| contract_outcome(client.try_deploy_to_yield(&100_000)),
+        },
+        PausedSurfaceOp {
+            name: "withdraw_from_yield",
+            invoke: &|| contract_outcome(client.try_withdraw_from_yield(&100_000)),
+        },
+        PausedSurfaceOp {
+            name: "harvest_yield",
+            invoke: &|| contract_outcome(client.try_harvest_yield()),
+        },
+    ];
+
+    // Funded, then strictly paused by the admin.
+    client.pause();
+
+    // Snapshot of every observable quantity the attack must not move.
+    let vault_balance_before = token_client.balance(&client.address);
+    let merchant_balance_before = token_client.balance(&merchant);
+    let yield_info_before = client.get_yield_info();
+
+    // Attack simulation: every state-changing call is rejected with Paused
+    // and mutates nothing.
+    for op in &operations {
+        assert_eq!(
+            (op.invoke)(),
+            Err(Error::Paused),
+            "{} must be rejected with Error::Paused while the vault is paused",
+            op.name
+        );
+
+        let info = client.get_yield_info();
+        assert_eq!(
+            token_client.balance(&client.address),
+            vault_balance_before,
+            "{} mutated the vault float while paused",
+            op.name
+        );
+        assert_eq!(
+            token_client.balance(&merchant),
+            merchant_balance_before,
+            "{} mutated the merchant balance while paused",
+            op.name
+        );
+        assert!(
+            client.get_refund(&payment_ref).is_none(),
+            "{} created a refund record while paused",
+            op.name
+        );
+        assert_eq!(
+            info.deployed_principal, yield_info_before.deployed_principal,
+            "{} mutated deployed principal while paused",
+            op.name
+        );
+        assert_eq!(
+            info.harvested_yield, yield_info_before.harvested_yield,
+            "{} mutated harvested yield while paused",
+            op.name
+        );
+    }
+
+    // Unpause verification: each operation must clear the pause gate. The
+    // core operations use fresh calls because replaying the same refund after
+    // a successful call would correctly exceed its payment ceiling.
+    client.unpause();
+    assert_eq!(contract_outcome(client.try_deposit(&merchant, &100_000)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000)),
+        Ok(())
+    );
+    assert_eq!(contract_outcome(client.try_withdraw(&100_000, &merchant)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_deploy_to_yield(&100_000)),
+        Err(Error::StrategyNotSet)
+    );
+    assert_eq!(
+        contract_outcome(client.try_withdraw_from_yield(&100_000)),
+        Err(Error::StrategyNotSet)
+    );
+    assert_eq!(
+        contract_outcome(client.try_harvest_yield()),
+        Err(Error::StrategyNotSet)
+    );
+
+    // The resumed core operations really moved the float: +deposit -refund -withdraw.
+    assert_eq!(
+        token_client.balance(&client.address),
+        vault_balance_before + 100_000 - 100_000 - 100_000
+    );
+    assert_eq!(token_client.balance(&buyer), 100_000);
+    assert_eq!(
+        client.get_refund(&payment_ref).unwrap().amount_refunded,
+        100_000
+    );
 }
 
 #[test]
@@ -811,6 +964,96 @@ fn test_admin_transfer_events_emitted() {
     );
 }
 
+// ── Batch refund processing tests ─────────────────────────────────────────
+
+#[test]
+fn test_process_batch_multiple_refunds_succeed() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let buyer1 = Address::generate(&env);
+    let buyer2 = Address::generate(&env);
+
+    let p1 = RefundParam {
+        payment_ref: BytesN::from_array(&env, &[1u8; 32]),
+        recipient: buyer1.clone(),
+        amount: 100_000,
+        paid_at_ledger: 0,
+        payment_amount: 100_000,
+    };
+    let p2 = RefundParam {
+        payment_ref: BytesN::from_array(&env, &[2u8; 32]),
+        recipient: buyer2.clone(),
+        amount: 200_000,
+        paid_at_ledger: 0,
+        payment_amount: 200_000,
+    };
+
+    let batch = vec![&env, p1.clone(), p2.clone()];
+    let res = client.process_batch(&batch);
+    assert_eq!(res, vec![&env, true, true]);
+
+    assert!(client.get_refund(&p1.payment_ref).is_some());
+    assert!(client.get_refund(&p2.payment_ref).is_some());
+}
+
+#[test]
+fn test_process_batch_mixed_success_failure() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let buyer1 = Address::generate(&env);
+    let buyer2 = Address::generate(&env);
+
+    let ref1 = BytesN::from_array(&env, &[1u8; 32]);
+    // Pre-refund ref1 so it fails as AlreadyRefunded during batch execution
+    client.refund(&ref1, &buyer1, &50_000, &0, &50_000);
+
+    let p1 = RefundParam {
+        payment_ref: ref1,
+        recipient: buyer1,
+        amount: 50_000,
+        paid_at_ledger: 0,
+        payment_amount: 50_000,
+    };
+    let p2 = RefundParam {
+        payment_ref: BytesN::from_array(&env, &[2u8; 32]),
+        recipient: buyer2,
+        amount: 100_000,
+        paid_at_ledger: 0,
+        payment_amount: 100_000,
+    };
+
+    let batch = vec![&env, p1, p2.clone()];
+    let res = client.process_batch(&batch);
+
+    // First item failed (false), second item succeeded (true)
+    assert_eq!(res, vec![&env, false, true]);
+    assert!(client.get_refund(&p2.payment_ref).is_some());
+}
+
+#[test]
+fn test_process_batch_exceeds_max_size_fails() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let buyer = Address::generate(&env);
+    let mut batch = vec![&env];
+    for i in 0..101u8 {
+        let mut ref_bytes = [0u8; 32];
+        ref_bytes[0] = i;
+        batch.push_back(RefundParam {
+            payment_ref: BytesN::from_array(&env, &ref_bytes),
+            recipient: buyer.clone(),
+            amount: 1,
+            paid_at_ledger: 0,
+            payment_amount: 1,
+        });
+    }
+
+    assert_eq!(
+        client.try_process_batch(&batch),
+        Err(Ok(Error::BatchTooLarge))
 // ── Policy timelock tests ──────────────────────────────────────────────────
 
 #[test]
