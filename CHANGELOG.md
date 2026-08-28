@@ -10,6 +10,9 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+- **Refund window boundary edge-case tests** (issue #84): three tests pin
+  the exact ledger at which the refund window opens and closes to guard
+  against off-by-one errors in the `>` expiry check.
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the
