@@ -6,6 +6,7 @@ members = [
     "contracts/receipt-shard",
     "contracts/refund-vault",
     "contracts/testutils",
+    "contracts/upto-authorization",
 ]
 resolver = "2"
 

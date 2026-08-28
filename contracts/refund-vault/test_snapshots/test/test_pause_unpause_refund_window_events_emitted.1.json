@@ -87,7 +87,6 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
               "function_name": "propose_policy",
-              "function_name": "set_refund_window",
               "args": [
                 {
                   "u32": 300
@@ -308,7 +307,7 @@
                         ]
                       },
                       "val": {
-                        "u32": 300
+                        "u32": 100
                       }
                     },
                     {
@@ -514,10 +513,6 @@
             "topics": [
               {
                 "symbol": "policy_proposed_event"
-                "symbol": "refund_window_updated_event"
-              },
-              {
-                "u32": 100
               },
               {
                 "u32": 300
