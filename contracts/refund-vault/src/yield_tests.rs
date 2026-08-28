@@ -871,9 +871,7 @@ fn test_yield_strategy_key_is_persistent_with_ttl() {
         setup_with_strategy(2000, 8000);
 
     let ttl = _env.as_contract(&vault_client.address, || {
-        _env.storage()
-            .persistent()
-            .get_ttl(&DataKey::YieldStrategy)
+        _env.storage().persistent().get_ttl(&DataKey::YieldStrategy)
     });
     assert!(
         ttl >= TTL_EXTEND,
@@ -886,13 +884,10 @@ fn test_yield_strategy_key_is_persistent_with_ttl() {
 fn test_reserve_ratio_key_is_persistent_with_ttl() {
     use soroban_sdk::testutils::storage::Persistent as _;
 
-    let (_env, vault_client, _merchant, _token, _strategy, _tc) =
-        setup_with_strategy(2000, 8000);
+    let (_env, vault_client, _merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
     let ttl = _env.as_contract(&vault_client.address, || {
-        _env.storage()
-            .persistent()
-            .get_ttl(&DataKey::ReserveRatio)
+        _env.storage().persistent().get_ttl(&DataKey::ReserveRatio)
     });
     assert!(
         ttl >= TTL_EXTEND,
@@ -905,8 +900,7 @@ fn test_reserve_ratio_key_is_persistent_with_ttl() {
 fn test_max_deploy_ratio_key_is_persistent_with_ttl() {
     use soroban_sdk::testutils::storage::Persistent as _;
 
-    let (_env, vault_client, _merchant, _token, _strategy, _tc) =
-        setup_with_strategy(2000, 8000);
+    let (_env, vault_client, _merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
     let ttl = _env.as_contract(&vault_client.address, || {
         _env.storage()
@@ -925,8 +919,7 @@ fn test_max_deploy_ratio_key_is_persistent_with_ttl() {
 fn test_deployed_principal_key_is_persistent_with_ttl() {
     use soroban_sdk::testutils::storage::Persistent as _;
 
-    let (_env, vault_client, merchant, _token, _strategy, _tc) =
-        setup_with_strategy(0, 10_000);
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
     vault_client.deposit(&merchant, &5_000_000);
     vault_client.deploy_to_yield(&3_000_000);
@@ -948,8 +941,7 @@ fn test_deployed_principal_key_is_persistent_with_ttl() {
 fn test_harvested_yield_key_is_persistent_with_ttl() {
     use soroban_sdk::testutils::storage::Persistent as _;
 
-    let (env, vault_client, merchant, _token, strategy_addr, _tc) =
-        setup_with_strategy(0, 10_000);
+    let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup_with_strategy(0, 10_000);
 
     vault_client.deposit(&merchant, &5_000_000);
     vault_client.deploy_to_yield(&3_000_000);
@@ -959,9 +951,7 @@ fn test_harvested_yield_key_is_persistent_with_ttl() {
     vault_client.harvest_yield();
 
     let ttl = env.as_contract(&vault_client.address, || {
-        env.storage()
-            .persistent()
-            .get_ttl(&DataKey::HarvestedYield)
+        env.storage().persistent().get_ttl(&DataKey::HarvestedYield)
     });
     assert!(
         ttl >= TTL_EXTEND,
@@ -975,8 +965,7 @@ fn test_harvested_yield_key_is_persistent_with_ttl() {
 fn test_non_yield_calls_do_not_create_yield_persistent_keys() {
     use soroban_sdk::testutils::storage::Persistent as _;
 
-    let (env, vault_client, merchant, _token, _strategy, _tc) =
-        setup_with_strategy(2000, 8000);
+    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
     // Only do a deposit — no yield operations.
     vault_client.deposit(&merchant, &5_000_000);
@@ -991,16 +980,21 @@ fn test_non_yield_calls_do_not_create_yield_persistent_keys() {
         env.storage().persistent().has(&DataKey::HarvestedYield)
     });
 
-    assert!(!deployed_exists, "DeployedPrincipal should not exist after deposit-only");
-    assert!(!harvested_exists, "HarvestedYield should not exist after deposit-only");
+    assert!(
+        !deployed_exists,
+        "DeployedPrincipal should not exist after deposit-only"
+    );
+    assert!(
+        !harvested_exists,
+        "HarvestedYield should not exist after deposit-only"
+    );
 }
 
 /// Yield keys should remain readable after a refund — proving they are
 /// truly persistent and not affected by non-yield entry points.
 #[test]
 fn test_yield_info_survives_refund() {
-    let (env, vault_client, merchant, _token, _strategy, _tc) =
-        setup_with_strategy(2000, 8000);
+    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
     vault_client.deposit(&merchant, &5_000_000);
     vault_client.deploy_to_yield(&3_000_000);
@@ -1014,7 +1008,10 @@ fn test_yield_info_survives_refund() {
     vault_client.refund(&payment_ref, &buyer, &500_000, &0, &500_000);
 
     let info_after = vault_client.get_yield_info();
-    assert_eq!(info_before.deployed_principal, info_after.deployed_principal);
+    assert_eq!(
+        info_before.deployed_principal,
+        info_after.deployed_principal
+    );
     assert_eq!(info_before.harvested_yield, info_after.harvested_yield);
     assert_eq!(info_before.strategy, info_after.strategy);
     assert_eq!(info_before.reserve_ratio, info_after.reserve_ratio);

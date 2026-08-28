@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger, Events},
+    testutils::{storage::Persistent as _, Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Env,
 };
@@ -1060,6 +1060,9 @@ fn test_process_batch_exceeds_max_size_fails() {
     assert_eq!(
         client.try_process_batch(&batch),
         Err(Ok(Error::BatchTooLarge))
+    );
+}
+
 // ── Policy timelock tests ──────────────────────────────────────────────────
 
 #[test]
