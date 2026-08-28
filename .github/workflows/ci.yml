@@ -126,7 +126,7 @@ jobs:
           cargo build -p receipt-shard --target wasm32v1-none --release
           cargo build -p refund-vault -p refund-vault-factory -p refund-window-policy --target wasm32v1-none --release
       - name: Run Tests
-        run: cargo test
+        run: cargo test --workspace
 
   benchmarks:
     name: benchmark-budgets

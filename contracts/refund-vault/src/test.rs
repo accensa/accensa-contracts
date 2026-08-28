@@ -3,9 +3,9 @@
 use super::*;
 use refund_window_policy::RefundWindowPolicy;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger},
+    testutils::{storage::Persistent as _, Address as _, Ledger, Events},
     token::{StellarAssetClient, TokenClient},
-    Address, Env,
+    vec, Address, Env,
 };
 
 const FLOAT: i128 = 1_000_000;
@@ -951,6 +951,96 @@ fn test_admin_transfer_events_emitted() {
     );
 }
 
+// ── Batch refund processing tests ─────────────────────────────────────────
+
+#[test]
+fn test_process_batch_multiple_refunds_succeed() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let buyer1 = Address::generate(&env);
+    let buyer2 = Address::generate(&env);
+
+    let p1 = RefundParam {
+        payment_ref: BytesN::from_array(&env, &[1u8; 32]),
+        recipient: buyer1.clone(),
+        amount: 100_000,
+        paid_at_ledger: 0,
+        payment_amount: 100_000,
+    };
+    let p2 = RefundParam {
+        payment_ref: BytesN::from_array(&env, &[2u8; 32]),
+        recipient: buyer2.clone(),
+        amount: 200_000,
+        paid_at_ledger: 0,
+        payment_amount: 200_000,
+    };
+
+    let batch = vec![&env, p1.clone(), p2.clone()];
+    let res = client.process_batch(&batch);
+    assert_eq!(res, vec![&env, true, true]);
+
+    assert!(client.get_refund(&p1.payment_ref).is_some());
+    assert!(client.get_refund(&p2.payment_ref).is_some());
+}
+
+#[test]
+fn test_process_batch_mixed_success_failure() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let buyer1 = Address::generate(&env);
+    let buyer2 = Address::generate(&env);
+
+    let ref1 = BytesN::from_array(&env, &[1u8; 32]);
+    // Pre-refund ref1 so it fails as AlreadyRefunded during batch execution
+    client.refund(&ref1, &buyer1, &50_000, &0, &50_000);
+
+    let p1 = RefundParam {
+        payment_ref: ref1,
+        recipient: buyer1,
+        amount: 50_000,
+        paid_at_ledger: 0,
+        payment_amount: 50_000,
+    };
+    let p2 = RefundParam {
+        payment_ref: BytesN::from_array(&env, &[2u8; 32]),
+        recipient: buyer2,
+        amount: 100_000,
+        paid_at_ledger: 0,
+        payment_amount: 100_000,
+    };
+
+    let batch = vec![&env, p1, p2.clone()];
+    let res = client.process_batch(&batch);
+
+    // First item failed (false), second item succeeded (true)
+    assert_eq!(res, vec![&env, false, true]);
+    assert!(client.get_refund(&p2.payment_ref).is_some());
+}
+
+#[test]
+fn test_process_batch_exceeds_max_size_fails() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let buyer = Address::generate(&env);
+    let mut batch = vec![&env];
+    for i in 0..101u8 {
+        let mut ref_bytes = [0u8; 32];
+        ref_bytes[0] = i;
+        batch.push_back(RefundParam {
+            payment_ref: BytesN::from_array(&env, &ref_bytes),
+            recipient: buyer.clone(),
+            amount: 1,
+            paid_at_ledger: 0,
+            payment_amount: 1,
+        });
+    }
+
+    assert_eq!(
+        client.try_process_batch(&batch),
+        Err(Ok(Error::BatchTooLarge))
 // ── Policy timelock tests ──────────────────────────────────────────────────
 
 #[test]
