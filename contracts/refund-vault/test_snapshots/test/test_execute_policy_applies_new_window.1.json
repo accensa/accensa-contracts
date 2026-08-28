@@ -377,7 +377,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 21675
+        "live_until": 535980
       },
       {
         "entry": {
@@ -404,6 +404,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "ReentrancyLock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {

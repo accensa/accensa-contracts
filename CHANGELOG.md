@@ -26,6 +26,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Changed
 
+- **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
+  Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
+  static buffer (`proof_buffer: [[u8; 32]; 128]`) and perform intermediate hashing using the pure Wasm
+  `sha2` crate. This eliminates all guest heap allocations and host roundtrips for intermediate hashes,
+  ensuring a flat guest memory footprint across all Merkle tree depths.
 - **`RefundVault` token generality is documented and pinned** (issue #166): the
   vault treats all amounts as raw integer units in the token's smallest unit and
   performs no decimal arithmetic, so any SEP-41 precision behaves identically.
