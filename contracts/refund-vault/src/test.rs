@@ -1371,7 +1371,10 @@ fn test_set_token_succeeds_when_vault_is_empty() {
 
     // Now deposit using the new token
     client.deposit(&merchant, &200_000);
-    assert_eq!(TokenClient::new(&env, &new_token).balance(&client.address), 200_000);
+    assert_eq!(
+        TokenClient::new(&env, &new_token).balance(&client.address),
+        200_000
+    );
 }
 
 #[test]
@@ -1467,8 +1470,7 @@ fn test_zero_window_allows_refund_after_large_advance() {
     client.deposit(&merchant, &500_000);
 
     // Default ledger is 1; jump ahead by 10,000.
-    env.ledger()
-        .with_mut(|li| li.sequence_number = 10_001);
+    env.ledger().with_mut(|li| li.sequence_number = 10_001);
 
     let payment_ref = BytesN::from_array(&env, &[22u8; 32]);
     let buyer = Address::generate(&env);
