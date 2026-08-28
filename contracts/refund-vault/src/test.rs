@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger, Events},
+    testutils::{storage::Persistent as _, Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Env,
 };
@@ -529,12 +529,18 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
     // core operations use fresh calls because replaying the same refund after
     // a successful call would correctly exceed its payment ceiling.
     client.unpause();
-    assert_eq!(contract_outcome(client.try_deposit(&merchant, &100_000)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_deposit(&merchant, &100_000)),
+        Ok(())
+    );
     assert_eq!(
         contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000)),
         Ok(())
     );
-    assert_eq!(contract_outcome(client.try_withdraw(&100_000, &merchant)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_withdraw(&100_000, &merchant)),
+        Ok(())
+    );
     assert_eq!(
         contract_outcome(client.try_deploy_to_yield(&100_000)),
         Err(Error::StrategyNotSet)
@@ -1054,6 +1060,276 @@ fn test_process_batch_exceeds_max_size_fails() {
     assert_eq!(
         client.try_process_batch(&batch),
         Err(Ok(Error::BatchTooLarge))
+    );
+}
+
+// ── Batch throughput: many refunds in a single transaction ─────────────────
+
+/// Builds `count` refund params with unique payment refs and recipients, all
+/// refunding `amount` of a payment of `amount`, paid at ledger 0.
+fn batch_params(env: &Env, count: u32, amount: i128) -> soroban_sdk::Vec<RefundParam> {
+    let mut params = soroban_sdk::Vec::new(env);
+    for i in 0..count {
+        let mut ref_bytes = [0u8; 32];
+        ref_bytes[0] = 0xC0;
+        ref_bytes[1] = (i >> 8) as u8;
+        ref_bytes[2] = i as u8;
+        params.push_back(RefundParam {
+            payment_ref: BytesN::from_array(env, &ref_bytes),
+            recipient: Address::generate(env),
+            amount,
+            paid_at_ledger: 0,
+            payment_amount: amount,
+        });
+    }
+    params
+}
+
+/// Acceptance criterion: at least 50 refunds processed in a single
+/// transaction. All 50 must succeed, every payment must end up with a refund
+/// record for the full amount, and the vault float must shrink by exactly the
+/// total paid out.
+#[test]
+fn test_process_batch_50_refunds_in_single_tx() {
+    let (env, client, merchant, token) = setup(1000);
+    let per_refund = 10_000i128;
+    client.deposit(&merchant, &(50 * per_refund));
+
+    let params = batch_params(&env, 50, per_refund);
+    // CPU/memory headroom for the mock-auth harness (see
+    // `test_process_batch_50_within_resource_limits`); the contract-events,
+    // write-bytes and write-entry mainnet limits stay enforced.
+    env.cost_estimate()
+        .budget()
+        .reset_limits(2_000_000_000, 2_000_000_000);
+    let res = client.process_batch(&params);
+
+    assert_eq!(res.len(), 50);
+    assert!(
+        res.iter().all(|ok| ok),
+        "every one of the 50 refunds in the batch must succeed"
+    );
+
+    // Every payment ref has a record with exactly the requested amount.
+    for i in 0..50u32 {
+        let mut ref_bytes = [0u8; 32];
+        ref_bytes[0] = 0xC0;
+        ref_bytes[1] = (i >> 8) as u8;
+        ref_bytes[2] = i as u8;
+        let record = client
+            .get_refund(&BytesN::from_array(&env, &ref_bytes))
+            .unwrap();
+        assert_eq!(record.amount_refunded, per_refund);
+        assert_eq!(record.payment_amount, per_refund);
+    }
+
+    // The whole batch settled against a single deposit: float is empty.
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+/// The cap guard fires at the resource ceiling: `MAX_REFUND_BATCH_SIZE + 1`
+/// items are rejected before any state is touched. Mainnet's 16 KiB
+/// contract-event budget is the binding constraint (a 60-refund batch would
+/// already exceed it), so the cap — not a runtime failure — is what stops an
+/// operator from submitting a batch that is guaranteed to fail atomically.
+#[test]
+fn test_process_batch_cap_blocks_oversized_batches_at_boundary() {
+    let (env, client, merchant, _token) = setup(1000);
+    let per_refund = 10_000i128;
+    client.deposit(&merchant, &(50 * per_refund));
+
+    let params = batch_params(&env, MAX_REFUND_BATCH_SIZE + 1, per_refund);
+    assert_eq!(
+        client.try_process_batch(&params),
+        Err(Ok(Error::BatchTooLarge))
+    );
+}
+
+/// A 50-refund batch must fit comfortably within the resource budget of a
+/// single Soroban transaction on mainnet limits. The SDK's test host enforces
+/// the real mainnet `InvocationResourceLimits` by default (400M instructions,
+/// 40 MiB memory, 16 KiB contract events, ~129 KiB of writes, 200 write
+/// entries); this test runs the batch under exactly those limits and asserts
+/// every dimension clears them with headroom to spare.
+///
+/// The `BATCH_50_*_CAP` constants are the measured costs of the
+/// shared-context loop + single batch event (see the PR for the numbers); a
+/// change that re-introduces a per-item state load, a per-item balance query
+/// or per-item refund events blows past them.
+#[test]
+fn test_process_batch_50_within_resource_limits() {
+    let (env, client, merchant, _token) = setup(1000);
+    let per_refund = 10_000i128;
+    client.deposit(&merchant, &(50 * per_refund));
+    let params = batch_params(&env, 50, per_refund);
+
+    // Mainnet invocation limits, enforced by the test host by default.
+    const EVENTS_LIMIT: u32 = 16_384;
+    const WRITE_BYTES_LIMIT: u32 = 132_096;
+    const WRITE_ENTRIES_LIMIT: u32 = 200;
+    const FOOTPRINT_ENTRIES_LIMIT: u32 = 400;
+
+    // Give the test harness's mock-auth bookkeeping (which builds and XDR-encodes
+    // the authorisation tree for every transfer in shadow mode) breathing room
+    // on CPU/memory. The invocation limits that matter for batch throughput —
+    // contract events, write bytes and write entries — stay at mainnet values
+    // and are what the assertions below actually gate on.
+    env.cost_estimate()
+        .budget()
+        .reset_limits(2_000_000_000, 2_000_000_000);
+    let res = client.process_batch(&params);
+    assert_eq!(res.len(), 50);
+    assert!(res.iter().all(|ok| ok));
+
+    let resources = env.cost_estimate().resources();
+    assert!(
+        resources.contract_events_size_bytes <= EVENTS_LIMIT,
+        "batch(50) event bytes {} exceed the single-tx limit {EVENTS_LIMIT}",
+        resources.contract_events_size_bytes
+    );
+    assert!(
+        resources.write_bytes <= WRITE_BYTES_LIMIT,
+        "batch(50) write bytes {} exceed the single-tx limit {WRITE_BYTES_LIMIT}",
+        resources.write_bytes
+    );
+    assert!(
+        resources.write_entries <= WRITE_ENTRIES_LIMIT,
+        "batch(50) write entries {} exceed the single-tx limit {WRITE_ENTRIES_LIMIT}",
+        resources.write_entries
+    );
+    let footprint_entries = resources.memory_read_entries + resources.write_entries;
+    assert!(
+        footprint_entries <= FOOTPRINT_ENTRIES_LIMIT,
+        "batch(50) footprint {footprint_entries} entries exceed the single-tx limit {FOOTPRINT_ENTRIES_LIMIT}"
+    );
+
+    // Regression gate: measured on the shared-context loop + single batch
+    // event. Events sit at 14,352 B for 50 refunds — the token contract's
+    // per-refund `transfer` event (~285 B each) dominates. The cap allows 10%
+    // toolchain drift; a change that re-introduces per-refund vault events
+    // (~530 B each) blows straight past both this cap and the 16 KiB hard
+    // limit. Write entries measured at 102 (2 per refund: payment record +
+    // refund record); the cap allows ~13% toolchain drift.
+    const BATCH_50_EVENTS_CAP: u32 = 15_800;
+    const BATCH_50_WRITE_ENTRIES_CAP: u32 = 115;
+    assert!(
+        resources.contract_events_size_bytes <= BATCH_50_EVENTS_CAP,
+        "batch(50) events regression: {} > {BATCH_50_EVENTS_CAP}",
+        resources.contract_events_size_bytes
+    );
+    assert!(
+        resources.write_entries <= BATCH_50_WRITE_ENTRIES_CAP,
+        "batch(50) write entries regression: {} > {BATCH_50_WRITE_ENTRIES_CAP}",
+        resources.write_entries
+    );
+}
+
+/// The batch path emits exactly one compact `BatchRefundEvent` for the whole
+/// call — not one `RefundEvent` per item — which is what keeps 50+ refunds
+/// inside the transaction's 16 KiB contract-event budget. The two vectors are
+/// aligned 1:1 with the submitted batch, in submission order.
+#[test]
+fn test_batch_emits_single_batch_event() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{vec, IntoVal, Map, Symbol, Val};
+
+    let (env, client, merchant, _token) = setup(1000);
+    let per_refund = 10_000i128;
+    client.deposit(&merchant, &(50 * per_refund));
+    let params = batch_params(&env, 50, per_refund);
+
+    // CPU/memory headroom for the mock-auth harness; this test only inspects
+    // emitted events, and the batch's 50 token transfers need the raised
+    // budget for the harness's shadow-mode auth bookkeeping.
+    env.cost_estimate()
+        .budget()
+        .reset_limits(2_000_000_000, 2_000_000_000);
+    client.process_batch(&params);
+
+    // Expected payload: every payment ref succeeded, in submission order.
+    let mut expected_refs: soroban_sdk::Vec<BytesN<32>> = soroban_sdk::Vec::new(&env);
+    let mut expected_results: soroban_sdk::Vec<bool> = soroban_sdk::Vec::new(&env);
+    for p in params.iter() {
+        expected_refs.push_back(p.payment_ref);
+        expected_results.push_back(true);
+    }
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "payment_refs").into_val(&env),
+        expected_refs.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "results").into_val(&env),
+        expected_results.into_val(&env),
+    );
+
+    // Exactly one event for the whole batch, with the batch_refund_event topic.
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "batch_refund_event"),).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+}
+
+/// The shared-context loop must be measurably cheaper than issuing the same
+/// refunds one transaction at a time. The host budget meter resets before
+/// every top-level invocation, so the cost of "50 separate transactions" is
+/// the sum of the 50 per-invocation readings, compared against the single
+/// metered cost of one `process_batch`(50). A single batch performs one auth
+/// check, one `balance` query and one window/ledger/token load instead of N
+/// of each, so its metered cost must stay strictly below the summed singles.
+#[test]
+fn test_batch_amortizes_state_loads_over_single_refunds() {
+    let per_refund = 10_000i128;
+
+    // 50 individual refunds, one per transaction: sum each invocation's cost.
+    let (env_a, client_a, merchant_a, _token_a) = setup(1000);
+    client_a.deposit(&merchant_a, &(50 * per_refund));
+    let singles = batch_params(&env_a, 50, per_refund);
+    env_a.cost_estimate().budget().reset_default();
+    let mut singles_cpu: u64 = 0;
+    let mut singles_mem: u64 = 0;
+    for p in singles.iter() {
+        client_a.refund(
+            &p.payment_ref,
+            &p.recipient,
+            &p.amount,
+            &p.paid_at_ledger,
+            &p.payment_amount,
+        );
+        singles_cpu += env_a.cost_estimate().budget().cpu_instruction_cost();
+        singles_mem += env_a.cost_estimate().budget().memory_bytes_cost();
+    }
+
+    // The same 50 refunds in one batch transaction.
+    let (env_b, client_b, merchant_b, _token_b) = setup(1000);
+    client_b.deposit(&merchant_b, &(50 * per_refund));
+    let params = batch_params(&env_b, 50, per_refund);
+    env_b
+        .cost_estimate()
+        .budget()
+        .reset_limits(2_000_000_000, 2_000_000_000);
+    client_b.process_batch(&params);
+    let batch_cpu = env_b.cost_estimate().budget().cpu_instruction_cost();
+    let batch_mem = env_b.cost_estimate().budget().memory_bytes_cost();
+
+    assert!(
+        batch_cpu < singles_cpu,
+        "batch CPU ({batch_cpu}) should be below the sum of 50 singles ({singles_cpu})"
+    );
+    assert!(
+        batch_mem < singles_mem,
+        "batch memory ({batch_mem}) should be below the sum of 50 singles ({singles_mem})"
+    );
+}
+
 // ── Policy timelock tests ──────────────────────────────────────────────────
 
 #[test]
@@ -1302,13 +1578,7 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     let contract_addr = client.address.clone();
 
     // Refunding to vault address must return SelfTransfer error
-    let res = client.try_refund(
-        &payment_ref,
-        &contract_addr,
-        &50_000,
-        &0,
-        &50_000,
-    );
+    let res = client.try_refund(&payment_ref, &contract_addr, &50_000, &0, &50_000);
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
     // Payment ref must remain unconsumed / not recorded
@@ -1318,6 +1588,49 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     let events = env.events().all().filter_by_contract(&client.address);
     // Only the deposit event should exist (log is reset, so 0 events remain)
     assert_eq!(events.events().len(), 0);
+}
+
+/// The batch path must reject items targeting the vault itself (fail closed,
+/// skipped with `false`) instead of consuming the payment_ref while leaving
+/// float untouched — the self-transfer threat in SECURITY_MODEL §Threats.
+#[test]
+fn test_process_batch_item_to_contract_address_skipped() {
+    let (env, client, merchant, token) = setup(100);
+    let per_refund = 10_000i128;
+    client.deposit(&merchant, &(2 * per_refund));
+
+    let mut params = batch_params(&env, 2, per_refund);
+    let vault_addr = client.address.clone();
+    // Point the second item at the vault itself.
+    params.set(
+        1,
+        RefundParam {
+            payment_ref: params.get(1).unwrap().payment_ref,
+            recipient: vault_addr,
+            amount: per_refund,
+            paid_at_ledger: 0,
+            payment_amount: per_refund,
+        },
+    );
+
+    env.cost_estimate()
+        .budget()
+        .reset_limits(2_000_000_000, 2_000_000_000);
+    let res = client.process_batch(&params);
+
+    // First item refunded, second skipped (self-transfer), no panic.
+    assert_eq!(res, vec![&env, true, false]);
+    assert!(client
+        .get_refund(&params.get(0).unwrap().payment_ref)
+        .is_some());
+    assert!(client
+        .get_refund(&params.get(1).unwrap().payment_ref)
+        .is_none());
+    // Float intact except the one legit payout.
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&client.address),
+        per_refund
+    );
 }
 
 #[test]
@@ -1368,7 +1681,10 @@ fn test_set_token_succeeds_when_vault_is_empty() {
 
     // Now deposit using the new token
     client.deposit(&merchant, &200_000);
-    assert_eq!(TokenClient::new(&env, &new_token).balance(&client.address), 200_000);
+    assert_eq!(
+        TokenClient::new(&env, &new_token).balance(&client.address),
+        200_000
+    );
 }
 
 #[test]

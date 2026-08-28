@@ -92,12 +92,17 @@ pub struct YieldInfo {
     pub max_deploy_ratio: u32,
 }
 
-/// Emitted when a (possibly partial) refund is made from the vault float.
+/// Emitted when a (possibly partial) refund is made from the vault float via
+/// the single-refund `refund` entry point.
 ///
 /// Topics: `("refund_event", payment_ref)`. The data map carries the amount
 /// for **this call** (`amount`) and the running total after it
 /// (`cumulative_refunded`), so an indexer knows the state of a payment without
 /// summing history.
+///
+/// Refunds processed through [`RefundVault::process_batch`] do **not** emit
+/// one of these per item: a batch emits a single [`BatchRefundEvent`] instead
+/// (see its docs for why).
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundEvent {
@@ -109,6 +114,25 @@ pub struct RefundEvent {
     pub cumulative_refunded: i128,
     pub recipient: Address,
     pub ledger: u32,
+}
+
+/// Emitted **once per `process_batch` call**, replacing one `RefundEvent` per
+/// item so a large batch fits within a transaction's contract-events byte
+/// budget (16 KiB on mainnet — 50+ individual refund events would exceed it).
+///
+/// The two vectors are aligned 1:1 with the `refunds` input, in submission
+/// order: `payment_refs[i]` corresponds to `results[i]`. The per-item amounts,
+/// recipients and ceilings are the ones the submitter supplied in the input;
+/// the indexer correlates them by position.
+///
+/// Topics: `("batch_refund_event",)`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchRefundEvent {
+    /// The payment ref of every item in the batch, in submission order.
+    pub payment_refs: Vec<BytesN<32>>,
+    /// Whether the refund for the corresponding payment ref succeeded.
+    pub results: Vec<bool>,
 }
 
 #[contractevent]
@@ -327,8 +351,30 @@ fn refund_record_ttl_extend_to(env: &Env, window: u32, paid_at_ledger: u32) -> u
 }
 
 /// Maximum number of refund requests allowed in a single `process_batch` call.
-/// Bounds CPU and memory usage to ensure the transaction stays within Soroban limits.
-const MAX_REFUND_BATCH_SIZE: u32 = 100;
+///
+/// This is not an arbitrary guard: mainnet caps a transaction's contract
+/// events at 16 KiB, and each refund in a batch unavoidably emits a ~285-byte
+/// `transfer` event from the token contract plus its share of the batch event.
+/// 50 refunds land at ~14.3 KiB (≈88%) of the event budget; 60 already
+/// exceeds it. The cap is set at the largest round number that fits with
+/// headroom, so an operator/relayer can never submit a batch that is
+/// guaranteed to fail atomically against mainnet resource limits.
+const MAX_REFUND_BATCH_SIZE: u32 = 50;
+
+/// Per-transaction state shared by every item of a `process_batch` call, so a
+/// batch of N refunds loads the refund window, current ledger, token address
+/// and vault balance **once** instead of N times.
+///
+/// `running_balance` mirrors the vault's token balance as the loop pays out.
+/// The only writes to the vault's balance during a batch are the transfers the
+/// loop itself performs, so the mirror stays exact and the batch needs a
+/// single `balance` cross-contract call rather than one per refund.
+struct BatchContext {
+    window: u32,
+    current_ledger: u32,
+    token: Address,
+    running_balance: i128,
+}
 
 #[contract]
 pub struct RefundVault;
@@ -460,10 +506,6 @@ impl RefundVault {
             return Err(Error::InvalidAmount);
         }
 
-        if recipient == env.current_contract_address() {
-            return Err(Error::SelfTransfer);
-        }
-
         let merchant: Address = env
             .storage()
             .instance()
@@ -481,14 +523,58 @@ impl RefundVault {
         )
     }
 
-    fn refund_internal(
+    /// Loads the per-transaction refund state (window, current ledger, token
+    /// and the vault's current token balance) exactly once, so a batch of N
+    /// refunds never re-reads or re-queries any of it per item.
+    fn load_refund_context(env: &Env) -> BatchContext {
+        let window: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .unwrap();
+        let current_ledger = env.ledger().sequence();
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(env, &token);
+        let balance = token_client.balance(&env.current_contract_address());
+        BatchContext {
+            window,
+            current_ledger,
+            token,
+            running_balance: balance,
+        }
+    }
+
+    /// Applies one refund against a pre-loaded [`BatchContext`].
+    ///
+    /// This is the single source of truth for the per-refund policy checks,
+    /// float check, payout, record write: both the single-entry `refund` path
+    /// (via [`Self::refund_internal`]) and the batch path
+    /// ([`Self::process_batch`]) run through it, so the two can never drift
+    /// apart. Everything invariant across a batch — the refund window, the
+    /// current ledger, the token address and the vault's token balance — is
+    /// loaded once by the caller and passed in, so the loop body touches only
+    /// per-payment storage. Event emission is the caller's job: the single
+    /// path publishes a `RefundEvent`, the batch path publishes one
+    /// `BatchRefundEvent` for the whole call (see [`Self::process_batch`]).
+    fn apply_refund(
         env: &Env,
+        ctx: &mut BatchContext,
         payment_ref: &BytesN<32>,
         recipient: &Address,
         amount: i128,
         paid_at_ledger: u32,
         payment_amount: i128,
-    ) -> Result<(), Error> {
+    ) -> Result<RefundRecord, Error> {
+        // Guard the vault's own address as recipient on both paths: a
+        // self-transfer would leave float untouched while permanently
+        // consuming the payment_ref (SECURITY_MODEL §Threats). The single
+        // `refund` entry point used to check this before delegating; the batch
+        // path never did — this shared core now covers both, so a batch item
+        // targeting the vault fails closed and is skipped (returns `false`).
+        if *recipient == env.current_contract_address() {
+            return Err(Error::SelfTransfer);
+        }
+
         // Legacy record: the payment was fully refunded under the single-refund
         // rule. Reject explicitly rather than mis-decoding the old shape.
         if env
@@ -499,16 +585,9 @@ impl RefundVault {
             return Err(Error::ExceedsPayment);
         }
 
-        let window: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RefundWindow)
-            .unwrap();
-        if window > 0 {
-            let current_ledger = env.ledger().sequence();
-            if current_ledger > paid_at_ledger + window {
-                return Err(Error::WindowExpired);
-            }
+        // Window check against the pre-loaded window and ledger.
+        if ctx.window > 0 && ctx.current_ledger > paid_at_ledger + ctx.window {
+            return Err(Error::WindowExpired);
         }
 
         // Ceiling check: cumulative refunds must not exceed the original amount.
@@ -530,33 +609,29 @@ impl RefundVault {
             return Err(Error::ExceedsPayment);
         }
 
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(env, &token_addr);
-        let balance = token_client.balance(&env.current_contract_address());
-        if balance < amount {
+        // Float check against the running balance, not a fresh `balance` call.
+        if ctx.running_balance < amount {
             return Err(Error::InsufficientFloat);
         }
 
+        let token_client = token::Client::new(env, &ctx.token);
         token_client.transfer(&env.current_contract_address(), recipient, &amount);
+        ctx.running_balance -= amount;
 
         let cumulative_refunded = previous_refunded + amount;
-        let current_ledger = env.ledger().sequence();
         let record = RefundRecord {
             amount_refunded: cumulative_refunded,
             payment_amount: record_ceiling,
             paid_at_ledger,
             recipient: recipient.clone(),
-            ledger: current_ledger,
+            ledger: ctx.current_ledger,
         };
 
         env.storage()
             .persistent()
             .set(&DataKey::RefundV2(payment_ref.clone()), &record);
 
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        let extend_to = refund_record_ttl_extend_to(&env, window, paid_at_ledger);
+        let extend_to = refund_record_ttl_extend_to(env, ctx.window, paid_at_ledger);
         // Threshold == extend_to (not TTL_THRESHOLD): see
         // `refund_record_ttl_extend_to` for why a small fixed threshold makes
         // this a no-op on a freshly-written entry.
@@ -566,27 +641,83 @@ impl RefundVault {
             extend_to,
         );
 
+        Ok(record)
+    }
+
+    /// Single-refund path: loads the per-transaction context once, applies one
+    /// refund through [`Self::apply_refund`] and publishes the per-refund
+    /// `RefundEvent`, preserving the exact behaviour the public `refund` entry
+    /// point has always had — including the instance TTL bump and
+    /// reentrancy-lock release on success (on error the whole invocation rolls
+    /// back, lock write included).
+    fn refund_internal(
+        env: &Env,
+        payment_ref: &BytesN<32>,
+        recipient: &Address,
+        amount: i128,
+        paid_at_ledger: u32,
+        payment_amount: i128,
+    ) -> Result<(), Error> {
+        let mut ctx = Self::load_refund_context(env);
+        let record = Self::apply_refund(
+            env,
+            &mut ctx,
+            payment_ref,
+            recipient,
+            amount,
+            paid_at_ledger,
+            payment_amount,
+        )?;
+
         RefundEvent {
             payment_ref: payment_ref.clone(),
             amount,
-            cumulative_refunded,
+            cumulative_refunded: record.amount_refunded,
             recipient: record.recipient,
             ledger: record.ledger,
         }
         .publish(env);
 
-        release_reentrancy_lock(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        release_reentrancy_lock(env);
         Ok(())
     }
 
     /// Processes a batch of refund requests in a single transaction.
     ///
-    /// Design choice: Best-effort execution model with per-item result booleans.
-    /// Each refund is invoked via `refund_internal` logic to ensure code reuse
-    /// and strict adherence to pause, auth, window, and balance constraints.
-    /// If an individual refund fails (e.g. `AlreadyRefunded` or `WindowExpired`), it records `false`
-    /// for that item and continues processing subsequent items rather than aborting the entire batch.
-    /// This allows valid refunds in a multi-item batch to complete successfully.
+    /// Design choice: best-effort execution model with per-item result booleans.
+    /// Each refund runs through [`Self::apply_refund`] to ensure code reuse and
+    /// strict adherence to pause, auth, window, and balance constraints. If an
+    /// individual refund fails (e.g. `ExceedsPayment` or `WindowExpired`), it
+    /// records `false` for that item and continues processing subsequent items
+    /// rather than aborting the entire batch, so valid refunds in a multi-item
+    /// batch still complete.
+    ///
+    /// Throughput: the loop is written to maximise the number of refunds that
+    /// fit within one transaction's resource budget. The merchant is
+    /// authenticated once (not per item), and all per-transaction state — the
+    /// refund window, current ledger, token address and the vault's token
+    /// balance — is loaded once via [`Self::load_refund_context`] and shared
+    /// across the loop. The balance is tracked locally as the loop pays out, so
+    /// a batch of N refunds performs a single `balance` cross-contract call
+    /// instead of N, and the instance TTL is extended once at the end instead
+    /// of once per item.
+    ///
+    /// Events: instead of one `RefundEvent` per item, the whole batch emits a
+    /// single compact [`BatchRefundEvent`]. A per-refund event costs ~530
+    /// bytes of contract-event budget, and mainnet caps a transaction at 16
+    /// KiB of events — so 50+ refunds would not fit if each emitted its own
+    /// event, no matter how tight the loop. The single batch event (payment
+    /// refs + results, aligned 1:1 with the input) keeps 50 refunds at ~14
+    /// KiB of events — the token contract's `transfer` event per refund is
+    /// what dominates, which is exactly why [`MAX_REFUND_BATCH_SIZE`] is 50.
+    ///
+    /// The merchant acts as the operator/relayer: a relayer contract can be
+    /// authorised to submit batches by becoming (or being delegated) the admin
+    /// via the two-step `transfer_admin`/`accept_admin`, or by being the
+    /// merchant's own contract account.
     pub fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error> {
         if env
             .storage()
@@ -608,10 +739,23 @@ impl RefundVault {
             return Err(Error::BatchTooLarge);
         }
 
+        // An empty batch is a no-op; return before touching any state so the
+        // caller can probe auth without paying for state loads.
+        if refunds.is_empty() {
+            return Ok(Vec::new(&env));
+        }
+
+        // State loads shared across the whole batch: one balance query and one
+        // window/ledger/token read — the loop below only touches per-payment
+        // storage and performs the transfers.
+        let mut ctx = Self::load_refund_context(&env);
+        let mut payment_refs: Vec<BytesN<32>> = Vec::new(&env);
         let mut results = Vec::new(&env);
         for item in refunds.into_iter() {
-            let res = Self::refund_internal(
+            payment_refs.push_back(item.payment_ref.clone());
+            let res = Self::apply_refund(
                 &env,
+                &mut ctx,
                 &item.payment_ref,
                 &item.recipient,
                 item.amount,
@@ -620,6 +764,16 @@ impl RefundVault {
             );
             results.push_back(res.is_ok());
         }
+
+        BatchRefundEvent {
+            payment_refs,
+            results: results.clone(),
+        }
+        .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(results)
     }
 

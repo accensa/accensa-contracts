@@ -161,7 +161,11 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
       - name: Wasm build
-        run: cargo build --target wasm32v1-none --release
+        # `testutils` is host-only test support (unconditionally enables the
+        # soroban-sdk `testutils` feature); excluding it keeps the workspace
+        # build on the wasm target (feature unification would otherwise pull
+        # host-only crates into the wasm build and fail it).
+        run: cargo build --workspace --target wasm32v1-none --release --exclude testutils
 
       - name: Report WASM sizes & enforce size budget
         run: |

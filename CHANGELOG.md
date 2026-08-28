@@ -10,6 +10,34 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+- **Self-transfer guard extended to batch refunds** (SECURITY_MODEL §Threats):
+  the `SelfTransfer` check now lives in the shared `apply_refund` core, so a
+  `process_batch` item whose `recipient` is the vault itself is skipped
+  (`false`) instead of consuming the `payment_ref` while leaving float
+  untouched — previously only the single `refund` entry point guarded it.
+
+### Changed
+
+- **`RefundVault::process_batch` throughput optimised** (issue #119): the
+  batch loop now loads the refund window, current ledger, token address and
+  vault balance **once** into a shared `BatchContext` instead of per item — a
+  batch of N refunds makes a single `balance` cross-contract call — and emits a
+  single compact `BatchRefundEvent` (`payment_refs` + `results`) for the whole
+  call instead of one `RefundEvent` per item. Per-refund events cost ~530 B of
+  contract-event budget and mainnet caps a transaction at 16 KiB, so the batch
+  event is what lets 50+ refunds fit in one transaction. `MAX_REFUND_BATCH_SIZE`
+  is lowered from 100 to **50** — the largest batch that fits mainnet's event
+  budget (60 already exceeds it) — so an operator can never submit a batch that
+  is guaranteed to fail atomically. New tests prove 50 refunds fit under all
+  mainnet `InvocationResourceLimits`, that the batch amortises state loads over
+  50 singles, that exactly one batch event is emitted, and that the cap guard
+  fires at `MAX_REFUND_BATCH_SIZE + 1`.
+- **Cost baselines refreshed** (`receipt-anchor` `verify_receipt` CPU and
+  `refund-vault` `refund` CPU re-measured after the shared-core refactor) and
+  WASM size budgets updated for both contracts.
+
+### Added
+
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the

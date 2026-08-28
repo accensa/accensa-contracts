@@ -129,7 +129,7 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
 
 ### Self-Transfer and Phantom Refunds
 - **Threat:** An indexer or batch pipeline bug supplies the contract's own address as `recipient` in `refund` (or as `to` in `withdraw`). A self-transfer leaves float untouched while permanently consuming the `payment_ref` and emitting a `RefundEvent` for funds the buyer never received.
-- **Mitigation:** Both `refund` and `withdraw` explicitly validate that `recipient != env.current_contract_address()` and `to != env.current_contract_address()`, rejecting violations with `Error::SelfTransfer` before any persistent state is written or events emitted.
+- **Mitigation:** The `SelfTransfer` guard lives in `apply_refund`, the shared core behind both `refund` and `process_batch`, so **every** refund path — single or batched — rejects `recipient == env.current_contract_address()` with `Error::SelfTransfer` before any persistent state is written or events emitted. A batch item targeting the vault fails closed and is skipped (returns `false` in the results vector); `withdraw` validates `to != env.current_contract_address()` independently.
 - **`recipient == merchant` decision:** Refunding to the merchant's own address is permitted by design. A merchant may be testing automated refund workflows, acting as buyer in self-settlement flows, or executing an explicit accounting reversal. Because float does leave the contract and transfers to the merchant balance, the transfer is real and non-phantom.
 
 ### Token Address Changeability

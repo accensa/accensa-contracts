@@ -217,8 +217,8 @@ impl Model {
 const HEADROOM_PERCENT: u64 = 15;
 
 /// Cost baselines for `RefundVault::refund`
-/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-26.
-const REFUND_BASELINE_CPU: u64 = 397_721;
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-28.
+const REFUND_BASELINE_CPU: u64 = 473_219;
 const REFUND_BASELINE_MEM: u64 = 131_994;
 
 #[test]

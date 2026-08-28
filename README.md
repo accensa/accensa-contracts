@@ -114,6 +114,7 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 | `initialize(merchant, token, refund_window_ledgers)` | Sets admin, settlement token, and refund window. |
 | `deposit(from, amount)` | Merchant tops up float. |
 | `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. |
+| `process_batch(refunds) -> Vec<bool>` | Processes up to `MAX_REFUND_BATCH_SIZE` (50) refunds in a single transaction. Merchant (or a relayer acting as/for the merchant) auth is checked once; the refund window, ledger, token and vault balance are loaded once and shared across the loop. Returns one `bool` per refund in submission order (`false` = that item failed validation, e.g. insufficient float or already refunded — the rest still process). Batches larger than the cap are rejected outright with `BatchTooLarge`; the cap is set where a batch still fits mainnet's 16 KiB contract-event budget. |
 | `withdraw(amount, to)` | Merchant withdraws float. |
 | `propose_policy(ledgers)` | Proposes a new refund window; subject to timelock. |
 | `execute_policy()` | Executes a pending policy change after the timelock. |
@@ -130,6 +131,7 @@ Emits:
 |---|---|---|
 | `DepositEvent` | `("deposit_event", from)` | `amount` |
 | `RefundEvent` | `("refund_event", payment_ref)` | `amount` (this call), `cumulative_refunded`, `recipient`, `ledger` |
+| `BatchRefundEvent` | `("batch_refund_event",)` | `payment_refs`, `results` (parallel vectors, 1:1 with the submitted batch) |
 | `WithdrawEvent` | `("withdraw_event", to)` | `amount` |
 | `PauseEvent` | `("pause_event", ledger)` | — |
 | `UnpauseEvent` | `("unpause_event", ledger)` | — |
@@ -140,6 +142,13 @@ that call (`amount`) and the running total (`cumulative_refunded`), so an indexe
 knows the state of a payment without summing history. `RefundRecord` stores the
 cumulative total (`amount_refunded`) plus the `payment_amount` ceiling, the
 `paid_at_ledger` the window is measured from, and the recipient.
+
+`process_batch` deliberately emits **one** `BatchRefundEvent` for the whole batch
+instead of one `RefundEvent` per item: a per-refund event costs ~530 bytes of
+contract-event budget, and mainnet caps a transaction at 16 KiB — so 50+ refunds
+would not fit if each emitted its own event. The token contract's per-refund
+`transfer` event (unavoidable) dominates what remains, which is why
+`MAX_REFUND_BATCH_SIZE` is 50.
 
 **Cross-Contract Joins** (both claims below are pinned by tests in
 `contracts/refund-vault/tests/integration_test.rs`):
