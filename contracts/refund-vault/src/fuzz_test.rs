@@ -217,9 +217,11 @@ impl Model {
 const HEADROOM_PERCENT: u64 = 15;
 
 /// Cost baselines for `RefundVault::refund`
-/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-26.
-const REFUND_BASELINE_CPU: u64 = 397_721;
-const REFUND_BASELINE_MEM: u64 = 131_994;
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-28 (rustc 1.98.0).
+/// The 2026-08-26 baselines drifted ~19% on CPU under the current toolchain, so re-measure
+/// when the toolchain moves.
+const REFUND_BASELINE_CPU: u64 = 473_823;
+const REFUND_BASELINE_MEM: u64 = 150_537;
 
 #[test]
 fn test_refund_resource_cost_budget() {

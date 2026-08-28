@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger, Events},
+    testutils::{storage::Persistent as _, Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Env,
 };
@@ -529,12 +529,18 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
     // core operations use fresh calls because replaying the same refund after
     // a successful call would correctly exceed its payment ceiling.
     client.unpause();
-    assert_eq!(contract_outcome(client.try_deposit(&merchant, &100_000)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_deposit(&merchant, &100_000)),
+        Ok(())
+    );
     assert_eq!(
         contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000)),
         Ok(())
     );
-    assert_eq!(contract_outcome(client.try_withdraw(&100_000, &merchant)), Ok(()));
+    assert_eq!(
+        contract_outcome(client.try_withdraw(&100_000, &merchant)),
+        Ok(())
+    );
     assert_eq!(
         contract_outcome(client.try_deploy_to_yield(&100_000)),
         Err(Error::StrategyNotSet)
@@ -1054,6 +1060,9 @@ fn test_process_batch_exceeds_max_size_fails() {
     assert_eq!(
         client.try_process_batch(&batch),
         Err(Ok(Error::BatchTooLarge))
+    );
+}
+
 // ── Policy timelock tests ──────────────────────────────────────────────────
 
 #[test]
@@ -1302,13 +1311,7 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     let contract_addr = client.address.clone();
 
     // Refunding to vault address must return SelfTransfer error
-    let res = client.try_refund(
-        &payment_ref,
-        &contract_addr,
-        &50_000,
-        &0,
-        &50_000,
-    );
+    let res = client.try_refund(&payment_ref, &contract_addr, &50_000, &0, &50_000);
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
     // Payment ref must remain unconsumed / not recorded
@@ -1368,7 +1371,10 @@ fn test_set_token_succeeds_when_vault_is_empty() {
 
     // Now deposit using the new token
     client.deposit(&merchant, &200_000);
-    assert_eq!(TokenClient::new(&env, &new_token).balance(&client.address), 200_000);
+    assert_eq!(
+        TokenClient::new(&env, &new_token).balance(&client.address),
+        200_000
+    );
 }
 
 #[test]

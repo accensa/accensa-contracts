@@ -741,7 +741,7 @@ fn test_root_buffer_evicts_oldest_when_full() {
     // First entry is now [1u8; 32] (the second root we anchored).
     assert_eq!(buffer.get(0).unwrap(), BytesN::from_array(&env, &[1u8; 32]));
     // Last entry is the new root.
-    assert_eq!(buffer.get((ROOT_BUFFER_SIZE - 1) as u32).unwrap(), new_root);
+    assert_eq!(buffer.get(ROOT_BUFFER_SIZE - 1).unwrap(), new_root);
 }
 
 #[test]
@@ -923,168 +923,66 @@ fn test_get_max_proof_len() {
 // ---------------------------------------------------------------------------
 // Rate-limiting tests
 // ---------------------------------------------------------------------------
+//
+// The limiter is a per-identity token bucket (the identity is the merchant,
+// since `anchor_batch` is merchant-authorized): `burst_capacity` anchors may
+// land back-to-back, then the bucket refills one token every
+// `refill_interval_secs` seconds, capped at `burst_capacity`. A config of
+// `{0, 0}` disables it entirely. A fresh bucket (first anchor, or first after
+// a config change) starts full.
 
-#[test]
-fn test_first_anchor_always_succeeds() {
-    let (env, client, merchant) = setup();
-    init(&env, &client, &merchant);
-    client.set_min_anchor_interval(&60);
-
-    // First anchor — no previous timestamp stored, should succeed.
-    let root = BytesN::from_array(&env, &[1u8; 32]);
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 10;
-        li.timestamp = 1000;
-    });
-    assert_eq!(client.anchor_batch(&root, &1, &0, &10), 1);
+fn root_of(env: &Env, seed: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[seed; 32])
 }
 
 #[test]
-fn test_anchor_rejected_within_interval() {
+fn test_rate_limit_disabled_by_default() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
-    client.set_min_anchor_interval(&60);
 
-    let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    let root2 = BytesN::from_array(&env, &[2u8; 32]);
-
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 10;
-        li.timestamp = 1000;
-    });
-    client.anchor_batch(&root1, &1, &0, &10);
-
-    // Second anchor at the same timestamp — should be rate-limited.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 11;
-        li.timestamp = 1000;
-    });
     assert_eq!(
-        client.try_anchor_batch(&root2, &1, &11, &20),
-        Err(Ok(Error::AnchorRateLimited))
-    );
-}
-
-#[test]
-fn test_anchor_succeeds_after_interval() {
-    let (env, client, merchant) = setup();
-    init(&env, &client, &merchant);
-    client.set_min_anchor_interval(&60);
-
-    let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    let root2 = BytesN::from_array(&env, &[2u8; 32]);
-
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 10;
-        li.timestamp = 1000;
-    });
-    client.anchor_batch(&root1, &1, &0, &10);
-
-    // Exactly at the boundary (1000 + 60 = 1060) — should succeed.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 20;
-        li.timestamp = 1060;
-    });
-    assert_eq!(client.anchor_batch(&root2, &1, &11, &20), 2);
-}
-
-#[test]
-fn test_anchor_rejected_one_second_before_boundary() {
-    let (env, client, merchant) = setup();
-    init(&env, &client, &merchant);
-    client.set_min_anchor_interval(&60);
-
-    let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    let root2 = BytesN::from_array(&env, &[2u8; 32]);
-    let root3 = BytesN::from_array(&env, &[3u8; 32]);
-
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 10;
-        li.timestamp = 1000;
-    });
-    client.anchor_batch(&root1, &1, &0, &10);
-
-    // One second before boundary (1059 < 1060) — should be rate-limited.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 20;
-        li.timestamp = 1059;
-    });
-    assert_eq!(
-        client.try_anchor_batch(&root2, &1, &11, &20),
-        Err(Ok(Error::AnchorRateLimited))
+        client.get_anchor_rate_limit(),
+        RateLimitConfig {
+            burst_capacity: 0,
+            refill_interval_secs: 0,
+        }
     );
 
-    // Exactly at boundary — should succeed. batch_id is 2 because root2 was rejected.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 21;
-        li.timestamp = 1060;
-    });
-    assert_eq!(client.anchor_batch(&root3, &1, &21, &30), 2);
+    // Unlimited back-to-back anchors at the same timestamp pass.
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    assert_eq!(client.get_batch_count(), 2);
 }
 
 #[test]
-fn test_interval_zero_disables_rate_limit() {
-    let (env, client, merchant) = setup();
-    init(&env, &client, &merchant);
-    // Interval is 0 by default.
-
-    let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    let root2 = BytesN::from_array(&env, &[2u8; 32]);
-
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 10;
-        li.timestamp = 1000;
-    });
-    client.anchor_batch(&root1, &1, &0, &10);
-
-    // Same timestamp — should succeed because interval is 0.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 11;
-        li.timestamp = 1000;
-    });
-    assert_eq!(client.anchor_batch(&root2, &1, &11, &20), 2);
-}
-
-#[test]
-fn test_changing_interval_takes_effect() {
+fn test_set_anchor_rate_limit_round_trips() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
 
-    let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    let root2 = BytesN::from_array(&env, &[2u8; 32]);
-    let root3 = BytesN::from_array(&env, &[3u8; 32]);
-
-    // First anchor with interval = 0.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 10;
-        li.timestamp = 1000;
-    });
-    client.anchor_batch(&root1, &1, &0, &10);
-
-    // Second anchor at same time — succeeds (interval = 0).
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 11;
-        li.timestamp = 1000;
-    });
-    client.anchor_batch(&root2, &1, &11, &20);
-
-    // Now set interval to 60.
-    client.set_min_anchor_interval(&60);
-
-    // Third anchor at same time — should be rate-limited now.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 12;
-        li.timestamp = 1000;
-    });
+    client.set_anchor_rate_limit(&3, &60);
     assert_eq!(
-        client.try_anchor_batch(&root3, &1, &21, &30),
-        Err(Ok(Error::AnchorRateLimited))
+        client.get_anchor_rate_limit(),
+        RateLimitConfig {
+            burst_capacity: 3,
+            refill_interval_secs: 60,
+        }
+    );
+
+    // Disabling round-trips too.
+    client.set_anchor_rate_limit(&0, &0);
+    assert_eq!(
+        client.get_anchor_rate_limit(),
+        RateLimitConfig {
+            burst_capacity: 0,
+            refill_interval_secs: 0,
+        }
     );
 }
 
 #[test]
 #[should_panic]
-fn test_set_min_anchor_interval_requires_admin_auth() {
+fn test_set_anchor_rate_limit_requires_admin_auth() {
     let env = Env::default();
     let contract_id = env.register(ReceiptAnchor, ());
     let client = ReceiptAnchorClient::new(&env, &contract_id);
@@ -1094,106 +992,304 @@ fn test_set_min_anchor_interval_requires_admin_auth() {
     init(&env, &client, &merchant);
 
     env.set_auths(&[]);
-    client.set_min_anchor_interval(&60);
+    client.set_anchor_rate_limit(&3, &60);
 }
 
 #[test]
-fn test_set_min_anchor_interval_requires_init() {
+fn test_set_anchor_rate_limit_requires_init() {
     let (_env, client, _merchant) = setup();
     assert_eq!(
-        client.try_set_min_anchor_interval(&60),
+        client.try_set_anchor_rate_limit(&3, &60),
         Err(Ok(Error::NotInitialized))
     );
 }
 
 #[test]
-fn test_set_min_anchor_interval_enforces_cap() {
+fn test_set_anchor_rate_limit_rejects_invalid_config() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
 
-    // At the cap — should succeed.
-    client.set_min_anchor_interval(&MAX_ANCHOR_INTERVAL);
-    assert_eq!(client.get_min_anchor_interval(), MAX_ANCHOR_INTERVAL);
-
-    // Over the cap — should fail with BatchTooLarge (reusing existing error).
+    // One parameter zeroed while the other is set is nonsense.
     assert_eq!(
-        client.try_set_min_anchor_interval(&(MAX_ANCHOR_INTERVAL + 1)),
-        Err(Ok(Error::BatchTooLarge))
+        client.try_set_anchor_rate_limit(&0, &60),
+        Err(Ok(Error::InvalidRateLimitConfig))
+    );
+    assert_eq!(
+        client.try_set_anchor_rate_limit(&3, &0),
+        Err(Ok(Error::InvalidRateLimitConfig))
+    );
+
+    // Above the caps.
+    assert_eq!(
+        client.try_set_anchor_rate_limit(&(MAX_RATE_BURST + 1), &60),
+        Err(Ok(Error::InvalidRateLimitConfig))
+    );
+    assert_eq!(
+        client.try_set_anchor_rate_limit(&3, &(MAX_RATE_REFILL_INTERVAL + 1)),
+        Err(Ok(Error::InvalidRateLimitConfig))
+    );
+
+    // At the caps — accepted.
+    client.set_anchor_rate_limit(&MAX_RATE_BURST, &MAX_RATE_REFILL_INTERVAL);
+}
+
+#[test]
+fn test_burst_allows_back_to_back_anchors() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_anchor_rate_limit(&3, &60);
+
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
+    assert_eq!(client.get_batch_count(), 3);
+}
+
+#[test]
+fn test_spam_beyond_burst_rejected() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_anchor_rate_limit(&3, &60);
+
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
+
+    // Fourth anchor at the same timestamp: the bucket is empty.
+    assert_eq!(
+        client.try_anchor_batch(&root_of(&env, 4), &1, &31, &40),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+    assert_eq!(
+        client.get_batch_count(),
+        3,
+        "rejected spam must not anchor a batch"
     );
 }
 
 #[test]
-fn test_get_min_anchor_interval_default() {
+fn test_tokens_refill_after_interval() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
-    assert_eq!(client.get_min_anchor_interval(), 0);
-}
-
-#[test]
-fn test_rate_limit_with_large_interval() {
-    let (env, client, merchant) = setup();
-    init(&env, &client, &merchant);
-    client.set_min_anchor_interval(&3600); // 1 hour
-
-    let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    let root2 = BytesN::from_array(&env, &[2u8; 32]);
-    let root3 = BytesN::from_array(&env, &[3u8; 32]);
+    client.set_anchor_rate_limit(&1, &60);
 
     env.ledger().with_mut(|li| {
         li.sequence_number = 10;
         li.timestamp = 1000;
     });
-    client.anchor_batch(&root1, &1, &0, &10);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
 
-    // 30 minutes later — still rate-limited.
+    // One second before the refill boundary — still rejected.
     env.ledger().with_mut(|li| {
-        li.sequence_number = 100;
-        li.timestamp = 2800;
+        li.sequence_number = 20;
+        li.timestamp = 1059;
     });
     assert_eq!(
-        client.try_anchor_batch(&root2, &1, &11, &20),
+        client.try_anchor_batch(&root_of(&env, 2), &1, &11, &20),
         Err(Ok(Error::AnchorRateLimited))
     );
 
-    // 1 hour later — should succeed. batch_id is 2 because root2 was rejected.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 100;
-        li.timestamp = 4600;
-    });
-    assert_eq!(client.anchor_batch(&root3, &1, &21, &30), 2);
-}
-
-#[test]
-fn test_rate_limit_resets_after_successful_anchor() {
-    let (env, client, merchant) = setup();
-    init(&env, &client, &merchant);
-    client.set_min_anchor_interval(&60);
-
-    let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    let root2 = BytesN::from_array(&env, &[2u8; 32]);
-    let root3 = BytesN::from_array(&env, &[3u8; 32]);
-
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 10;
-        li.timestamp = 1000;
-    });
-    client.anchor_batch(&root1, &1, &0, &10);
-
-    // Advance past interval.
-    env.ledger().with_mut(|li| {
-        li.sequence_number = 20;
-        li.timestamp = 1060;
-    });
-    client.anchor_batch(&root2, &1, &11, &20);
-
-    // Immediately try again — should be rate-limited (last anchor was at 1060).
+    // Exactly at the boundary — the token has refilled.
     env.ledger().with_mut(|li| {
         li.sequence_number = 21;
         li.timestamp = 1060;
     });
+    assert_eq!(client.anchor_batch(&root_of(&env, 3), &1, &21, &30), 2);
+}
+
+#[test]
+fn test_bucket_partially_refills() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_anchor_rate_limit(&3, &60);
+
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
     assert_eq!(
-        client.try_anchor_batch(&root3, &1, &21, &30),
+        client.try_anchor_batch(&root_of(&env, 4), &1, &31, &40),
         Err(Ok(Error::AnchorRateLimited))
+    );
+
+    // Two full refill intervals later: exactly two tokens have come back.
+    env.ledger().with_mut(|li| li.timestamp = 1120);
+    client.anchor_batch(&root_of(&env, 4), &1, &31, &40);
+    client.anchor_batch(&root_of(&env, 5), &1, &41, &50);
+    assert_eq!(
+        client.try_anchor_batch(&root_of(&env, 6), &1, &51, &60),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+}
+
+#[test]
+fn test_refill_caps_at_burst() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_anchor_rate_limit(&2, &60);
+
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+
+    // Idle for a very long time: the bucket caps at the burst instead of
+    // accumulating unboundedly (no overflow, no runaway allowance).
+    env.ledger().with_mut(|li| li.timestamp = 100_000);
+    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
+    client.anchor_batch(&root_of(&env, 4), &1, &31, &40);
+    assert_eq!(
+        client.try_anchor_batch(&root_of(&env, 5), &1, &41, &50),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+}
+
+#[test]
+fn test_zero_config_disables_rate_limit() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_anchor_rate_limit(&1, &60);
+
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    assert_eq!(
+        client.try_anchor_batch(&root_of(&env, 2), &1, &11, &20),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+
+    // Disable: the same back-to-back anchor now passes.
+    client.set_anchor_rate_limit(&0, &0);
+    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    assert_eq!(client.get_batch_count(), 2);
+}
+
+#[test]
+fn test_changing_config_takes_effect() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+
+    // Enabling the limiter creates a fresh, full bucket: the next anchor
+    // passes, and the one after is rejected until a refill interval elapses.
+    client.set_anchor_rate_limit(&1, &60);
+    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    assert_eq!(
+        client.try_anchor_batch(&root_of(&env, 3), &1, &21, &30),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+
+    // After the refill interval the anchor passes again.
+    env.ledger().with_mut(|li| li.timestamp = 1060);
+    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
+    assert_eq!(client.get_batch_count(), 3);
+}
+
+#[test]
+fn test_rejected_anchor_does_not_consume_token() {
+    // A rejected anchor (duplicate root) must not spend a token: the bucket
+    // holds what it held before the failed attempt.
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_anchor_rate_limit(&2, &60);
+
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+
+    // Duplicate root: rejected by the duplicate check, no token consumed.
+    assert_eq!(
+        client.try_anchor_batch(&root_of(&env, 1), &1, &11, &20),
+        Err(Ok(Error::DuplicateRoot))
+    );
+
+    // One interval later the bucket has refilled to the burst of 2, so two
+    // more anchors pass and a third is rejected. Had the duplicate consumed a
+    // token, only one would have passed.
+    env.ledger().with_mut(|li| li.timestamp = 1060);
+    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
+    assert_eq!(
+        client.try_anchor_batch(&root_of(&env, 4), &1, &31, &40),
+        Err(Ok(Error::AnchorRateLimited))
+    );
+}
+
+#[test]
+fn test_rate_limit_bucket_keyed_by_merchant_identity() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.set_anchor_rate_limit(&3, &60);
+
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+
+    // The bucket is a single persistent entry under the merchant identity,
+    // holding burst-1 tokens after the first anchor.
+    let bucket: BucketState = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RateLimitBucket(merchant.clone()))
+            .unwrap()
+    });
+    assert_eq!(bucket.tokens, 2);
+    assert_eq!(bucket.last_refill, 1000);
+
+    // No other identity has a bucket entry — per-identity tracking never
+    // pre-allocates storage for identities that do not anchor.
+    let stranger = Address::generate(&env);
+    let has_stranger = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .has(&DataKey::RateLimitBucket(stranger))
+    });
+    assert!(!has_stranger);
+}
+
+/// The rate limiter must not materially increase the cost of a normal anchor:
+/// disabled it costs a single instance read, enabled it adds one small
+/// persistent read + write. This pins the delta so a pathological
+/// implementation (unbounded scans, rewrites of large state) fails CI.
+#[test]
+fn test_rate_limit_tracking_overhead_is_bounded() {
+    extern crate std;
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    // Warm up so shard 0 exists; the measured anchors are steady-state.
+    client.anchor_batch(&root_of(&env, 0), &1, &0, &1);
+
+    let steady_state_cost =
+        |client: &ReceiptAnchorClient<'static>, env: &Env, seed: u8| -> (u64, u64) {
+            env.cost_estimate().budget().reset_default();
+            let root = root_of(env, seed);
+            client.anchor_batch(&root, &1, &0, &1);
+            (
+                env.cost_estimate().budget().cpu_instruction_cost(),
+                env.cost_estimate().budget().memory_bytes_cost(),
+            )
+        };
+
+    let (cpu_disabled, mem_disabled) = steady_state_cost(&client, &env, 1);
+    client.set_anchor_rate_limit(&1000, &3600);
+    let (cpu_enabled, mem_enabled) = steady_state_cost(&client, &env, 2);
+
+    let cpu_delta = cpu_enabled.saturating_sub(cpu_disabled);
+    let mem_delta = mem_enabled.saturating_sub(mem_disabled);
+    std::println!(
+        "RATE-LIMIT OVERHEAD: disabled cpu={cpu_disabled} mem={mem_disabled} | \
+         enabled cpu={cpu_enabled} mem={mem_enabled} | delta cpu={cpu_delta} mem={mem_delta}"
+    );
+
+    // The measured delta is ~60k instructions (a persistent get + set + TTL
+    // bump charged at host-call rates) against a ~1.2M anchor; the bound is
+    // set with headroom for toolchain calibration drift so it only trips on a
+    // real regression (e.g. unbounded scans or per-call rewrites of large
+    // state).
+    assert!(
+        cpu_delta < 150_000,
+        "rate-limit tracking grew anchor_batch by {cpu_delta} CPU instructions"
     );
 }
 

@@ -82,8 +82,13 @@ pub enum Error {
     RootNotFound = 200,
     /// The Merkle proof exceeds the maximum valid length (`MAX_PROOF_LEN`).
     ProofTooLong = 201,
-    /// An anchor was submitted before the minimum interval elapsed.
+    /// An anchor was submitted before the rate limit allowed it (the
+    /// identity's token bucket was empty).
     AnchorRateLimited = 202,
+    /// A rate-limit configuration was rejected: a half-set bucket (one
+    /// parameter zero), a burst larger than the maximum, or a refill interval
+    /// longer than the maximum.
+    InvalidRateLimitConfig = 203,
     /// No pending policy change exists to execute.
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.

@@ -28,22 +28,24 @@ fn anchor_batch(env: Env, root: BytesN<32>, count: u32, period_start: u64, perio
 - **Authentication:** Requires the merchant's signature (`require_auth`).
 - **Emits:** `anchored` event carrying the batch id and the stored `BatchRecord`.
 - **Returns:** The assigned `batch_id`.
-- **Errors:** `BatchTooLarge` if `count` exceeds `MAX_BATCH_SIZE`. `AnchorRateLimited` if the minimum anchor interval has not elapsed since the last anchor (only enforced when `min_anchor_interval > 0`).
+- **Errors:** `BatchTooLarge` if `count` exceeds `MAX_BATCH_SIZE`. `AnchorRateLimited` if the caller's token bucket is empty (only enforced when a rate limit is configured).
 
-### `set_min_anchor_interval`
-Sets the minimum interval (in seconds) between consecutive anchors. Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables rate-limiting entirely.
+### `set_anchor_rate_limit`
+Configures a token-bucket rate limit on `anchor_batch`. The bucket holds up to `burst_capacity` tokens; each anchor spends one, and the bucket refills one token every `refill_interval_secs` seconds (capped at the burst). A fresh bucket — first anchor, or first after a config change — starts full, so the first `burst_capacity` anchors pass back-to-back. Setting both parameters to `0` disables rate-limiting entirely (the default).
 
 ```rust
-fn set_min_anchor_interval(env: Env, interval: u32) -> Result<(), Error>
+fn set_anchor_rate_limit(env: Env, burst_capacity: u32, refill_interval_secs: u32) -> Result<(), Error>
 ```
 - **Authentication:** Requires the merchant's signature.
-- **Errors:** `BatchTooLarge` if `interval` exceeds `MAX_ANCHOR_INTERVAL`.
+- **Caps:** `burst_capacity ≤ 1000`, `refill_interval_secs ≤ 86,400` (24 h).
+- **Errors:** `InvalidRateLimitConfig` if one parameter is zero while the other is set, or either exceeds its cap.
+- **Tracking overhead:** one 12-byte persistent entry per identity, written only while a limit is enabled; when disabled, `anchor_batch` costs a single instance read.
 
-### `get_min_anchor_interval`
-Returns the current minimum anchor interval in seconds (read-only).
+### `get_anchor_rate_limit`
+Returns the current rate-limit configuration (read-only). Returns `{0, 0}` (disabled) if unset.
 
 ```rust
-fn get_min_anchor_interval(env: Env) -> u32
+fn get_anchor_rate_limit(env: Env) -> RateLimitConfig
 ```
 
 ### `get_batch`

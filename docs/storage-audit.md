@@ -16,6 +16,8 @@ Soroban provides three storage classes:
 | `Admin` | Instance | `Address` (Merchant) | Small | Required for authentication of merchant operations (`anchor_batch`, `prune_batches`). Essential state that must always be available. |
 | `BatchCount` | Instance | `u64` (Sequence) | Small | Tracks the latest batch ID to ensure monotonic assignment. Cannot be reconstructed on-chain efficiently without full event replay. |
 | `PrunedUpTo` | Instance | `u64` (Cursor) | Small | Maintains the lower-bound of active batches. Essential for efficient pruning iterations. |
+| `RateLimitConfig` | Instance | `RateLimitConfig` (`burst_capacity`, `refill_interval_secs`) | 8 bytes | Admin-configured token-bucket rate limit for `anchor_batch`. `{0, 0}` (the default) disables rate limiting. |
+| `RateLimitBucket(Address)` | Persistent | `BucketState` (`tokens`, `last_refill`) | ~12 bytes | Per-identity token-bucket state, keyed by the anchoring identity (the merchant). Written only while a rate limit is enabled; the sole tracking storage the limiter needs. TTL is extended on every successful anchor so an active identity's bucket never archives mid-burst. If archived, the next anchor treats the bucket as fresh and full, which is a conservative (rate-limiting) outcome. |
 | `Batch(u64)` | Persistent | `BatchRecord` | ~100 bytes | Holds the Merkle root, count, period, and ledger. Required for on-chain `verify_receipt` execution. While `AnchorEvent` emits this data, on-chain functions cannot read events. Must be persistent to prevent arbitrary deletion; if archived, it can be restored to prove old receipts. |
 
 ### `RefundVault`

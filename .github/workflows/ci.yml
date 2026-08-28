@@ -95,7 +95,9 @@ jobs:
         # `contractimport!` to test the shard factory end-to-end.
         run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        # `--workspace` so the test-support `testutils` crate (excluded from
+        # default-members) stays linted.
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     name: test

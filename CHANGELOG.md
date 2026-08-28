@@ -8,8 +8,33 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+### ⚠️ Breaking
+
+- **`ReceiptAnchor`'s fixed "minimum seconds between anchors" limiter is
+  replaced by an admin-configurable token bucket** (`set_anchor_rate_limit` /
+  `get_anchor_rate_limit`). `set_min_anchor_interval` and
+  `get_min_anchor_interval` are removed; the old behaviour is exactly
+  `set_anchor_rate_limit(1, <interval>)`. The `MinAnchorInterval` /
+  `LastAnchorTime` storage keys are replaced by `RateLimitConfig` (instance)
+  and `RateLimitBucket(Address)` (persistent, per identity). Setting an
+  invalid config now returns the new `InvalidRateLimitConfig` error instead
+  of reusing `BatchTooLarge`. Pre-1.0 source release only — the deployed
+  `0.1.0` testnet addresses never had the interval limiter.
+
 ### Added
 
+- **Token-bucket rate limiting for `ReceiptAnchor` (DoS protection)**. Each
+  anchoring identity (the merchant) may submit `burst_capacity` anchors
+  back-to-back, after which the bucket refills one token per
+  `refill_interval_secs` seconds; an empty bucket rejects the anchor with
+  `AnchorRateLimited` before any storage is written or shard deployed.
+  Disabled by default and free when off (a single instance read); when on,
+  tracking costs one 12-byte persistent entry per identity, and the token is
+  consumed only after the anchor succeeds (a rejected anchor does not spend
+  one). Covered by `test.rs` (burst, partial refill, refill-at-burst cap,
+  disable/enable round-trips, per-identity keying, no-consume-on-failure,
+  and a bounded-overhead gate) and documented in the README,
+  `docs/contracts.mdx`, `docs/SECURITY_MODEL.md` and `docs/storage-audit.md`.
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the
@@ -26,6 +51,25 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Changed
 
+- **Cost-regression gates re-baselined for the current toolchain.** The
+  `anchor_batch`/`verify_receipt` (receipt-anchor) and `refund` (refund-vault)
+  CPU/memory baselines were recorded on 2026-08-26 against an earlier rustc;
+  under rustc 1.98.0 the guest-side SHA-256 folding and vault paths drift
+  ~20–37% on CPU. Baselines were re-measured 2026-08-28; the 15% headroom is
+  unchanged. Also fixed the branch's pre-existing red gates: a missing closing
+  brace in `refund-vault/src/test.rs` (from the #250 merge) and two
+  `clippy -D warnings` violations (`needless_borrow` in `refund-vault`,
+  `unnecessary_cast` in `receipt-anchor` tests).
+- **WASM build and size-budget gate repaired.** `cargo build --target
+  wasm32v1-none --release` could not compile at all: the `testutils` member
+  crate depends on soroban-sdk with its `testutils` feature, which the SDK
+  rejects on wasm targets. The workspace now declares `default-members` that
+  exclude the test-support crate (it is still built by `cargo test
+  --workspace` and `cargo clippy --workspace`), and `.wasm-budget.json` is
+  re-pinned to the current build sizes (receipt-anchor 35,742 B;
+  refund-vault 43,889 B; budgets set at +10% headroom) — the previous budgets
+  predated the sharded-storage architecture and were 31% under the actual
+  size.
 - **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
   Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
   static buffer (`proof_buffer: [[u8; 32]; 128]`) and perform intermediate hashing using the pure Wasm

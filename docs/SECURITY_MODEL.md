@@ -107,6 +107,22 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
   testnet/mainnet directly, and see #122 for a nonce-based alternative that
   would not depend on the answer either way.
 
+### Anchor Spam / Storage Bloat
+- **Threat:** A malicious actor (or a compromised merchant key) submits a
+  flood of valid-but-useless `anchor_batch` calls, bloating persistent
+  storage with batch records and driving up rent and fees for legitimate
+  users. Network fees deter this but do not stop a targeted attack.
+- **Mitigation:** `ReceiptAnchor` runs a per-identity **token bucket**
+  rate limiter, configured by the admin via `set_anchor_rate_limit`. Each
+  identity (the merchant, since `anchor_batch` is merchant-authorized) may
+  submit `burst_capacity` anchors back-to-back; the bucket then refills one
+  token every `refill_interval_secs` seconds, and a submission with an empty
+  bucket is rejected with `AnchorRateLimited` **before** any storage is
+  written or any shard is deployed — the check is read-only, so a rejected
+  spam transaction costs the attacker the fee without touching state.
+  Rate limiting is disabled by default (`{0, 0}`) and adds no storage when
+  off; when on, it costs one 12-byte persistent entry per identity.
+
 ### Proof Forgery
 - **Threat:** An attacker tries to claim a refund for a non-existent or altered receipt.
 - **Mitigation:** The contract utilizes a sorted-pair Merkle tree. Every refund request requires a cryptographic inclusion proof that must perfectly resolve to the anchored root hash. Modifying the receipt or the proof will result in a mismatched root, causing the transaction to revert.

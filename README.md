@@ -69,12 +69,12 @@ they were charged correctly, with no trusted API in the path.
 | Function | Purpose |
 |---|---|
 | `initialize(merchant)` | Binds the contract to a merchant admin address. |
-| `anchor_batch(root, count, period_start, period_end) -> u64` | Anchors a batch root, returns its `batch_id`. Merchant auth required. `count` must be $\le$ 1000 (`MAX_BATCH_SIZE`). Rate-limited if `min_anchor_interval > 0`. |
+| `anchor_batch(root, count, period_start, period_end) -> u64` | Anchors a batch root, returns its `batch_id`. Merchant auth required. `count` must be $\le$ 1000 (`MAX_BATCH_SIZE`). Rate-limited by the admin-configured token bucket when one is set. |
 | `get_batch(batch_id) -> BatchRecord` | Reads an anchored batch. |
 | `get_batch_count() -> u64` | Returns the total number of anchored batches. Read-only. |
 | `get_max_batch_size() -> u32` | Returns `MAX_BATCH_SIZE` (currently 1000). Read-only; clients should discover the limit via this getter rather than hard-coding it. |
-| `set_min_anchor_interval(interval)` | Sets the minimum seconds between anchors (0 = disabled, max 86,400). Merchant auth required. |
-| `get_min_anchor_interval() -> u32` | Returns the current minimum anchor interval in seconds. Read-only. |
+| `set_anchor_rate_limit(burst_capacity, refill_interval_secs)` | Configures a token-bucket rate limit on `anchor_batch`: up to `burst_capacity` anchors back-to-back, then one token per `refill_interval_secs` seconds. `(0, 0)` disables (default). Caps: burst $\le$ 1000, interval $\le$ 86,400. Merchant auth required. |
+| `get_anchor_rate_limit() -> RateLimitConfig` | Returns the current rate-limit config (burst + refill interval). Read-only. |
 | `verify_receipt(batch_id, leaf, proof) -> bool` | Verifies a receipt against the anchored root. Read-only, free to call. Returns `ProofTooLong` if the proof exceeds `MAX_PROOF_LEN` (10). |
 | `verify_receipt_by_root(root, leaf, proof) -> bool` | Verifies a receipt against any root in the historical ring buffer. Returns `ProofTooLong` if the proof exceeds `MAX_PROOF_LEN`. |
 | `get_root_buffer() -> Vec<BytesN<32>>` | Returns the current ring buffer of historical roots. Read-only. |
