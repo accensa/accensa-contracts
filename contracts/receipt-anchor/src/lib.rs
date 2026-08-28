@@ -222,6 +222,13 @@ impl ReceiptAnchor {
         }
 
         let batch_count: u64 = env.storage().instance().get(&DataKey::BatchCount).unwrap();
+        if batch_count > 0 {
+            if let Ok(last_batch) = Self::get_batch(env.clone(), batch_count) {
+                if last_batch.root == root {
+                    return Err(Error::DuplicateRoot);
+                }
+            }
+        }
         let batch_id = batch_count + 1;
         let shard_index = (batch_id - 1) / SHARD_CAPACITY;
         let shard_addr = Self::get_or_create_shard(&env, shard_index)?;
@@ -562,5 +569,7 @@ impl ReceiptAnchor {
     }
 }
 
+#[cfg(test)]
 mod fuzz_test;
+#[cfg(test)]
 mod test;

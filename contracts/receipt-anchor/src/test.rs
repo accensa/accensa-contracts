@@ -87,6 +87,33 @@ fn test_anchor_batch_assigns_sequential_ids() {
 }
 
 #[test]
+fn test_duplicate_root_anchoring_fails() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    assert_eq!(client.anchor_batch(&root, &5, &0, &50), 1);
+
+    // Submitting the exact same root again should fail with DuplicateRoot
+    assert_eq!(
+        client.try_anchor_batch(&root, &5, &51, &100),
+        Err(Ok(Error::DuplicateRoot))
+    );
+}
+
+#[test]
+fn test_distinct_root_anchoring_succeeds() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    assert_eq!(client.anchor_batch(&root1, &5, &0, &50), 1);
+    assert_eq!(client.anchor_batch(&root2, &5, &51, &100), 2);
+}
+
+#[test]
 fn test_get_batch_returns_stored_record() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
@@ -202,11 +229,13 @@ fn test_get_batch_count_tracks_anchors() {
 
     assert_eq!(client.get_batch_count(), 0);
 
-    let root = BytesN::from_array(&env, &[1u8; 32]);
-    client.anchor_batch(&root, &5, &0, &50);
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.anchor_batch(&root1, &5, &0, &50);
     assert_eq!(client.get_batch_count(), 1);
 
-    client.anchor_batch(&root, &7, &51, &99);
+    client.anchor_batch(&root2, &7, &51, &99);
     assert_eq!(client.get_batch_count(), 2);
 }
 
@@ -308,15 +337,20 @@ fn test_anchor_batch_crosses_shard_boundary() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
 
-    let root = BytesN::from_array(&env, &[1u8; 32]);
-    for _ in 0..SHARD_CAPACITY {
+    for i in 0..SHARD_CAPACITY {
+        let mut b = [0u8; 32];
+        b[..4].copy_from_slice(&(i as u32 + 1).to_be_bytes());
+        let root = BytesN::from_array(&env, &b);
         client.anchor_batch(&root, &1, &0, &1);
     }
     assert_eq!(client.get_batch_count(), SHARD_CAPACITY);
     assert_eq!(client.get_shard_count(), 1);
 
     // Batch SHARD_CAPACITY + 1 is the first id in the second shard.
-    let overflow_id = client.anchor_batch(&root, &1, &0, &1);
+    let mut b = [0u8; 32];
+    b[..4].copy_from_slice(&((SHARD_CAPACITY + 1) as u32).to_be_bytes());
+    let overflow_root = BytesN::from_array(&env, &b);
+    let overflow_id = client.anchor_batch(&overflow_root, &1, &0, &1);
     assert_eq!(overflow_id, SHARD_CAPACITY + 1);
     assert_eq!(client.get_shard_count(), 2);
 
@@ -335,8 +369,8 @@ fn test_shard_created_event_emitted_once_per_shard() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
 
-    let root = BytesN::from_array(&env, &[1u8; 32]);
-    client.anchor_batch(&root, &1, &0, &1);
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    client.anchor_batch(&root1, &1, &0, &1);
     let after_first = env
         .events()
         .all()
@@ -348,7 +382,8 @@ fn test_shard_created_event_emitted_once_per_shard() {
     // `events().all()` only reflects the most recent top-level invocation, so
     // a second anchor into the same shard should show just its own
     // AnchorEvent (1), not a repeated ShardCreatedEvent.
-    client.anchor_batch(&root, &1, &0, &1);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+    client.anchor_batch(&root2, &1, &0, &1);
     let after_second = env
         .events()
         .all()
@@ -384,8 +419,11 @@ fn test_shared_vectors_match_typescript_sdk() {
             proof.push_back(BytesN::from_array(&env, sibling));
         }
 
-        // Each vector gets its own batch so roots never collide.
-        let batch_id = client.anchor_batch(&root, &(v.proof.len() as u32), &0, &100);
+        let batch_id = client
+            .try_anchor_batch(&root, &(v.proof.len() as u32), &0, &100)
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_else(|| client.get_batch_count());
         let got = client.verify_receipt(&batch_id, &leaf, &proof);
 
         assert_eq!(
@@ -458,9 +496,11 @@ fn test_prune_batches_crosses_shard_boundary() {
     init(&env, &client, &merchant);
 
     env.ledger().with_mut(|li| li.sequence_number = 100);
-    let root = BytesN::from_array(&env, &[1u8; 32]);
     // Fill shard 0 completely, then anchor 5 batches into shard 1.
-    for _ in 0..(SHARD_CAPACITY + 5) {
+    for i in 0..(SHARD_CAPACITY + 5) {
+        let mut b = [0u8; 32];
+        b[..4].copy_from_slice(&(i as u32 + 1).to_be_bytes());
+        let root = BytesN::from_array(&env, &b);
         client.anchor_batch(&root, &1, &0, &1);
     }
     assert_eq!(client.get_shard_count(), 2);
@@ -1174,4 +1214,38 @@ fn test_commit_meta_is_well_formed() {
         dirty == "0" || dirty == "1",
         "GIT_DIRTY must be '0' or '1', got: {dirty}"
     );
+}
+
+#[test]
+fn test_verify_receipt_memory_scaling_benchmark() {
+    extern crate std;
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let root = BytesN::from_array(&env, &[9u8; 32]);
+    let batch_id = client.anchor_batch(&root, &42, &1000, &2000);
+
+    for proof_len in [2, 4, 6, 8, 10] {
+        let mut proof_vec = soroban_sdk::Vec::new(&env);
+        for i in 0..proof_len {
+            proof_vec.push_back(BytesN::from_array(&env, &[(i % 256) as u8; 32]));
+        }
+
+        let cpu_before = env.cost_estimate().budget().cpu_instruction_cost();
+        let mem_before = env.cost_estimate().budget().memory_bytes_cost();
+
+        let result = client.verify_receipt(&batch_id, &leaf, &proof_vec);
+
+        let cpu_after = env.cost_estimate().budget().cpu_instruction_cost();
+        let mem_after = env.cost_estimate().budget().memory_bytes_cost();
+
+        let cpu_diff = cpu_after.saturating_sub(cpu_before);
+        let mem_diff = mem_after.saturating_sub(mem_before);
+
+        std::println!(
+            "BENCHMARK: Proof length: {:>3} | CPU: before={}, after={}, diff={} | Mem: before={}, after={}, diff={} | Result={:?}",
+            proof_len, cpu_before, cpu_after, cpu_diff, mem_before, mem_after, mem_diff, result
+        );
+    }
 }

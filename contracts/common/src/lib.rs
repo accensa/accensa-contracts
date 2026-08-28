@@ -76,6 +76,8 @@ pub enum Error {
     /// a wasm-level invocation failure or a value that failed to decode.
     /// Distinct from `BatchNotFound`, which a shard returns deliberately.
     ShardCallFailed = 102,
+    /// An attempt was made to anchor a Merkle root identical to the currently active root.
+    DuplicateRoot = 103,
     /// The supplied Merkle root is not in the historical ring buffer.
     RootNotFound = 200,
     /// The Merkle proof exceeds the maximum valid length (`MAX_PROOF_LEN`).
