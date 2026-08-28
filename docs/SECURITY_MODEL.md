@@ -80,6 +80,40 @@ trusted to that strategy's contract. The vault enforces reserve and deployment
 ratios but cannot enforce strategy solvency, and the strategy is a potential
 re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment.
 
+### 6. The Oracle Aggregator (optional)
+The `RefundVault` oracle integration (for dynamic, SLA-based refund policies)
+adds one more trust assumption: the **median** of the values reported by the
+merchant-whitelisted oracles is treated as ground truth for the configured
+feed. The design deliberately avoids trusting any single provider:
+
+- The whitelist is merchant-maintained (`add_oracle` / `remove_oracle`),
+  same trust tier as the yield strategy — a whitelisted oracle is a
+  merchant-chosen counterparty, and a *compromised* one can only contribute
+  one value to the aggregate.
+- The aggregator queries **every** whitelisted oracle and takes the median
+  of the fresh values, so moving the aggregated price requires controlling a
+  majority of the whitelist, not one member. A single wildly-wrong value
+  (e.g. a buggy or exploited provider) is neutralised.
+- **Staleness filtering**: a value older than the policy's
+  `max_staleness_ledgers` is excluded from the median, so a provider that
+  stopped updating cannot hold the aggregate hostage at an old price.
+- **Fail closed**: with no whitelist, or with every whitelisted oracle stale,
+  the policy cannot be evaluated and `refund` rejects (`NoOraclesConfigured`
+  / `StaleOracleData`) instead of guessing. A refund whose condition is not
+  met is rejected with `OraclePolicyDenied`.
+- **No catch for a panicking oracle**: a whitelisted oracle that aborts
+  during `get_price` aborts the whole transaction (Soroban has no
+  cross-contract catch). This is deliberate fail-closed behaviour — the
+  merchant must remove the broken oracle.
+- The oracle queries run inside `refund`'s reentrancy lock (the policy check
+  sits in `refund_internal`, which `refund` reaches with the guard held), so
+  a whitelisted oracle cannot re-enter the vault from its `get_price`
+  callback.
+
+The `OraclePolicy` (feed, threshold, staleness bound, comparison direction)
+is merchant-configured and can be cleared at any time to restore purely
+window-based refunds.
+
 ## Attack Vectors and Mitigations
 
 ### Replay Attacks

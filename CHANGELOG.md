@@ -23,6 +23,20 @@ breaking changes bump the **minor** version, and they are called out as such.
   `.git/HEAD`, the resolved branch ref, the index and `src/` so a cached build
   cannot report a stale hash. A `test_commit_meta_is_well_formed` test in both
   crates pins the embedded commit to 40 hex characters.
+- **Oracle aggregator for dynamic refund policies** (`RefundVault`): a
+  standard `Oracle` interface (`get_price` + `get_last_update_ledger`) that
+  any price/data feed contract can implement, merchant-whitelisted via
+  `add_oracle`/`remove_oracle`/`get_oracles`; a median aggregator
+  (`get_median_price`) that queries every whitelisted oracle for a feed and
+  returns the median of the fresh (non-stale) values, so no single provider
+  is trusted; and an `OraclePolicy` (feed, threshold, staleness bound,
+  `refund_when_below`) installed via `set_oracle_policy`/`clear_oracle_policy`
+  that gates `refund` and `process_batch` — a refund is only paid out while
+  the aggregated feed satisfies the condition, failing closed on a missing
+  whitelist or all-stale data. New events `oracle_policy_set_event` /
+  `oracle_policy_cleared_event` and error codes 302–307
+  (`NoOraclesConfigured`, `OracleAlreadyAdded`, `OracleNotFound`,
+  `StaleOracleData`, `NoOraclePolicy`, `OraclePolicyDenied`).
 
 ### Changed
 
@@ -48,6 +62,20 @@ breaking changes bump the **minor** version, and they are called out as such.
   has not authorised, and `withdraw` stays merchant-only. The existing
   `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
   deliberate.
+
+### Fixed
+
+- **`main` was failing CI** (left red by the advanced-wasm-memory merge):
+  restored the truncated `assert_eq!` in
+  `test_process_batch_exceeds_max_size_fails` (the file would not parse),
+  fixed the clippy 1.98 `needless_borrow` / `unnecessary_cast` violations,
+  excluded the host-only `testutils` crate from the wasm artifact build (it
+  enables soroban-sdk's `testutils` feature, which the SDK rejects on wasm),
+  and re-baselined the cost-regression constants and wasm size budgets to the
+  freshly measured values (`verify_receipt` CPU 569,906 → 780,985 after the
+  pure-Wasm sha2 rewrite; `refund` CPU 397,721 → 477,714; `refund_vault.wasm`
+  37,376 → 56,320 bytes; `receipt_anchor.wasm` 24,576 → 33,792 bytes on the
+  current toolchain).
 
 ## [0.3.0] — 2026-08-26
 

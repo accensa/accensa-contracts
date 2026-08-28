@@ -120,6 +120,13 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 | `get_pending_policy()` | Returns the current pending policy proposal, if any. |
 | `get_policy_timelock()` | Returns the policy timelock delay in ledgers (read-only). |
 | `get_refund(payment_ref) -> Option<RefundRecord>` | Looks up a refund. |
+| `add_oracle(oracle)` | Whitelists an oracle contract implementing the standard `Oracle` interface (`get_price` + `get_last_update_ledger`); merchant auth required. |
+| `remove_oracle(oracle)` | Removes an oracle from the whitelist; merchant auth required. |
+| `get_oracles() -> Vec<Address>` | Returns the oracle whitelist, in insertion order (read-only). |
+| `get_median_price(feed_id, max_staleness_ledgers) -> Result<i128, Error>` | Queries every whitelisted oracle for the feed and returns the **median** of the fresh (non-stale) values. |
+| `set_oracle_policy(policy)` | Installs the dynamic oracle policy that gates refunds; merchant auth required. |
+| `clear_oracle_policy()` | Removes the dynamic oracle policy, restoring time-window-only refunds; merchant auth required. |
+| `get_oracle_policy() -> Option<OraclePolicy>` | Returns the current oracle policy, if any (read-only). |
 | `pause()` | Pauses operations for emergency stops. Merchant auth required. |
 | `unpause()` | Resumes paused operations. Merchant auth required. |
 | `extend_refund_ttl(payment_ref)` | Extends the TTL of a refund record to prevent archival. Publicly callable. |
@@ -134,6 +141,8 @@ Emits:
 | `PauseEvent` | `("pause_event", ledger)` | — |
 | `UnpauseEvent` | `("unpause_event", ledger)` | — |
 | `RefundWindowUpdatedEvent` | `("refund_window_updated_event", previous_window, new_window)` | — |
+| `OraclePolicySetEvent` | `("oracle_policy_set_event", feed_id)` | `threshold`, `refund_when_below`, `max_staleness_ledgers` |
+| `OraclePolicyClearedEvent` | `("oracle_policy_cleared_event", feed_id)` | — |
 
 Each partial refund emits its own `RefundEvent` carrying **both** the amount for
 that call (`amount`) and the running total (`cumulative_refunded`), so an indexer
@@ -159,6 +168,21 @@ Enforced invariants, each covered by a test:
   (`Unauthorized`); the admin may be a contract account (see
   [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)).
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
+
+**Dynamic (oracle-gated) policies** — beyond the static refund window, the
+merchant can install an `OraclePolicy` so refunds are only paid out while an
+externally-sourced value satisfies a condition (e.g. *"refund while the asset
+price is below the SLA floor"*). The vault never trusts a single feed:
+whitelisted oracles implement the standard `Oracle` interface
+(`get_price` / `get_last_update_ledger`), the aggregator queries all of them
+and takes the **median** of the fresh values, and a value older than the
+policy's `max_staleness_ledgers` is excluded. If no oracle is whitelisted, or
+every whitelisted oracle is stale, the vault **fails closed**
+(`NoOraclesConfigured` / `StaleOracleData`) rather than guessing; a refund
+rejected by the condition returns `OraclePolicyDenied`. The gate applies to
+both `refund` and every item of `process_batch`. See
+[`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#6-the-oracle-aggregator-optional)
+for the trust model.
 
 ## Error Codes
 
@@ -188,6 +212,12 @@ contracts instead of per-contract tables.
 | 17 | `NothingToHarvest` | Nothing to harvest from the yield strategy. |
 | 18 | `InvalidRatio` | A configured ratio was out of range. |
 | 19 | `ExceedsPayment` | Cumulative refunds would exceed the payment ceiling. |
+| 302 | `NoOraclesConfigured` | No oracle contracts are whitelisted on the vault. |
+| 303 | `OracleAlreadyAdded` | An oracle contract is already on the whitelist. |
+| 304 | `OracleNotFound` | The oracle contract is not on the whitelist. |
+| 305 | `StaleOracleData` | Every whitelisted oracle returned stale data for the requested feed. |
+| 306 | `NoOraclePolicy` | No dynamic oracle policy is configured. |
+| 307 | `OraclePolicyDenied` | A refund was rejected because the oracle policy condition was not met. |
 | 100 | `BatchNotFound` | The requested batch does not exist (or was pruned). |
 | 101 | `BatchTooLarge` | A batch larger than `MAX_BATCH_SIZE` was submitted. |
 

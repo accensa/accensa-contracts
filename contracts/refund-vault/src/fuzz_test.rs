@@ -217,8 +217,12 @@ impl Model {
 const HEADROOM_PERCENT: u64 = 15;
 
 /// Cost baselines for `RefundVault::refund`
-/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-26.
-const REFUND_BASELINE_CPU: u64 = 397_721;
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-28.
+/// Re-baselined after the partial-refund, TTL-guard, reentrancy-guard and
+/// oracle-policy additions grew the `refund` path (see `docs/RELEASING.md`
+/// re-baselining procedure; measured with the oracle policy *unset* so the
+/// value reflects the common path).
+const REFUND_BASELINE_CPU: u64 = 477_714;
 const REFUND_BASELINE_MEM: u64 = 131_994;
 
 #[test]

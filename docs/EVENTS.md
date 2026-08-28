@@ -83,3 +83,26 @@ Emitted when the merchant changes the refund window.
 - **Data Map**: *(empty)*
 
 Both values are carried so a reader can tell whether a refund rejected at a given ledger was rejected under the old rule or the new one.
+
+### 9. `OraclePolicySetEvent`
+Emitted when the merchant installs (or replaces) the dynamic oracle policy
+that gates refunds.
+
+- **Topics**: `("oracle_policy_set_event", feed_id: BytesN<32>)`
+- **Data Map**:
+  - `threshold` (`i128`): The median value (in the feed's scale) at which the condition flips.
+  - `refund_when_below` (`bool`): `true` = refunds allowed while the median is strictly below the threshold; `false` = allowed while strictly above.
+  - `max_staleness_ledgers` (`u32`): Maximum allowed age of a feed value; `0` = never stale.
+
+The data map carries the full condition, so an indexer can reconstruct the
+policy in force from the event log alone.
+
+### 10. `OraclePolicyClearedEvent`
+Emitted when the merchant removes the dynamic oracle policy, restoring purely
+time-window-based refunds.
+
+- **Topics**: `("oracle_policy_cleared_event", feed_id: BytesN<32>)`
+- **Data Map**: *(empty)*
+
+The `feed_id` is the feed of the policy that was in force, captured before it
+was removed, so a reader can correlate the clear with the preceding set event.

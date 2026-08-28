@@ -168,3 +168,62 @@ Looks up the refund record for a payment reference, if one exists.
 ```rust
 fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord>
 ```
+
+### `add_oracle`
+Whitelists an oracle contract implementing the standard `Oracle` interface (`get_price(feed_id)` and `get_last_update_ledger(feed_id)`). Merchant auth required. The aggregator queries every whitelisted oracle and takes the median of the fresh values, so a single provider cannot unilaterally move the aggregated price.
+
+```rust
+fn add_oracle(env: Env, oracle: Address) -> Result<(), Error>
+```
+- **Authentication:** Requires the merchant's signature.
+- **Errors:** `OracleAlreadyAdded` if the oracle is already whitelisted.
+
+### `remove_oracle`
+Removes an oracle from the whitelist. Merchant auth required.
+
+```rust
+fn remove_oracle(env: Env, oracle: Address) -> Result<(), Error>
+```
+- **Authentication:** Requires the merchant's signature.
+- **Errors:** `OracleNotFound` if the oracle is not whitelisted, `NoOraclesConfigured` if the whitelist is empty.
+
+### `get_oracles`
+Returns the current oracle whitelist, in insertion order (read-only).
+
+```rust
+fn get_oracles(env: Env) -> Vec<Address>
+```
+
+### `get_median_price`
+Queries every whitelisted oracle for `feed_id` and returns the median of the values fresher than `max_staleness_ledgers` (`0` = never stale). Read-only.
+
+```rust
+fn get_median_price(env: Env, feed_id: BytesN<32>, max_staleness_ledgers: u32) -> Result<i128, Error>
+```
+- **Errors:** `NoOraclesConfigured` if the whitelist is empty, `StaleOracleData` if every whitelisted oracle is stale.
+
+### `set_oracle_policy`
+Installs (or replaces) the dynamic oracle policy gating refunds: while a policy is set, `refund` and `process_batch` only pay out when the aggregated median satisfies the condition (e.g. the asset price is below the SLA floor). Merchant auth required.
+
+```rust
+fn set_oracle_policy(env: Env, policy: OraclePolicy) -> Result<(), Error>
+```
+- **Authentication:** Requires the merchant's signature.
+- **Emits:** `oracle_policy_set_event` carrying the feed and the full condition.
+
+### `clear_oracle_policy`
+Removes the dynamic oracle policy, restoring purely time-window-based refunds. Merchant auth required.
+
+```rust
+fn clear_oracle_policy(env: Env) -> Result<(), Error>
+```
+- **Authentication:** Requires the merchant's signature.
+- **Errors:** `NoOraclePolicy` if no policy is installed.
+- **Emits:** `oracle_policy_cleared_event` carrying the feed that was cleared.
+
+### `get_oracle_policy`
+Returns the currently installed oracle policy, if any (read-only).
+
+```rust
+fn get_oracle_policy(env: Env) -> Option<OraclePolicy>
+```

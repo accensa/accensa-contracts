@@ -52,6 +52,12 @@ pub enum DataKey {
     ReserveRatio,
     MaxDeployRatio,
     PendingPolicy,
+    /// Whitelisted oracle contracts, in insertion order. The aggregator
+    /// queries every whitelisted oracle for the same feed and takes the
+    /// median of the fresh values, so no single provider is trusted.
+    Oracles,
+    /// Dynamic oracle policy gating refunds, if one is configured.
+    OraclePolicy,
     /// Reentrancy guard flag. Set for the duration of any entry point that
     /// makes an external call (token transfer or yield-strategy invocation)
     /// so a callback into another guarded entry point during that call is
@@ -205,6 +211,36 @@ pub struct PolicyExecutedEvent {
     #[topic]
     pub window: u32,
 }
+
+/// Emitted when the merchant installs (or replaces) the dynamic oracle
+/// policy that gates refunds.
+///
+/// Topics: `("oracle_policy_set_event", feed_id)`. The data map carries the
+/// threshold, the comparison direction and the staleness bound, so an indexer
+/// can reconstruct the exact condition in force.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OraclePolicySetEvent {
+    #[topic]
+    pub feed_id: BytesN<32>,
+    pub threshold: i128,
+    pub refund_when_below: bool,
+    pub max_staleness_ledgers: u32,
+}
+
+/// Emitted when the merchant removes the dynamic oracle policy, restoring
+/// purely time-window-based refunds.
+///
+/// Topics: `("oracle_policy_cleared_event", feed_id)` — the feed of the
+/// policy that was in force, captured before it was removed.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OraclePolicyClearedEvent {
+    #[topic]
+    pub feed_id: BytesN<32>,
+}
+
+pub mod oracle;
 
 /// Interface for external yield-generating strategies (e.g., Soroban lending protocols).
 ///
@@ -511,6 +547,20 @@ impl RefundVault {
             }
         }
 
+        // Dynamic oracle policy: when configured, refunds are only processed
+        // while the aggregated external feed satisfies the condition (e.g.
+        // the asset price is below the SLA threshold). Fails closed on a
+        // missing whitelist or all-stale data rather than guessing. This runs
+        // inside the reentrancy lock acquired by `refund`, so a whitelisted
+        // oracle cannot re-enter the vault from its `get_price` callback.
+        let oracle_policy: Option<oracle::OraclePolicy> =
+            env.storage().instance().get(&DataKey::OraclePolicy);
+        if let Some(policy) = oracle_policy {
+            if !oracle::evaluate_policy(env, &policy)? {
+                return Err(Error::OraclePolicyDenied);
+            }
+        }
+
         // Ceiling check: cumulative refunds must not exceed the original amount.
         // The ceiling is read from the (re)stored record, freshly minted on the
         // first partial for this payment.
@@ -556,7 +606,7 @@ impl RefundVault {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        let extend_to = refund_record_ttl_extend_to(&env, window, paid_at_ledger);
+        let extend_to = refund_record_ttl_extend_to(env, window, paid_at_ledger);
         // Threshold == extend_to (not TTL_THRESHOLD): see
         // `refund_record_ttl_extend_to` for why a small fixed threshold makes
         // this a no-op on a freshly-written entry.
@@ -575,7 +625,7 @@ impl RefundVault {
         }
         .publish(env);
 
-        release_reentrancy_lock(&env);
+        release_reentrancy_lock(env);
         Ok(())
     }
 
@@ -758,6 +808,147 @@ impl RefundVault {
     /// Returns the policy timelock delay in ledgers (read-only).
     pub fn get_policy_timelock() -> u32 {
         POLICY_TIMELOCK
+    }
+
+    // ── Oracle aggregation ────────────────────────────────────────────────
+
+    /// Whitelist an oracle contract implementing the [`oracle::Oracle`]
+    /// interface. Only callable by the merchant. The aggregator queries every
+    /// whitelisted oracle and takes the median of the fresh values, so a
+    /// single provider can never unilaterally move the aggregated price.
+    pub fn add_oracle(env: Env, oracle: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let mut oracles: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Oracles)
+            .unwrap_or_else(|| Vec::new(&env));
+        if oracles.contains(&oracle) {
+            return Err(Error::OracleAlreadyAdded);
+        }
+        oracles.push_back(oracle);
+        env.storage().instance().set(&DataKey::Oracles, &oracles);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Remove an oracle from the whitelist. Only callable by the merchant.
+    pub fn remove_oracle(env: Env, oracle: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let mut oracles: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Oracles)
+            .ok_or(Error::NoOraclesConfigured)?;
+        let index = oracles
+            .first_index_of(&oracle)
+            .ok_or(Error::OracleNotFound)?;
+        let _ = oracles.remove(index);
+        env.storage().instance().set(&DataKey::Oracles, &oracles);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Read-only: the current oracle whitelist, in insertion order.
+    pub fn get_oracles(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Oracles)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Aggregate the current value of `feed_id` across the whitelisted
+    /// oracles: the median of the fresh (non-stale) reported values.
+    ///
+    /// Read-only, so it is safe to call from an indexer or a wallet.
+    /// `max_staleness_ledgers` is the caller's freshness bound for this
+    /// query (`0` = never stale).
+    pub fn get_median_price(
+        env: Env,
+        feed_id: BytesN<32>,
+        max_staleness_ledgers: u32,
+    ) -> Result<i128, Error> {
+        oracle::median_price(&env, &feed_id, max_staleness_ledgers)
+    }
+
+    /// Install (or replace) the dynamic oracle policy gating refunds. Only
+    /// callable by the merchant. Once set, `refund` and `process_batch` only
+    /// pay out while the aggregated feed satisfies the policy's condition.
+    pub fn set_oracle_policy(env: Env, policy: oracle::OraclePolicy) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::OraclePolicy, &policy);
+
+        OraclePolicySetEvent {
+            feed_id: policy.feed_id.clone(),
+            threshold: policy.threshold,
+            refund_when_below: policy.refund_when_below,
+            max_staleness_ledgers: policy.max_staleness_ledgers,
+        }
+        .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Remove the dynamic oracle policy, restoring purely time-window-based
+    /// refunds. Only callable by the merchant.
+    pub fn clear_oracle_policy(env: Env) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let policy: oracle::OraclePolicy = env
+            .storage()
+            .instance()
+            .get(&DataKey::OraclePolicy)
+            .ok_or(Error::NoOraclePolicy)?;
+        env.storage().instance().remove(&DataKey::OraclePolicy);
+
+        OraclePolicyClearedEvent {
+            feed_id: policy.feed_id,
+        }
+        .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Read-only: the currently installed oracle policy, if any.
+    pub fn get_oracle_policy(env: Env) -> Option<oracle::OraclePolicy> {
+        env.storage().instance().get(&DataKey::OraclePolicy)
     }
 
     // ── Yield strategy management ──────────────────────────────────────────
@@ -1236,6 +1427,8 @@ impl RefundVault {
 
 #[cfg(test)]
 mod fuzz_test;
+#[cfg(test)]
+mod oracle_tests;
 #[cfg(test)]
 mod reentrancy_tests;
 #[cfg(test)]

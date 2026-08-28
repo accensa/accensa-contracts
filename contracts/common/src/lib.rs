@@ -88,4 +88,16 @@ pub enum Error {
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
     TimelockNotExpired = 301,
+    /// No oracle contracts are whitelisted on the vault.
+    NoOraclesConfigured = 302,
+    /// The oracle contract is already on the whitelist.
+    OracleAlreadyAdded = 303,
+    /// The oracle contract is not on the whitelist.
+    OracleNotFound = 304,
+    /// Every whitelisted oracle returned stale data for the requested feed.
+    StaleOracleData = 305,
+    /// No dynamic oracle policy is configured.
+    NoOraclePolicy = 306,
+    /// A refund was rejected because the oracle policy condition was not met.
+    OraclePolicyDenied = 307,
 }
