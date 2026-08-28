@@ -1054,6 +1054,9 @@ fn test_process_batch_exceeds_max_size_fails() {
     assert_eq!(
         client.try_process_batch(&batch),
         Err(Ok(Error::BatchTooLarge))
+    );
+}
+
 // ── Policy timelock tests ──────────────────────────────────────────────────
 
 #[test]
@@ -1400,4 +1403,76 @@ fn test_set_token_requires_admin_auth() {
     // Let's verify with mock_all_auths reset
     env.mock_all_auths();
     assert!(client.try_set_token(&new_token).is_ok());
+}
+
+// ── Refund window boundary edge cases (issue #84) ──────────────────────────
+//
+// These tests pin the exact ledger at which the refund window opens and closes
+// to guard against off-by-one errors in the `>` check.  A future refactor that
+// changes `>` to `>=` would cause the boundary-accepted test to fail; removing
+// the check entirely would cause the boundary-rejected test to fail.
+
+/// Payment at ledger `paid_at`, window = 100.  The refund is attempted at
+/// exactly `paid_at + window` (i.e. the last valid ledger).  With the current
+/// `>` operator this must succeed — changing to `>=` would break it.
+#[test]
+fn test_refund_exact_boundary_accepted() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let paid_at: u32 = 10;
+    let window: u32 = 100;
+    let boundary = paid_at + window; // 110
+
+    env.ledger().with_mut(|li| li.sequence_number = boundary);
+
+    let payment_ref = BytesN::from_array(&env, &[20u8; 32]);
+    let buyer = Address::generate(&env);
+    // current (110) == paid_at (10) + window (100): still inside the window.
+    client.refund(&payment_ref, &buyer, &100_000, &paid_at, &100_000);
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 100_000);
+}
+
+/// One ledger past the boundary must be rejected.  This is the mirror image of
+/// `test_refund_exact_boundary_accepted`: the very next ledger after the last
+/// valid one must return `WindowExpired`.
+#[test]
+fn test_refund_one_past_boundary_rejected() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let paid_at: u32 = 10;
+    let window: u32 = 100;
+    let one_past = paid_at + window + 1; // 111
+
+    env.ledger().with_mut(|li| li.sequence_number = one_past);
+
+    let payment_ref = BytesN::from_array(&env, &[21u8; 32]);
+    let buyer = Address::generate(&env);
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &100_000, &paid_at, &100_000),
+        Err(Ok(Error::WindowExpired))
+    );
+    // Ensure no refund record was created.
+    assert!(client.get_refund(&payment_ref).is_none());
+}
+
+/// When `refund_window_ledgers == 0`, the expiry check is bypassed entirely.
+/// Advancing 10,000 ledgers past the default starting sequence must still allow
+/// the refund to succeed.
+#[test]
+fn test_zero_window_allows_refund_after_large_advance() {
+    let (env, client, merchant, _token) = setup(0);
+    client.deposit(&merchant, &500_000);
+
+    // Default ledger is 1; jump ahead by 10,000.
+    env.ledger()
+        .with_mut(|li| li.sequence_number = 10_001);
+
+    let payment_ref = BytesN::from_array(&env, &[22u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &1, &100_000);
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 100_000);
 }
