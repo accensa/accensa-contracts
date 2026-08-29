@@ -390,6 +390,23 @@ impl ReceiptAnchor {
             .get(&DataKey::MinAnchorInterval)
             .unwrap_or(0)
     }
+    /// Returns the admin (merchant) address, or `NotInitialized` if the
+    /// contract has not been initialized.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// Returns the pruned-up-to batch ID. Batches with IDs less than or equal
+    /// to this value have been pruned and are no longer verifiable on-chain.
+    pub fn get_pruned_up_to(env: Env) -> Result<u64, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PrunedUpTo)
+            .ok_or(Error::NotInitialized)
+    }
 
     /// Returns the maximum number of receipts allowed in a single `anchor_batch`.
     ///

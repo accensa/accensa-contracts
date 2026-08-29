@@ -741,7 +741,7 @@ fn test_root_buffer_evicts_oldest_when_full() {
     // First entry is now [1u8; 32] (the second root we anchored).
     assert_eq!(buffer.get(0).unwrap(), BytesN::from_array(&env, &[1u8; 32]));
     // Last entry is the new root.
-    assert_eq!(buffer.get((ROOT_BUFFER_SIZE - 1) as u32).unwrap(), new_root);
+    assert_eq!(buffer.get(ROOT_BUFFER_SIZE - 1).unwrap(), new_root);
 }
 
 #[test]

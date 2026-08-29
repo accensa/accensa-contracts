@@ -84,12 +84,15 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
 
 ### Replay Attacks
 - **Threat:** An attacker attempts to submit the same refund request repeatedly to drain the vault.
-- **Mitigation:** Refunds are cumulative: each `refund` call for a `payment_ref`
+- **Mitigation:** Refunds are cumulative: each `refund` (or each claim inside a
+  `claim_batch`) for a `payment_ref`
   adds to a stored running total, and cumulative refunds may never exceed the
   original `payment_amount` supplied on the call. A call that would push the
   total past the ceiling is rejected with an `ExceedsPayment` error, and a
   record written by the legacy single-refund rule is treated the same way. There
-  is no code path that pays the same amount twice for one payment.
+  is no code path that pays the same amount twice for one payment, whether the
+  duplicate arrives as a second `refund` or as a repeated `payment_ref` inside a
+  batch.
 - **Guard persistence:** This ceiling only holds while the `RefundV2` record it
   depends on is actually live. The record's TTL is now sized to the
   merchant's configured `refund_window_ledgers` (extended to the network's
@@ -115,6 +118,7 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
 ### Window Expiry Evasion
 - **Threat:** An attacker attempts to process a refund after the designated refund window has expired.
 - **Mitigation:** The contract enforces the refund window by strictly comparing the current ledger sequence against the `paid_at_ledger` plus the `RefundWindow`. If the threshold is crossed, the transaction is rejected with a `WindowExpired` error.
+- **Wall-clock deadline:** The policy may additionally carry a Unix-timestamp `deadline`. `refund` rejects any claim whose current ledger timestamp is *strictly past* the deadline with `RefundExpired` (a claim landing exactly on the deadline still succeeds, mirroring the window arithmetic). A deadline of `0` (the default) disables expiry. Because the two bounds are independent, a claim must pass *both* — a window still open in ledger terms is not sufficient once the wall-clock deadline has passed.
 
 ### Float Draining (Negative/Zero Amounts)
 - **Threat:** An attacker tries to refund a negative amount to cause an underflow or steal funds.
@@ -128,9 +132,20 @@ re-entrancy surface. See [AUDIT.md](AUDIT.md) §2 and §5 for the full treatment
 - **Verification:** Property-based/fuzz tests (`test_fuzz_refund_vault_balance_invariant` in `contracts/refund-vault/src/fuzz_test.rs`) continuously verify this invariant across randomized series of deposits, refunds, and withdrawals.
 
 ### Self-Transfer and Phantom Refunds
-- **Threat:** An indexer or batch pipeline bug supplies the contract's own address as `recipient` in `refund` (or as `to` in `withdraw`). A self-transfer leaves float untouched while permanently consuming the `payment_ref` and emitting a `RefundEvent` for funds the buyer never received.
-- **Mitigation:** Both `refund` and `withdraw` explicitly validate that `recipient != env.current_contract_address()` and `to != env.current_contract_address()`, rejecting violations with `Error::SelfTransfer` before any persistent state is written or events emitted.
+- **Threat:** An indexer or batch pipeline bug supplies the contract's own address as `recipient` in `refund` or `claim_batch` (or as `to` in `withdraw`). A self-transfer leaves float untouched while permanently consuming the `payment_ref` and emitting a `RefundEvent` for funds the buyer never received.
+- **Mitigation:** `refund`, every claim inside `claim_batch`, and `withdraw` explicitly validate that `recipient != env.current_contract_address()` and `to != env.current_contract_address()`, rejecting violations with `Error::SelfTransfer` before any persistent state is written or events emitted.
 - **`recipient == merchant` decision:** Refunding to the merchant's own address is permitted by design. A merchant may be testing automated refund workflows, acting as buyer in self-settlement flows, or executing an explicit accounting reversal. Because float does leave the contract and transfers to the merchant balance, the transfer is real and non-phantom.
+
+### Batch Refund Integrity
+- **Threat:** A batch of refunds is only partially correct — some claims succeed while an earlier or later one fails — leaving a mix of paid and unpaid claims that an indexer can misread, or letting a batch overdraw the float one claim at a time.
+- **Mitigation:** `claim_batch` is **atomic**: the first failing claim returns its error and, because a contract error reverts the whole Soroban invocation, all transfers, storage writes and events of the batch are discarded together. Either every claim persists or none do (pinned by `test_claim_batch_partial_failure_reverts_everything` and `test_claim_batch_float_checked_per_item`). The float is read fresh from the token contract before every element, so a later claim observes the reduced balance left by earlier ones and can no more overdraw the vault than the equivalent sequence of single refunds; a repeated `payment_ref` accumulates against the same ceiling across elements. Each claim still runs the full per-claim validations, so one malicious element cannot skip the checks of the rest.
+- **`process_batch` is deliberately non-atomic:** it is a *best-effort* API (bounded at 100 claims) that returns a `Vec<bool>` per claim; a failing element is recorded as `false` and processing continues, so a mixed batch applies the valid claims and leaves the `false` items unrefunded (`test_process_batch_mixed_success_failure`). This is not a partial-failure vulnerability — per-element failures are contract errors localised to that element by design — but consumers must reconcile the returned booleans against their own ledger, and must use `claim_batch` whenever all-or-nothing semantics are required. Every element of `process_batch` runs the same per-claim checks as `refund`/`claim_batch`, including the deadline and fee, so a failing item can never bypass the pool of sibling items' validations.
+
+### Refund Fee Integrity
+- **Threat:** A refund fee mis-accounts for the claim, so a buyer's payout or the collector's cut is wrong — either leaking float to a fee collector or short-changing the buyer.
+- **Mitigation:** The fee cannot expand a claim. `refund` computes `fee = ceil(amount × fee_bps / 10_000)` in an overflow-free decomposition and pays `payout = amount - fee` to the buyer; total outflow is exactly `amount`, so the `payment_amount` ceiling and the float check (both measured pre-fee) are unchanged. The ceiling formula always rounds **up**, so a sub-smallest-unit remainder accrues to the fee recipient rather than being lost or minted.
+- **Fee recipient must not be the contract:** `set_fee_recipient` rejects the vault's own address (`SelfTransfer`), and `refund` defensively re-checks before paying, so the fee can never be a no-op transfer that "rounds up" float into nothing. When no recipient is configured, the fee defaults to the **merchant** — a deterministic, authorised destination — never to a caller-selected address.
+- **Admin-only configuration:** `set_fee_bps` and `set_fee_recipient` both require merchant auth, so a third party cannot steer future fee payments.
 
 ### Token Address Changeability
 - **Guarantee:** A vault initialized with an incorrect token address can be recovered via `set_token` if and only if the vault holds zero balance (`balance == 0`). If the vault contains any active float (`balance > 0`), `set_token` is rejected with `Error::FloatNotEmpty`. This allows correction of deployment-time typos without ever permitting an admin to swap the underlying asset out from under a funded vault.
@@ -143,7 +158,7 @@ For details on how storage archival and persistence affect the security model (s
 ## Operational Considerations
 
 ### Trustline Failures
-For Classic Stellar assets wrapped in a Stellar Asset Contract (like USDC), the recipient must establish a trustline before receiving tokens. If a buyer's account lacks a trustline for the token, a `refund` will revert with a token-level `HostError`. The `RefundVault` does not pre-check trustlines because doing so would consume excess computation budget for successful refunds. Instead, this token-level panic is bubbled up and treated as an expected operational failure. Merchants issuing manual `withdraw` transactions face the same trustline requirement for the destination address.
+For Classic Stellar assets wrapped in a Stellar Asset Contract (like USDC), the recipient must establish a trustline before receiving tokens. If a buyer's account lacks a trustline for the token, a `refund` will revert with a token-level `HostError`; inside a `claim_batch` such a host trap aborts the whole batch, leaving it entirely un-applied. The `RefundVault` does not pre-check trustlines because doing so would consume excess computation budget for successful refunds. Instead, this token-level panic is bubbled up and treated as an expected operational failure. Merchants issuing manual `withdraw` transactions face the same trustline requirement for the destination address.
 
 ## Vulnerability Reporting
 
