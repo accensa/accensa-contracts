@@ -807,6 +807,9 @@ fn test_process_batch_exceeds_max_size_fails() {
     assert_eq!(
         client.try_process_batch(&batch),
         Err(Ok(Error::BatchTooLarge))
+    );
+}
+
 // ── Policy timelock tests ──────────────────────────────────────────────────
 
 #[test]
