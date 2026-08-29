@@ -64,6 +64,8 @@ pub enum DataKey {
     /// so a callback into another guarded entry point during that call is
     /// rejected rather than allowed to observe pre-update state.
     ReentrancyLock,
+    /// Monotonic storage-layout version. Missing on legacy deployments (v1).
+    StorageVersion,
 }
 
 #[contracttype]
@@ -561,6 +563,8 @@ const MAX_REFUND_BATCH_SIZE: u32 = 100;
 #[contract]
 pub struct RefundVault;
 
+const INITIAL_STORAGE_VERSION: u32 = 1;
+
 #[contractimpl]
 impl RefundVault {
     pub fn initialize(
@@ -577,6 +581,9 @@ impl RefundVault {
         env.storage()
             .instance()
             .set(&DataKey::RefundWindow, &refund_window_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &INITIAL_STORAGE_VERSION);
 
         env.storage()
             .instance()
@@ -960,6 +967,65 @@ impl RefundVault {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Returns the persisted storage layout version. Legacy deployments that
+    /// predate this marker are treated as version 1.
+    pub fn get_storage_version(env: Env) -> Result<u32, Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .ok_or(Error::NotInitialized)
+            .or(Ok(INITIAL_STORAGE_VERSION))
+    }
+
+    /// Marks a completed, resumable state migration and records its target
+    /// layout version. This must be called before the WASM upgrade so the
+    /// migration marker survives the code handoff.
+    pub fn migrate_state(env: Env, target_version: u32) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let current = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(INITIAL_STORAGE_VERSION);
+        if target_version <= current {
+            return Err(Error::InvalidMigrationVersion);
+        }
+
+        // Optional fields introduced by later layouts deliberately use their
+        // existing defaults. Writing the marker last makes the operation
+        // resumable and prevents a partial migration from being reported as
+        // complete.
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &target_version);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Performs the code handoff after `migrate_state` has completed.
+    /// `wasm_hash` must refer to a WASM already uploaded to the network.
+    pub fn upgrade_wasm(env: Env, wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(wasm_hash);
+        Ok(())
     }
 
     /// Returns the payment token address, or `NotInitialized` if the vault

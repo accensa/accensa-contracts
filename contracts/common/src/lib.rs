@@ -88,4 +88,6 @@ pub enum Error {
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
     TimelockNotExpired = 301,
+    /// A migration target is not newer than the recorded storage version.
+    InvalidMigrationVersion = 302,
 }
