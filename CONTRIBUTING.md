@@ -10,6 +10,7 @@ We welcome contributions from the community! Whether it's a bug fix, new feature
 4. **Wait for assignment**: To avoid duplicate work, please express your interest on the issue and wait for a maintainer to assign it to you before starting work.
 5. **Create a new branch** for your feature or bug fix (`git checkout -b feature/my-new-feature` or `bugfix/issue-123`).
 6. **Make your changes** and test them thoroughly.
+7. **Keep `Cargo.lock` committed**: CI uses `--locked`, so dependency changes must update and commit the lockfile in the same change. Do not rely on CI to resolve dependencies implicitly.
 
 ### Ignoring Mechanical Formatting Revisions in Git Blame
 
