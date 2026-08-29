@@ -8,8 +8,8 @@
 //! the configured token contract or to a merchant-registered yield strategy
 //! (`docs/AUDIT.md` §5, known issue #7: "the strategy is also a re-entrancy
 //! surface"; I-7 explicitly calls out "the auditor should verify whether the
-//! outbound transfer to a *contract* recipient can re-enter `refund` before
-//! the tombstone exists").
+//! outbound transfer to a *contract* recipient can re-enter a claim before the
+//! cumulative ceiling update lands").
 //!
 //! **Finding pinned by this module:** on Soroban, it cannot. The host itself
 //! refuses to invoke a contract that is already present on the current call

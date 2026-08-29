@@ -13,13 +13,13 @@ pub fn measure_resources<F, R>(env: &Env, mut f: F) -> (R, BudgetMetrics)
 where
     F: FnMut() -> R,
 {
-    let cpu_before = env.budget().cpu_instruction_cost();
-    let mem_before = env.budget().memory_bytes_cost();
+    let cpu_before = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_before = env.cost_estimate().budget().memory_bytes_cost();
 
     let result = f();
 
-    let cpu_after = env.budget().cpu_instruction_cost();
-    let mem_after = env.budget().memory_bytes_cost();
+    let cpu_after = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_after = env.cost_estimate().budget().memory_bytes_cost();
 
     let metrics = BudgetMetrics {
         cpu_instructions: cpu_after.saturating_sub(cpu_before),

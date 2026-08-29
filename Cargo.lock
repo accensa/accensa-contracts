@@ -1285,6 +1285,7 @@ name = "receipt-shard"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "sha2",
  "soroban-sdk",
 ]
 
@@ -1849,6 +1850,13 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "testutils"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

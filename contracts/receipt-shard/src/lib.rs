@@ -49,6 +49,13 @@ pub struct BatchRecord {
 const TTL_EXTEND: u32 = 518_400;
 const TTL_THRESHOLD: u32 = 100;
 
+/// Maximum valid Merkle proof length. Matches the router's `MAX_PROOF_LEN`.
+/// A batch of N leaves produces a tree of depth ⌈log₂(N)⌉. For
+/// MAX_BATCH_SIZE = 1000 (router constant), that is 10.
+const MAX_PROOF_LEN: u32 = 10;
+
+use sha2::{Digest, Sha256};
+
 #[contract]
 pub struct ReceiptShard;
 
@@ -130,23 +137,34 @@ impl ReceiptShard {
         leaf: BytesN<32>,
         proof: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
+        if proof.len() > MAX_PROOF_LEN {
+            return Err(Error::ProofTooLong);
+        }
         let batch = Self::get_batch(env.clone(), batch_id)?;
         let mut computed_hash = leaf.to_array();
 
-        for sibling_bytes in proof.into_iter() {
-            let sibling = sibling_bytes.to_array();
+        // Use a static buffer on the guest stack to process the Merkle proof
+        // avoiding dynamic host object overhead or heap allocations.
+        let mut proof_buffer = [[0u8; 32]; 128];
+        let len = proof.len() as usize;
+        assert!(len <= 128, "proof length exceeds static buffer limit");
+
+        for (i, sibling_bytes) in proof.into_iter().enumerate() {
+            proof_buffer[i] = sibling_bytes.to_array();
+        }
+
+        for sibling in proof_buffer.iter().take(len) {
             let mut combined = [0u8; 64];
-            if computed_hash <= sibling {
+            if computed_hash <= *sibling {
                 combined[..32].copy_from_slice(&computed_hash);
-                combined[32..].copy_from_slice(&sibling);
+                combined[32..].copy_from_slice(sibling);
             } else {
-                combined[..32].copy_from_slice(&sibling);
+                combined[..32].copy_from_slice(sibling);
                 combined[32..].copy_from_slice(&computed_hash);
             }
-            computed_hash = env
-                .crypto()
-                .sha256(&soroban_sdk::Bytes::from_slice(&env, &combined))
-                .to_array();
+            let mut hasher = Sha256::new();
+            hasher.update(combined);
+            computed_hash = hasher.finalize().into();
         }
 
         Ok(computed_hash == batch.root.to_array())

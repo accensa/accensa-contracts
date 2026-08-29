@@ -1,7 +1,10 @@
 [package]
 name = "refund-vault"
 version = "0.3.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Policy-bounded merchant refund vault for x402 on Stellar"
 
 [lints]
 workspace = true

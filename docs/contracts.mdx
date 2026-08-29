@@ -28,6 +28,23 @@ fn anchor_batch(env: Env, root: BytesN<32>, count: u32, period_start: u64, perio
 - **Authentication:** Requires the merchant's signature (`require_auth`).
 - **Emits:** `anchored` event carrying the batch id and the stored `BatchRecord`.
 - **Returns:** The assigned `batch_id`.
+- **Errors:** `BatchTooLarge` if `count` exceeds `MAX_BATCH_SIZE`. `AnchorRateLimited` if the minimum anchor interval has not elapsed since the last anchor (only enforced when `min_anchor_interval > 0`).
+
+### `set_min_anchor_interval`
+Sets the minimum interval (in seconds) between consecutive anchors. Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables rate-limiting entirely.
+
+```rust
+fn set_min_anchor_interval(env: Env, interval: u32) -> Result<(), Error>
+```
+- **Authentication:** Requires the merchant's signature.
+- **Errors:** `BatchTooLarge` if `interval` exceeds `MAX_ANCHOR_INTERVAL`.
+
+### `get_min_anchor_interval`
+Returns the current minimum anchor interval in seconds (read-only).
+
+```rust
+fn get_min_anchor_interval(env: Env) -> u32
+```
 
 ### `get_batch`
 Reads a stored batch commitment.
@@ -43,7 +60,36 @@ A read-only convenience function for on-chain receipt verification. Proof siblin
 ```rust
 fn verify_receipt(env: Env, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> Result<bool, Error>
 ```
-- **Errors:** `BatchNotFound` if the batch id does not exist.
+- **Errors:** `BatchNotFound` if the batch id does not exist. `ProofTooLong` if the proof exceeds the maximum valid length (derived from `MAX_BATCH_SIZE`; call `get_max_proof_len` to discover the limit at runtime).
+
+### `verify_receipt_by_root`
+Verify a receipt against any root in the historical ring buffer. Returns `true` if the root is in the buffer AND the Merkle proof is valid. Useful for delayed off-chain processes that may not know the exact `batch_id`.
+
+```rust
+fn verify_receipt_by_root(env: Env, root: BytesN<32>, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> Result<bool, Error>
+```
+- **Errors:** `NotInitialized` if the contract has not been initialized. `RootNotFound` if the root is not in the ring buffer. `ProofTooLong` if the proof exceeds the maximum valid length.
+
+### `get_root_buffer`
+Returns the current ring buffer of historical Merkle roots (read-only). The buffer is bounded to `ROOT_BUFFER_SIZE` entries; oldest roots are evicted when full.
+
+```rust
+fn get_root_buffer(env: Env) -> Vec<BytesN<32>>
+```
+
+### `get_root_buffer_size`
+Returns the maximum number of historical roots retained in the ring buffer (read-only).
+
+```rust
+fn get_root_buffer_size(env: Env) -> u32
+```
+
+### `get_max_proof_len`
+Returns the maximum valid Merkle proof length, derived from `MAX_BATCH_SIZE`. Clients should call this rather than hard-coding the limit so they stay in sync if the constant is ever tuned.
+
+```rust
+fn get_max_proof_len(env: Env) -> u32
+```
 
 ---
 
@@ -67,14 +113,42 @@ fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error>
 - **Authentication:** Requires the merchant's signature.
 
 ### `refund`
-Executes a refund to a specified address, provided it occurs within the merchant's declared refund window.
+Executes a refund to a specified address, provided it occurs within the merchant's declared refund window and wall-clock deadline.
 
 ```rust
-fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, paid_at_ledger: u32) -> Result<(), Error>
+fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, paid_at_ledger: u32, payment_amount: i128) -> Result<(), Error>
 ```
 - **Authentication:** Requires the merchant's signature.
-- **Constraints:** Fails with `AlreadyRefunded` if the `payment_ref` was refunded before, with `WindowExpired` if the current ledger exceeds `paid_at_ledger + window` (boundary ledger still refundable; skipped when the window is `0`), and with `InsufficientFloat` if the vault balance cannot cover `amount`.
-- **Emits:** `refunded` event carrying the payment reference and the stored `RefundRecord`.
+- **Constraints:** Fails with `ExceedsPayment` if cumulative refunds would exceed `payment_amount`, with `WindowExpired` if the current ledger exceeds `paid_at_ledger + window` (boundary ledger still refundable; skipped when the window is `0`), with `RefundExpired` if the policy deadline has strictly passed, and with `InsufficientFloat` if the vault balance cannot cover `amount`.
+- **Fees:** When a fee is configured (`set_fee_bps`), the claim is split into the recipient's `payout` and a `fee` that rounds up to the fee recipient (`payout + fee == amount`). An unset fee recipient defaults to the merchant; configuring the vault's own address is rejected.
+- **Emits:** `RefundEvent` carrying the payment reference and the stored `RefundRecord` (including the per-call `fee`).
+
+### `claim_batch`
+Refunds multiple claims in one transaction. Each claim is processed with exactly the same logic, checks and fees as a single `refund`, so the batch needs only one merchant signature and one reentrancy-lock acquisition. The batch is **atomic**: if any claim fails, the error is returned and the whole invocation — its transfers, storage writes and events — is reverted, so either every claim persists or none do.
+
+```rust
+fn claim_batch(env: Env, claims: Vec<RefundClaim>) -> Result<(), Error>
+```
+
+- **Authentication:** Requires the merchant's signature (checked once for the whole batch).
+- **Constraints:** Each element is validated independently, exactly as for `refund`: `InvalidAmount` for a non-positive amount, `SelfTransfer` for the vault's own address, `ExceedsPayment` for a legacy record or a cumulative over-ceiling, `WindowExpired` / `RefundExpired` when outside the policy, and `InsufficientFloat` if the vault cannot cover the element at the point it is processed. The float is read afresh before **every** element, so a batch cannot overdraw the float any more than the equivalent sequence of single refunds; repeated `payment_ref`s accumulate against the same ceiling across elements.
+- **`RefundClaim` fields:** `payment_ref: BytesN<32>`, `recipient: Address`, `amount: i128`, `paid_at_ledger: u32`, `payment_amount: i128` — the same arguments a `refund` call takes, as a single struct.
+- **Emits:** one `RefundEvent` per claim, in claim order.
+- **Empty batch:** an empty `claims` vector succeeds as a no-op.
+
+### `process_batch`
+Best-effort batch refunds: processes up to `MAX_REFUND_BATCH_SIZE` (100) claims in one transaction, returning a `Vec<bool>` with one entry per claim (`true` = the claim was applied, `false` = it failed). A failing claim does **not** abort the batch — the remaining claims are still processed, so valid items in a mixed batch complete. Each claim runs the identical per-claim logic as `refund` (via the shared `claim_single` helper), including the policy deadline check and the configured fee split.
+
+```rust
+fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error>
+```
+
+- **Authentication:** Requires the merchant's signature (checked once for the whole batch).
+- **`RefundParam` fields:** `payment_ref: BytesN<32>`, `recipient: Address`, `amount: i128`, `paid_at_ledger: u32`, `payment_amount: i128` — the same shape as `RefundClaim`.
+- **Errors (whole call):** `Paused`, missing admin, or `BatchTooLarge` when `refunds.len() > 100`. Per-item failures are reported through the returned booleans, never as a whole-call error.
+- **Emits:** one `RefundEvent` per successfully applied claim, in claim order.
+- **Atomicity:** non-atomic by design — a failing item leaves earlier successes intact. Use `claim_batch` when all-or-nothing semantics are required.
+- **Fees:** a configured fee applies per applied claim, exactly as in `refund` / `claim_batch`.
 
 ### `withdraw`
 Returns float from the vault to an address of the merchant's choosing.
@@ -85,13 +159,71 @@ fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error>
 - **Authentication:** Requires the merchant's signature.
 - **Errors:** `InsufficientFloat` if the vault balance is below `amount`.
 
-### `set_refund_window`
-Updates the refund window policy. Applies to all refunds executed after the change.
+### `propose_policy`
+Proposes a new refund policy: a window (in ledgers) plus a wall-clock deadline (Unix timestamp, `0` = no deadline). The change is not applied immediately; the admin must call `execute_policy` after the timelock (17,280 ledgers, ~24 hours) has elapsed. Proposing a new policy overwrites any existing pending proposal.
 
 ```rust
-fn set_refund_window(env: Env, ledgers: u32) -> Result<(), Error>
+fn propose_policy(env: Env, ledgers: u32, deadline: u64) -> Result<(), Error>
 ```
 - **Authentication:** Requires the merchant's signature.
+
+### `execute_policy`
+Executes a pending policy change. Fails if no policy is pending (`NoPendingPolicy`) or if the timelock has not yet expired (`TimelockNotExpired`). Applies both the new window and the new deadline.
+
+```rust
+fn execute_policy(env: Env) -> Result<(), Error>
+```
+- **Authentication:** Requires the merchant's signature.
+- **Errors:** `NoPendingPolicy` if no proposal exists, `TimelockNotExpired` if the timelock delay has not passed.
+
+### `get_pending_policy`
+Returns the current pending policy proposal, if any.
+
+```rust
+fn get_pending_policy(env: Env) -> Option<PolicyProposal>
+```
+
+### `get_policy_timelock`
+Returns the policy timelock delay in ledgers (read-only).
+
+```rust
+fn get_policy_timelock(env: Env) -> u32
+```
+
+### `get_refund_deadline`
+Returns the configured policy deadline as a Unix timestamp (read-only). `0` means no deadline is configured.
+
+```rust
+fn get_refund_deadline(env: Env) -> u64
+```
+
+### `set_fee_bps`
+Sets the refund fee rate in basis points (`0` = no fee, up to `10_000` = 100%). Admin auth required. Values above `10_000` return `InvalidRatio`. Emits `FeeConfigUpdatedEvent`. Extends the instance TTL.
+
+```rust
+fn set_fee_bps(env: Env, bps: u32) -> Result<(), Error>
+```
+
+### `set_fee_recipient`
+Sets the address that collects the fee deducted from each refund. Setting the vault's own address returns `SelfTransfer`. Admin auth required. Emits `FeeConfigUpdatedEvent`. Extends the instance TTL.
+
+```rust
+fn set_fee_recipient(env: Env, recipient: Address) -> Result<(), Error>
+```
+
+### `get_fee_bps`
+Returns the configured fee rate in basis points (read-only).
+
+```rust
+fn get_fee_bps(env: Env) -> u32
+```
+
+### `get_fee_recipient`
+Returns the configured fee recipient, if any (read-only). At claim time an unset recipient falls back to the merchant (admin).
+
+```rust
+fn get_fee_recipient(env: Env) -> Option<Address>
+```
 
 ### `get_refund`
 Looks up the refund record for a payment reference, if one exists.

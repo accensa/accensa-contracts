@@ -164,6 +164,96 @@ impl Model {
     fn merchant_balance(&self) -> i128 {
         FLOAT - self.float()
     }
+
+    // Invariant Test (#94): RefundVault's total internal token balance MUST equal
+    // sum of all recorded individual user claims/liabilities (Total Deposits - Total Refunds - Total Withdrawals).
+    proptest::proptest! {
+        fn test_fuzz_refund_vault_balance_invariant(
+            deposit_amounts in proptest::collection::vec(1i128..10_000_000i128, 1..5),
+            refund_amounts in proptest::collection::vec(1i128..1_000_000i128, 1..5),
+            withdraw_amounts in proptest::collection::vec(1i128..1_000_000i128, 1..5)
+        ) {
+            let (env, client, merchant, token) = setup(100);
+            let token_client = soroban_sdk::token::Client::new(&env, &token);
+
+            let mut expected_balance: i128 = 0;
+
+            // Deposits
+            for amt in deposit_amounts {
+                if client.try_deposit(&merchant, &amt).is_ok() {
+                    expected_balance += amt;
+                }
+                let actual_balance = token_client.balance(&client.address);
+                assert_eq!(actual_balance, expected_balance, "Invariant mismatch after deposit");
+            }
+
+            // Refunds
+            for (idx, amt) in refund_amounts.into_iter().enumerate() {
+                let mut ref_bytes = [0u8; 32];
+                ref_bytes[0] = (idx + 1) as u8;
+                let payment_ref = BytesN::from_array(&env, &ref_bytes);
+                let recipient = Address::generate(&env);
+
+                if client.try_refund(&payment_ref, &recipient, &amt, &0, &amt).is_ok() {
+                    expected_balance -= amt;
+                }
+                let actual_balance = token_client.balance(&client.address);
+                assert_eq!(actual_balance, expected_balance, "Invariant mismatch after refund");
+            }
+
+            // Withdrawals
+            for amt in withdraw_amounts {
+                if client.try_withdraw(&amt, &merchant).is_ok() {
+                    expected_balance -= amt;
+                }
+                let actual_balance = token_client.balance(&client.address);
+                assert_eq!(actual_balance, expected_balance, "Invariant mismatch after withdrawal");
+            }
+        }
+    }
+}
+
+/// Headroom percentage (15%) chosen to account for minor toolchain/host optimization differences.
+const HEADROOM_PERCENT: u64 = 15;
+
+/// Cost baselines for `RefundVault::refund`
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-29.
+///
+/// Baseline reflects the merged refund path, which routes through the shared
+/// `claim_single` helper and therefore also performs the policy-deadline check,
+/// the per-claim fee read/split, and the self-transfer guard (the original
+/// pre-merge `refund` did not).
+const REFUND_BASELINE_CPU: u64 = 479_633;
+const REFUND_BASELINE_MEM: u64 = 131_994;
+
+#[test]
+fn test_refund_resource_cost_budget() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &1_000_000);
+
+    let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
+    let recipient = Address::generate(&env);
+
+    env.cost_estimate().budget().reset_default();
+    client.refund(&payment_ref, &recipient, &100_000, &0, &100_000);
+    let cpu_refund = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_refund = env.cost_estimate().budget().memory_bytes_cost();
+
+    let max_cpu_refund = REFUND_BASELINE_CPU + (REFUND_BASELINE_CPU * HEADROOM_PERCENT / 100);
+    let max_mem_refund = REFUND_BASELINE_MEM + (REFUND_BASELINE_MEM * HEADROOM_PERCENT / 100);
+
+    assert!(
+        cpu_refund <= max_cpu_refund,
+        "RefundVault::refund CPU cost regression! Function: refund, Limit: {}, Measured: {}",
+        max_cpu_refund,
+        cpu_refund
+    );
+    assert!(
+        mem_refund <= max_mem_refund,
+        "RefundVault::refund Memory cost regression! Function: refund, Limit: {}, Measured: {}",
+        max_mem_refund,
+        mem_refund
+    );
 }
 
 #[derive(Clone, Debug)]
@@ -248,8 +338,9 @@ fn execute(
                 model.paused = !model.paused;
             }
             Op::SetWindow { window } => {
-                // set_refund_window is not gated on pause.
-                client.set_refund_window(window);
+                // propose_policy is not gated on pause; execute requires timelock.
+                // The fuzz model does not model deadlines, so no deadline (0) is proposed.
+                let _ = client.try_propose_policy(window, &0);
                 model.window = *window;
             }
             Op::Deposit { amount } => {
@@ -378,7 +469,7 @@ fn execute(
                         }
                     }
                     Err(Ok(Error::InvalidAmount)) => {
-                        if !(*amount <= 0) {
+                        if *amount > 0 {
                             failures.push(format!("refund of {amount} rejected as invalid amount"));
                         }
                     }
@@ -460,7 +551,7 @@ fn execute(
                         }
                     }
                     Err(Ok(Error::InvalidAmount)) => {
-                        if !(*amount <= 0) {
+                        if *amount > 0 {
                             failures
                                 .push(format!("withdraw of {amount} rejected as invalid amount"));
                         }

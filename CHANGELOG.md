@@ -10,19 +10,62 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
-- **Resource-budget CI with the Tollcraft tooling** (issue #20 follow-up):
-  a `budget` job in `.github/workflows/ci.yml` fails the build on WASM-size or
-  budget regression beyond a stated tolerance. It runs `soroban-cost-linter`
-  (`cargo cost-lint`) over both contracts with findings surfaced in the job
-  log, and gates every scaling entry point (`anchor_batch` at count 1 / 500 /
-  1000, `verify_receipt` at proof depths 1 and 10, `prune_batches` over 100
-  deletes, and `refund` / `deposit` on `RefundVault`) with
-  `soroban-budget-assert` `#[budget_cpu_lt(N)]` Tier A macros plus a
-  network-simulated `cargo budget-report` Tier B step. Baselines are committed
-  (`.wasm-budget.json`, `budget.toml`, and `contracts/*/src/budget_test.rs`) and
-  updated only by an explicit change. Measured per-function CPU/memory/read/write
-  costs and headroom — including the measured justification for
-  `MAX_BATCH_SIZE = 1000` — are published in `docs/BENCHMARKS.md`.
+- **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
+  processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
+  as `RefundClaim`) under a single merchant authorization, returning
+  `Vec<bool>` with one entry per claim. A failing claim is recorded as `false`
+  and processing continues, so valid claims in a mixed batch complete rather
+  than the whole call aborting; a batch larger than 100 claims fails with
+  `BatchTooLarge`. Every claim runs the identical per-claim logic as `refund`
+  (deadline, ceiling, float, and the configured fee), publishing a
+  `RefundEvent` per applied claim. Non-atomic by design — callers that require
+  all-or-nothing semantics should use `claim_batch` instead.
+
+- **Batch refunds for `RefundVault`**: `claim_batch(claims)` refunds multiple
+  claims in a single transaction, each processed with exactly the same logic,
+  checks, fees and events as `refund`, sharing one merchant authorization and
+  one reentrancy-lock acquisition. The batch is **atomic** — the first failing
+  claim returns its error and the Soroban transaction revert discards every
+  transfer, storage write and event of the batch, so either all claims persist
+  or none do. The float is read fresh from the token contract before every
+  element (so a batch cannot overdraw the vault), and repeated `payment_ref`s
+  accumulate against the same ceiling across elements. Each claim publishes its
+  own `RefundEvent` in claim order; an empty batch succeeds as a no-op. Callers
+  pass a `Vec<RefundClaim>`, a `#[contracttype]` struct mirroring the `refund`
+  arguments (`payment_ref`, `recipient`, `amount`, `paid_at_ledger`,
+  `payment_amount`). This is an **additive** change: `refund` and every existing
+  endpoint are unchanged (the shared claim path is extracted verbatim), and gas
+  is pinned by a budget test asserting a ten-claim batch stays well under the
+  default CPU and memory limits and scales near-linearly with a single claim.
+
+- **Refund fees for `RefundVault`**: the merchant can configure a fee deducted
+  from every successful refund — `set_fee_bps(bps)` fixes the rate (basis
+  points, up to 10_000) and `set_fee_recipient(recipient)` the collector
+  address; both are admin-only and setting the recipient to the vault's own
+  address is rejected (`SelfTransfer`). `refund` splits each claim into the
+  buyer's payout and the fee, which always rounds **up** so the sub-unit
+  remainder accrues to the protocol. If no recipient is configured the fee
+  defaults to the merchant. The total outflow per claim is unchanged
+  (`payout + fee == amount`), the `payment_amount` ceiling and the float check
+  are untouched, and the fee is `0` unless configured, so `initialize` and
+  existing deployments are unaffected. New `get_fee_bps()` /
+  `get_fee_recipient()` getters expose the configuration, and the
+  `RefundEvent` data map gains a `fee` field (append-only, see
+  `docs/EVENTS.md`).
+
+- **Refund expiration deadline for `RefundVault`**: the refund policy now
+  carries a wall-clock deadline (Unix timestamp) alongside the ledger-based
+  window — `propose_policy(ledgers, deadline)` configures it (subject to the
+  same timelock) and `execute_policy` applies it. `refund` rejects claims whose
+  current ledger timestamp is strictly past the deadline with a new
+  `RefundExpired` error (code 23); a deadline of `0` disables expiry. The new
+  `get_refund_deadline()` getter exposes the configured deadline. This is a
+  contract-source change: the `propose_policy` signature is extended, so it is
+  a **breaking change** for clients; `initialize` is unchanged and existing
+  deployments default to no expiration (deadline `0`), keeping them behaviour-
+  and storage-compatible. Deadline boundary semantics are pinned by unit tests
+  that manipulate the mock ledger timestamp.
+
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the
@@ -39,6 +82,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Changed
 
+- **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
+  Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
+  static buffer (`proof_buffer: [[u8; 32]; 128]`) and perform intermediate hashing using the pure Wasm
+  `sha2` crate. This eliminates all guest heap allocations and host roundtrips for intermediate hashes,
+  ensuring a flat guest memory footprint across all Merkle tree depths.
 - **`RefundVault` token generality is documented and pinned** (issue #166): the
   vault treats all amounts as raw integer units in the token's smallest unit and
   performs no decimal arithmetic, so any SEP-41 precision behaves identically.

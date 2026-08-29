@@ -124,10 +124,13 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "function_name": "set_refund_window",
+              "function_name": "propose_policy",
               "args": [
                 {
                   "u32": 200
+                },
+                {
+                  "u64": "0"
                 }
               ]
             }
@@ -299,12 +302,49 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "PendingPolicy"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "deadline"
+                            },
+                            "val": {
+                              "u64": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "proposed_at_ledger"
+                            },
+                            "val": {
+                              "u32": 0
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "window"
+                            },
+                            "val": {
+                              "u32": 200
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "RefundWindow"
                           }
                         ]
                       },
                       "val": {
-                        "u32": 200
+                        "u32": 100
                       }
                     },
                     {
@@ -549,17 +589,39 @@
           "v0": {
             "topics": [
               {
-                "symbol": "refund_window_updated_event"
-              },
-              {
-                "u32": 100
+                "symbol": "policy_proposed_event"
               },
               {
                 "u32": 200
               }
             ],
             "data": {
-              "map": []
+              "map": [
+                {
+                  "key": {
+                    "symbol": "deadline"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "execute_after_ledger"
+                  },
+                  "val": {
+                    "u32": 17280
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "proposed_at_ledger"
+                  },
+                  "val": {
+                    "u32": 0
+                  }
+                }
+              ]
             }
           }
         }
