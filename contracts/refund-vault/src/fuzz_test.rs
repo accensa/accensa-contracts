@@ -217,11 +217,14 @@ impl Model {
 const HEADROOM_PERCENT: u64 = 15;
 
 /// Cost baselines for `RefundVault::refund`
-/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-28 (rustc 1.98.0).
-/// The 2026-08-26 baselines drifted ~19% on CPU under the current toolchain, so re-measure
-/// when the toolchain moves.
-const REFUND_BASELINE_CPU: u64 = 473_823;
-const REFUND_BASELINE_MEM: u64 = 150_537;
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-29.
+///
+/// Baseline reflects the merged refund path, which routes through the shared
+/// `claim_single` helper and therefore also performs the policy-deadline check,
+/// the per-claim fee read/split, and the self-transfer guard (the original
+/// pre-merge `refund` did not).
+const REFUND_BASELINE_CPU: u64 = 479_633;
+const REFUND_BASELINE_MEM: u64 = 131_994;
 
 #[test]
 fn test_refund_resource_cost_budget() {
@@ -336,7 +339,8 @@ fn execute(
             }
             Op::SetWindow { window } => {
                 // propose_policy is not gated on pause; execute requires timelock.
-                let _ = client.try_propose_policy(window);
+                // The fuzz model does not model deadlines, so no deadline (0) is proposed.
+                let _ = client.try_propose_policy(window, &0);
                 model.window = *window;
             }
             Op::Deposit { amount } => {

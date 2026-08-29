@@ -83,7 +83,7 @@ jobs:
           components: clippy
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -95,9 +95,7 @@ jobs:
         # `contractimport!` to test the shard factory end-to-end.
         run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run clippy
-        # `--workspace` so the test-support `testutils` crate (excluded from
-        # default-members) stays linted.
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   test:
     name: test
@@ -109,7 +107,7 @@ jobs:
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -121,7 +119,7 @@ jobs:
         # test the shard factory end-to-end.
         run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run Tests
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
   benchmarks:
     name: benchmark-budgets
@@ -133,7 +131,7 @@ jobs:
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -143,7 +141,7 @@ jobs:
       - name: Run Budget Measurement Tests
         # Placeholder for actual budget enforcement (Issue #66).
         # Ensures that the testutils budget harness compiles and works.
-        run: cargo test -p testutils --profile release-with-logs
+        run: cargo test --locked -p testutils --profile release-with-logs
 
   build-wasm:
     name: build-wasm
@@ -155,7 +153,7 @@ jobs:
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -163,7 +161,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
       - name: Wasm build
-        run: cargo build --target wasm32v1-none --release
+        run: cargo build --locked --target wasm32v1-none --release
 
       - name: Report WASM sizes & enforce size budget
         run: |
@@ -198,7 +196,7 @@ jobs:
           fi
 
       - name: Upload WASM Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wasm-artifacts-${{ github.sha }}
           path: |

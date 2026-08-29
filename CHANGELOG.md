@@ -23,18 +23,62 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
-- **Token-bucket rate limiting for `ReceiptAnchor` (DoS protection)**. Each
-  anchoring identity (the merchant) may submit `burst_capacity` anchors
-  back-to-back, after which the bucket refills one token per
-  `refill_interval_secs` seconds; an empty bucket rejects the anchor with
-  `AnchorRateLimited` before any storage is written or shard deployed.
-  Disabled by default and free when off (a single instance read); when on,
-  tracking costs one 12-byte persistent entry per identity, and the token is
-  consumed only after the anchor succeeds (a rejected anchor does not spend
-  one). Covered by `test.rs` (burst, partial refill, refill-at-burst cap,
-  disable/enable round-trips, per-identity keying, no-consume-on-failure,
-  and a bounded-overhead gate) and documented in the README,
-  `docs/contracts.mdx`, `docs/SECURITY_MODEL.md` and `docs/storage-audit.md`.
+- **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
+  processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
+  as `RefundClaim`) under a single merchant authorization, returning
+  `Vec<bool>` with one entry per claim. A failing claim is recorded as `false`
+  and processing continues, so valid claims in a mixed batch complete rather
+  than the whole call aborting; a batch larger than 100 claims fails with
+  `BatchTooLarge`. Every claim runs the identical per-claim logic as `refund`
+  (deadline, ceiling, float, and the configured fee), publishing a
+  `RefundEvent` per applied claim. Non-atomic by design — callers that require
+  all-or-nothing semantics should use `claim_batch` instead.
+
+- **Batch refunds for `RefundVault`**: `claim_batch(claims)` refunds multiple
+  claims in a single transaction, each processed with exactly the same logic,
+  checks, fees and events as `refund`, sharing one merchant authorization and
+  one reentrancy-lock acquisition. The batch is **atomic** — the first failing
+  claim returns its error and the Soroban transaction revert discards every
+  transfer, storage write and event of the batch, so either all claims persist
+  or none do. The float is read fresh from the token contract before every
+  element (so a batch cannot overdraw the vault), and repeated `payment_ref`s
+  accumulate against the same ceiling across elements. Each claim publishes its
+  own `RefundEvent` in claim order; an empty batch succeeds as a no-op. Callers
+  pass a `Vec<RefundClaim>`, a `#[contracttype]` struct mirroring the `refund`
+  arguments (`payment_ref`, `recipient`, `amount`, `paid_at_ledger`,
+  `payment_amount`). This is an **additive** change: `refund` and every existing
+  endpoint are unchanged (the shared claim path is extracted verbatim), and gas
+  is pinned by a budget test asserting a ten-claim batch stays well under the
+  default CPU and memory limits and scales near-linearly with a single claim.
+
+- **Refund fees for `RefundVault`**: the merchant can configure a fee deducted
+  from every successful refund — `set_fee_bps(bps)` fixes the rate (basis
+  points, up to 10_000) and `set_fee_recipient(recipient)` the collector
+  address; both are admin-only and setting the recipient to the vault's own
+  address is rejected (`SelfTransfer`). `refund` splits each claim into the
+  buyer's payout and the fee, which always rounds **up** so the sub-unit
+  remainder accrues to the protocol. If no recipient is configured the fee
+  defaults to the merchant. The total outflow per claim is unchanged
+  (`payout + fee == amount`), the `payment_amount` ceiling and the float check
+  are untouched, and the fee is `0` unless configured, so `initialize` and
+  existing deployments are unaffected. New `get_fee_bps()` /
+  `get_fee_recipient()` getters expose the configuration, and the
+  `RefundEvent` data map gains a `fee` field (append-only, see
+  `docs/EVENTS.md`).
+
+- **Refund expiration deadline for `RefundVault`**: the refund policy now
+  carries a wall-clock deadline (Unix timestamp) alongside the ledger-based
+  window — `propose_policy(ledgers, deadline)` configures it (subject to the
+  same timelock) and `execute_policy` applies it. `refund` rejects claims whose
+  current ledger timestamp is strictly past the deadline with a new
+  `RefundExpired` error (code 23); a deadline of `0` disables expiry. The new
+  `get_refund_deadline()` getter exposes the configured deadline. This is a
+  contract-source change: the `propose_policy` signature is extended, so it is
+  a **breaking change** for clients; `initialize` is unchanged and existing
+  deployments default to no expiration (deadline `0`), keeping them behaviour-
+  and storage-compatible. Deadline boundary semantics are pinned by unit tests
+  that manipulate the mock ledger timestamp.
+
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the
