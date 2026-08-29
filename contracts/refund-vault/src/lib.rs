@@ -562,7 +562,7 @@ impl RefundVault {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        let extend_to = refund_record_ttl_extend_to(&env, window, paid_at_ledger);
+        let extend_to = refund_record_ttl_extend_to(env, window, paid_at_ledger);
         // Threshold == extend_to (not TTL_THRESHOLD): see
         // `refund_record_ttl_extend_to` for why a small fixed threshold makes
         // this a no-op on a freshly-written entry.
@@ -581,7 +581,7 @@ impl RefundVault {
         }
         .publish(env);
 
-        release_reentrancy_lock(&env);
+        release_reentrancy_lock(env);
         Ok(())
     }
 
