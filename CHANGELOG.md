@@ -10,6 +10,13 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+- **Versioned `RefundVault` migrations** (issue #126): added an admin-authorized
+  storage version marker and an idempotent migration entry point for future
+  state upgrades, plus an admin-authorized WASM upgrade handoff through the
+  Soroban deployer. Legacy instances without a version key are treated as
+  version 1; migration details and the two-phase upgrade procedure are
+  documented in `docs/REFUND_VAULT_MIGRATION.md`.
+
 - **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
   processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
   as `RefundClaim`) under a single merchant authorization, returning
