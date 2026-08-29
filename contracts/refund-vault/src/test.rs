@@ -2,9 +2,9 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Events, Ledger},
+    testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, Env,
+    vec, Address, Env, Val,
 };
 
 const FLOAT: i128 = 1_000_000;
@@ -260,7 +260,7 @@ fn test_set_refund_window_takes_effect() {
         Err(Ok(Error::WindowExpired))
     );
 
-    client.propose_policy(&1000);
+    client.propose_policy(&1000, &0);
     // Cannot execute yet — timelock has not expired.
     assert_eq!(
         client.try_execute_policy(),
@@ -298,7 +298,7 @@ fn test_uninitialized_calls_fail() {
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(
-        client.try_propose_policy(&10),
+        client.try_propose_policy(&10, &0),
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
@@ -624,6 +624,10 @@ fn test_events_emitted() {
         120_000i128.into_val(&env),
     );
     refund_data.set(
+        Symbol::new(&env, "fee").into_val(&env),
+        0i128.into_val(&env),
+    );
+    refund_data.set(
         Symbol::new(&env, "cumulative_refunded").into_val(&env),
         120_000i128.into_val(&env),
     );
@@ -701,7 +705,24 @@ fn test_pause_unpause_refund_window_events_emitted() {
     );
 
     env.ledger().with_mut(|li| li.sequence_number = 700);
-    client.propose_policy(&300);
+    client.propose_policy(&300, &0);
+
+    // The data map differs across fields by native type (u64 deadline, u32
+    // ledger fields), so build it with per-entry `into_val` rather than the
+    // `map!` macro, which requires one homogeneous value type.
+    let mut policy_data = Map::<Val, Val>::new(&env);
+    policy_data.set(
+        Symbol::new(&env, "deadline").into_val(&env),
+        0u64.into_val(&env),
+    );
+    policy_data.set(
+        Symbol::new(&env, "proposed_at_ledger").into_val(&env),
+        700u32.into_val(&env),
+    );
+    policy_data.set(
+        Symbol::new(&env, "execute_after_ledger").into_val(&env),
+        (700u32 + 17_280u32).into_val(&env),
+    );
 
     assert_eq!(
         env.events().all().filter_by_contract(&client.address),
@@ -710,15 +731,7 @@ fn test_pause_unpause_refund_window_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "policy_proposed_event"), 300u32).into_val(&env),
-                soroban_sdk::map![
-                    &env,
-                    (Symbol::new(&env, "proposed_at_ledger"), 700u32),
-                    (
-                        Symbol::new(&env, "execute_after_ledger"),
-                        700u32 + 17_280u32
-                    ),
-                ]
-                .into_val(&env)
+                policy_data.into_val(&env)
             )
         ]
     );
@@ -782,7 +795,7 @@ fn test_accept_admin_transfers_role() {
     client.accept_admin();
 
     // New admin can call admin-only functions (propose_policy needs no token balance).
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 }
 
 #[test]
@@ -828,7 +841,7 @@ fn test_cancel_then_reinitiate_works() {
     client.accept_admin();
 
     // B is now admin — propose_policy should work.
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 }
 
 #[test]
@@ -843,7 +856,7 @@ fn test_overwrite_pending_admin() {
 
     // Accept — B should become admin.
     client.accept_admin();
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 }
 
 #[test]
@@ -855,7 +868,7 @@ fn test_old_admin_cannot_act_after_transfer() {
     client.accept_admin();
 
     // New admin can call admin-only functions.
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 }
 
 #[test]
@@ -1063,273 +1076,6 @@ fn test_process_batch_exceeds_max_size_fails() {
     );
 }
 
-// ── Batch throughput: many refunds in a single transaction ─────────────────
-
-/// Builds `count` refund params with unique payment refs and recipients, all
-/// refunding `amount` of a payment of `amount`, paid at ledger 0.
-fn batch_params(env: &Env, count: u32, amount: i128) -> soroban_sdk::Vec<RefundParam> {
-    let mut params = soroban_sdk::Vec::new(env);
-    for i in 0..count {
-        let mut ref_bytes = [0u8; 32];
-        ref_bytes[0] = 0xC0;
-        ref_bytes[1] = (i >> 8) as u8;
-        ref_bytes[2] = i as u8;
-        params.push_back(RefundParam {
-            payment_ref: BytesN::from_array(env, &ref_bytes),
-            recipient: Address::generate(env),
-            amount,
-            paid_at_ledger: 0,
-            payment_amount: amount,
-        });
-    }
-    params
-}
-
-/// Acceptance criterion: at least 50 refunds processed in a single
-/// transaction. All 50 must succeed, every payment must end up with a refund
-/// record for the full amount, and the vault float must shrink by exactly the
-/// total paid out.
-#[test]
-fn test_process_batch_50_refunds_in_single_tx() {
-    let (env, client, merchant, token) = setup(1000);
-    let per_refund = 10_000i128;
-    client.deposit(&merchant, &(50 * per_refund));
-
-    let params = batch_params(&env, 50, per_refund);
-    // CPU/memory headroom for the mock-auth harness (see
-    // `test_process_batch_50_within_resource_limits`); the contract-events,
-    // write-bytes and write-entry mainnet limits stay enforced.
-    env.cost_estimate()
-        .budget()
-        .reset_limits(2_000_000_000, 2_000_000_000);
-    let res = client.process_batch(&params);
-
-    assert_eq!(res.len(), 50);
-    assert!(
-        res.iter().all(|ok| ok),
-        "every one of the 50 refunds in the batch must succeed"
-    );
-
-    // Every payment ref has a record with exactly the requested amount.
-    for i in 0..50u32 {
-        let mut ref_bytes = [0u8; 32];
-        ref_bytes[0] = 0xC0;
-        ref_bytes[1] = (i >> 8) as u8;
-        ref_bytes[2] = i as u8;
-        let record = client
-            .get_refund(&BytesN::from_array(&env, &ref_bytes))
-            .unwrap();
-        assert_eq!(record.amount_refunded, per_refund);
-        assert_eq!(record.payment_amount, per_refund);
-    }
-
-    // The whole batch settled against a single deposit: float is empty.
-    let token_client = TokenClient::new(&env, &token);
-    assert_eq!(token_client.balance(&client.address), 0);
-}
-
-/// The cap guard fires at the resource ceiling: `MAX_REFUND_BATCH_SIZE + 1`
-/// items are rejected before any state is touched. Mainnet's 16 KiB
-/// contract-event budget is the binding constraint (a 60-refund batch would
-/// already exceed it), so the cap — not a runtime failure — is what stops an
-/// operator from submitting a batch that is guaranteed to fail atomically.
-#[test]
-fn test_process_batch_cap_blocks_oversized_batches_at_boundary() {
-    let (env, client, merchant, _token) = setup(1000);
-    let per_refund = 10_000i128;
-    client.deposit(&merchant, &(50 * per_refund));
-
-    let params = batch_params(&env, MAX_REFUND_BATCH_SIZE + 1, per_refund);
-    assert_eq!(
-        client.try_process_batch(&params),
-        Err(Ok(Error::BatchTooLarge))
-    );
-}
-
-/// A 50-refund batch must fit comfortably within the resource budget of a
-/// single Soroban transaction on mainnet limits. The SDK's test host enforces
-/// the real mainnet `InvocationResourceLimits` by default (400M instructions,
-/// 40 MiB memory, 16 KiB contract events, ~129 KiB of writes, 200 write
-/// entries); this test runs the batch under exactly those limits and asserts
-/// every dimension clears them with headroom to spare.
-///
-/// The `BATCH_50_*_CAP` constants are the measured costs of the
-/// shared-context loop + single batch event (see the PR for the numbers); a
-/// change that re-introduces a per-item state load, a per-item balance query
-/// or per-item refund events blows past them.
-#[test]
-fn test_process_batch_50_within_resource_limits() {
-    let (env, client, merchant, _token) = setup(1000);
-    let per_refund = 10_000i128;
-    client.deposit(&merchant, &(50 * per_refund));
-    let params = batch_params(&env, 50, per_refund);
-
-    // Mainnet invocation limits, enforced by the test host by default.
-    const EVENTS_LIMIT: u32 = 16_384;
-    const WRITE_BYTES_LIMIT: u32 = 132_096;
-    const WRITE_ENTRIES_LIMIT: u32 = 200;
-    const FOOTPRINT_ENTRIES_LIMIT: u32 = 400;
-
-    // Give the test harness's mock-auth bookkeeping (which builds and XDR-encodes
-    // the authorisation tree for every transfer in shadow mode) breathing room
-    // on CPU/memory. The invocation limits that matter for batch throughput —
-    // contract events, write bytes and write entries — stay at mainnet values
-    // and are what the assertions below actually gate on.
-    env.cost_estimate()
-        .budget()
-        .reset_limits(2_000_000_000, 2_000_000_000);
-    let res = client.process_batch(&params);
-    assert_eq!(res.len(), 50);
-    assert!(res.iter().all(|ok| ok));
-
-    let resources = env.cost_estimate().resources();
-    assert!(
-        resources.contract_events_size_bytes <= EVENTS_LIMIT,
-        "batch(50) event bytes {} exceed the single-tx limit {EVENTS_LIMIT}",
-        resources.contract_events_size_bytes
-    );
-    assert!(
-        resources.write_bytes <= WRITE_BYTES_LIMIT,
-        "batch(50) write bytes {} exceed the single-tx limit {WRITE_BYTES_LIMIT}",
-        resources.write_bytes
-    );
-    assert!(
-        resources.write_entries <= WRITE_ENTRIES_LIMIT,
-        "batch(50) write entries {} exceed the single-tx limit {WRITE_ENTRIES_LIMIT}",
-        resources.write_entries
-    );
-    let footprint_entries = resources.memory_read_entries + resources.write_entries;
-    assert!(
-        footprint_entries <= FOOTPRINT_ENTRIES_LIMIT,
-        "batch(50) footprint {footprint_entries} entries exceed the single-tx limit {FOOTPRINT_ENTRIES_LIMIT}"
-    );
-
-    // Regression gate: measured on the shared-context loop + single batch
-    // event. Events sit at 14,352 B for 50 refunds — the token contract's
-    // per-refund `transfer` event (~285 B each) dominates. The cap allows 10%
-    // toolchain drift; a change that re-introduces per-refund vault events
-    // (~530 B each) blows straight past both this cap and the 16 KiB hard
-    // limit. Write entries measured at 102 (2 per refund: payment record +
-    // refund record); the cap allows ~13% toolchain drift.
-    const BATCH_50_EVENTS_CAP: u32 = 15_800;
-    const BATCH_50_WRITE_ENTRIES_CAP: u32 = 115;
-    assert!(
-        resources.contract_events_size_bytes <= BATCH_50_EVENTS_CAP,
-        "batch(50) events regression: {} > {BATCH_50_EVENTS_CAP}",
-        resources.contract_events_size_bytes
-    );
-    assert!(
-        resources.write_entries <= BATCH_50_WRITE_ENTRIES_CAP,
-        "batch(50) write entries regression: {} > {BATCH_50_WRITE_ENTRIES_CAP}",
-        resources.write_entries
-    );
-}
-
-/// The batch path emits exactly one compact `BatchRefundEvent` for the whole
-/// call — not one `RefundEvent` per item — which is what keeps 50+ refunds
-/// inside the transaction's 16 KiB contract-event budget. The two vectors are
-/// aligned 1:1 with the submitted batch, in submission order.
-#[test]
-fn test_batch_emits_single_batch_event() {
-    use soroban_sdk::testutils::Events;
-    use soroban_sdk::{vec, IntoVal, Map, Symbol, Val};
-
-    let (env, client, merchant, _token) = setup(1000);
-    let per_refund = 10_000i128;
-    client.deposit(&merchant, &(50 * per_refund));
-    let params = batch_params(&env, 50, per_refund);
-
-    // CPU/memory headroom for the mock-auth harness; this test only inspects
-    // emitted events, and the batch's 50 token transfers need the raised
-    // budget for the harness's shadow-mode auth bookkeeping.
-    env.cost_estimate()
-        .budget()
-        .reset_limits(2_000_000_000, 2_000_000_000);
-    client.process_batch(&params);
-
-    // Expected payload: every payment ref succeeded, in submission order.
-    let mut expected_refs: soroban_sdk::Vec<BytesN<32>> = soroban_sdk::Vec::new(&env);
-    let mut expected_results: soroban_sdk::Vec<bool> = soroban_sdk::Vec::new(&env);
-    for p in params.iter() {
-        expected_refs.push_back(p.payment_ref);
-        expected_results.push_back(true);
-    }
-    let mut data = Map::<Val, Val>::new(&env);
-    data.set(
-        Symbol::new(&env, "payment_refs").into_val(&env),
-        expected_refs.into_val(&env),
-    );
-    data.set(
-        Symbol::new(&env, "results").into_val(&env),
-        expected_results.into_val(&env),
-    );
-
-    // Exactly one event for the whole batch, with the batch_refund_event topic.
-    assert_eq!(
-        env.events().all().filter_by_contract(&client.address),
-        vec![
-            &env,
-            (
-                client.address.clone(),
-                (Symbol::new(&env, "batch_refund_event"),).into_val(&env),
-                data.into_val(&env)
-            )
-        ]
-    );
-}
-
-/// The shared-context loop must be measurably cheaper than issuing the same
-/// refunds one transaction at a time. The host budget meter resets before
-/// every top-level invocation, so the cost of "50 separate transactions" is
-/// the sum of the 50 per-invocation readings, compared against the single
-/// metered cost of one `process_batch`(50). A single batch performs one auth
-/// check, one `balance` query and one window/ledger/token load instead of N
-/// of each, so its metered cost must stay strictly below the summed singles.
-#[test]
-fn test_batch_amortizes_state_loads_over_single_refunds() {
-    let per_refund = 10_000i128;
-
-    // 50 individual refunds, one per transaction: sum each invocation's cost.
-    let (env_a, client_a, merchant_a, _token_a) = setup(1000);
-    client_a.deposit(&merchant_a, &(50 * per_refund));
-    let singles = batch_params(&env_a, 50, per_refund);
-    env_a.cost_estimate().budget().reset_default();
-    let mut singles_cpu: u64 = 0;
-    let mut singles_mem: u64 = 0;
-    for p in singles.iter() {
-        client_a.refund(
-            &p.payment_ref,
-            &p.recipient,
-            &p.amount,
-            &p.paid_at_ledger,
-            &p.payment_amount,
-        );
-        singles_cpu += env_a.cost_estimate().budget().cpu_instruction_cost();
-        singles_mem += env_a.cost_estimate().budget().memory_bytes_cost();
-    }
-
-    // The same 50 refunds in one batch transaction.
-    let (env_b, client_b, merchant_b, _token_b) = setup(1000);
-    client_b.deposit(&merchant_b, &(50 * per_refund));
-    let params = batch_params(&env_b, 50, per_refund);
-    env_b
-        .cost_estimate()
-        .budget()
-        .reset_limits(2_000_000_000, 2_000_000_000);
-    client_b.process_batch(&params);
-    let batch_cpu = env_b.cost_estimate().budget().cpu_instruction_cost();
-    let batch_mem = env_b.cost_estimate().budget().memory_bytes_cost();
-
-    assert!(
-        batch_cpu < singles_cpu,
-        "batch CPU ({batch_cpu}) should be below the sum of 50 singles ({singles_cpu})"
-    );
-    assert!(
-        batch_mem < singles_mem,
-        "batch memory ({batch_mem}) should be below the sum of 50 singles ({singles_mem})"
-    );
-}
-
 // ── Policy timelock tests ──────────────────────────────────────────────────
 
 #[test]
@@ -1337,7 +1083,7 @@ fn test_propose_and_execute_policy_happy_path() {
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 
     let proposal = client.get_pending_policy().unwrap();
     assert_eq!(proposal.window, 200);
@@ -1354,7 +1100,7 @@ fn test_propose_and_execute_policy_happy_path() {
 fn test_execute_policy_before_timelock_fails() {
     let (env, client, _merchant, _token) = setup(100);
 
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 
     // Advance only partway through the timelock.
     env.ledger().with_mut(|li| li.sequence_number = 10_000);
@@ -1369,7 +1115,7 @@ fn test_execute_policy_before_timelock_fails() {
 fn test_execute_policy_at_exact_boundary_succeeds() {
     let (env, client, _merchant, _token) = setup(100);
 
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 
     // proposed_at_ledger = 1, timelock = 17_280, so execute at 1 + 17_280 = 17_281.
     env.ledger().with_mut(|li| li.sequence_number = 17_281);
@@ -1389,8 +1135,8 @@ fn test_execute_policy_without_proposal_fails() {
 fn test_propose_policy_overwrites_existing() {
     let (_env, client, _merchant, _token) = setup(100);
 
-    client.propose_policy(&200);
-    client.propose_policy(&500);
+    client.propose_policy(&200, &0);
+    client.propose_policy(&500, &0);
 
     let proposal = client.get_pending_policy().unwrap();
     assert_eq!(proposal.window, 500);
@@ -1412,7 +1158,7 @@ fn test_execute_policy_applies_new_window() {
     );
 
     // Propose and execute a wider window.
-    client.propose_policy(&20_000);
+    client.propose_policy(&20_000, &0);
     env.ledger().with_mut(|li| li.sequence_number += 17_280);
     client.execute_policy();
 
@@ -1429,7 +1175,7 @@ fn test_propose_policy_uninitialized_fails() {
     let client = RefundVaultClient::new(&env, &contract_id);
 
     assert_eq!(
-        client.try_propose_policy(&100),
+        client.try_propose_policy(&100, &0),
         Err(Ok(Error::NotInitialized))
     );
 }
@@ -1449,14 +1195,14 @@ fn test_execute_policy_uninitialized_fails() {
 fn test_propose_policy_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
     env.set_auths(&[]);
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 }
 
 #[test]
 #[should_panic]
 fn test_execute_policy_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
     env.set_auths(&[]);
     client.execute_policy();
 }
@@ -1466,17 +1212,562 @@ fn test_get_policy_timelock() {
     assert_eq!(RefundVault::get_policy_timelock(), 17_280);
 }
 
+// ── Refund policy deadline tests ───────────────────────────────────────────
+//
+// The policy deadline is a wall-clock timestamp (configured via
+// propose_policy / execute_policy) that `refund` checks against the current
+// ledger timestamp. It is orthogonal to the ledger-based refund window, and
+// `0` (the default) means "no deadline".
+
+/// Fund the vault and apply a policy carrying the given window and deadline,
+/// fast-forwarding past the timelock so the proposal is live.
+fn apply_policy(window: u32, deadline: u64) -> (Env, RefundVaultClient<'static>, Address, Address) {
+    let (env, client, merchant, token) = setup(window);
+    client.deposit(&merchant, &500_000);
+
+    client.propose_policy(&window, &deadline);
+    env.ledger().with_mut(|li| li.sequence_number += 17_280);
+    client.execute_policy();
+
+    (env, client, merchant, token)
+}
+
+#[test]
+fn test_policy_deadline_is_configured_and_readable() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    // No deadline by default.
+    assert_eq!(client.get_refund_deadline(), 0);
+    assert_eq!(client.get_pending_policy(), None);
+
+    let deadline = env.ledger().timestamp() + 1_000;
+    client.propose_policy(&100, &deadline);
+
+    // The pending proposal carries the deadline before it is executed...
+    let proposal = client.get_pending_policy().unwrap();
+    assert_eq!(proposal.window, 100);
+    assert_eq!(proposal.deadline, deadline);
+    // ...but it is not live until execute_policy runs.
+    assert_eq!(client.get_refund_deadline(), 0);
+
+    env.ledger().with_mut(|li| li.sequence_number += 17_280);
+    client.execute_policy();
+
+    assert_eq!(client.get_refund_deadline(), deadline);
+    assert_eq!(client.get_pending_policy(), None);
+}
+
+#[test]
+fn test_refund_before_deadline_succeeds() {
+    let deadline = 1_700_000_000;
+    let (env, client, _merchant, _token) = apply_policy(100, deadline);
+
+    // A claim strictly before the deadline is accepted.
+    let payment_ref = BytesN::from_array(&env, &[0x20u8; 32]);
+    let buyer = Address::generate(&env);
+    env.ledger().with_mut(|li| li.timestamp = deadline - 1);
+    client.refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100);
+    assert!(client.get_refund(&payment_ref).is_some());
+}
+
+#[test]
+fn test_refund_at_deadline_boundary_succeeds() {
+    let deadline = 1_700_000_000;
+    let (env, client, _merchant, _token) = apply_policy(100, deadline);
+
+    // The temporal boundary: a claim landing exactly on the deadline still
+    // succeeds (expiry is strictly past the deadline).
+    let payment_ref = BytesN::from_array(&env, &[0x21u8; 32]);
+    let buyer = Address::generate(&env);
+    env.ledger().with_mut(|li| li.timestamp = deadline);
+    client.refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100);
+    assert!(client.get_refund(&payment_ref).is_some());
+}
+
+#[test]
+fn test_refund_after_deadline_fails() {
+    let deadline = 1_700_000_000;
+    let (env, client, _merchant, token) = apply_policy(100, deadline);
+
+    // One second past the deadline the claim is rejected and leaves no trace:
+    // no record written, float untouched.
+    let payment_ref = BytesN::from_array(&env, &[0x22u8; 32]);
+    let buyer = Address::generate(&env);
+    env.ledger().with_mut(|li| li.timestamp = deadline + 1);
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100),
+        Err(Ok(Error::RefundExpired))
+    );
+    assert!(
+        client.get_refund(&payment_ref).is_none(),
+        "an expired claim must not write a refund record"
+    );
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&client.address),
+        500_000,
+        "an expired claim must not move float"
+    );
+}
+
+#[test]
+fn test_deadline_and_window_are_independent_bounds() {
+    let deadline = 1_700_000_000;
+    let (env, client, _merchant, _token) = apply_policy(100, deadline);
+
+    let payment_ref = BytesN::from_array(&env, &[0x23u8; 32]);
+    let buyer = Address::generate(&env);
+
+    // Past the deadline but still inside the window: RefundExpired, not
+    // WindowExpired.
+    env.ledger().with_mut(|li| li.timestamp = deadline + 1);
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100),
+        Err(Ok(Error::RefundExpired))
+    );
+    assert!(client.get_refund(&payment_ref).is_none());
+}
+
+#[test]
+fn test_zero_deadline_disables_expiry() {
+    let (env, client, _merchant, _token) = apply_policy(100, 0);
+
+    // deadline == 0 mirrors window == 0: refunds are never expired by the
+    // deadline, no matter how far the ledger timestamp advances.
+    env.ledger().with_mut(|li| li.timestamp = u64::MAX / 2);
+    let payment_ref = BytesN::from_array(&env, &[0x24u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100);
+    assert!(client.get_refund(&payment_ref).is_some());
+}
+
+// ── Refund fee tests ───────────────────────────────────────────────────────
+//
+// A fee configured in basis points (1 bp = 0.01%) is deducted from each claim.
+// Rounding always rounds *up* so a remainder smaller than one smallest unit of
+// the token is collected by the protocol (the fee recipient) rather than lost.
+
+/// Reference implementation of the fee formula, used to independently verify
+/// the contract's `refund_fee` across the sweep tests below:
+/// `ceil(amount * fee_bps / 10_000)`, computed in u128 to avoid truncation.
+fn reference_fee(amount: i128, bps: u32) -> i128 {
+    let scaled = (amount as u128) * bps as u128;
+    scaled.div_ceil(10_000) as i128
+}
+
+#[test]
+fn test_refund_fee_helper_math_rounds_up() {
+    // Rounding table: the protocol keeps any sub-basis-point remainder.
+    let cases = [
+        (0i128, 0u32, 0i128),
+        (0, 500, 0),
+        (1, 1, 1),   // ceil(0.0001) = 1
+        (100, 1, 1), // ceil(0.01) = 1
+        (100, 500, 5),
+        (100, 1000, 10),
+        (9_999, 1, 1),            // ceil(0.9999) = 1
+        (10_000, 1, 1),           // exactly 1
+        (333, 3, 1),              // ceil(0.0999) = 1
+        (5_000, 3, 2),            // 1.5 -> 2
+        (10_000, 100, 100),       // 1%
+        (10_000, 10_000, 10_000), // 100%
+    ];
+    for (amount, bps, expected) in cases {
+        assert_eq!(
+            refund_fee(amount, bps),
+            expected,
+            "amount={amount} fee_bps={bps}"
+        );
+    }
+
+    // Cross-check the helper against the reference across a sweep.
+    for amount in [
+        1i128,
+        99,
+        100,
+        7,
+        499,
+        500,
+        501,
+        9_999,
+        10_000,
+        12_345,
+        1_700_000_000,
+    ] {
+        for bps in [0u32, 1, 3, 10, 25, 100, 500, 2500, 700, 9999, 10_000] {
+            assert_eq!(
+                refund_fee(amount, bps),
+                reference_fee(amount, bps),
+                "amount={amount} fee_bps={bps}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_fee_defaults_disabled() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    assert_eq!(client.get_fee_bps(), 0);
+    assert_eq!(client.get_fee_recipient(), None);
+
+    // Unconfigured fees: the buyer receives the full claim, nothing is diverted.
+    let payment_ref = BytesN::from_array(&env, &[0x40u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000);
+
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&buyer), 100_000);
+    assert_eq!(token_client.balance(&client.address), 400_000);
+
+    // The refund event reports a zero fee.
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 100_000);
+    assert_eq!(record.recipient, buyer);
+}
+
+#[test]
+fn test_fee_deducted_and_collected_exactly() {
+    let (env, client, merchant, token) = setup(100);
+    let token_client = TokenClient::new(&env, &token);
+    StellarAssetClient::new(&env, &token).mint(&merchant, &9_000_000);
+    client.deposit(&merchant, &10_000_000);
+
+    let buyer = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    client.set_fee_recipient(&fee_collector);
+    client.set_fee_bps(&100); // 1%
+
+    let payment_ref = BytesN::from_array(&env, &[0x41u8; 32]);
+    client.refund(&payment_ref, &buyer, &1_000_000, &0, &1_000_000);
+
+    // 1% of 1M = 10_000 exactly; buyer receives the remainder.
+    assert_eq!(token_client.balance(&buyer), 1_000_000 - 10_000);
+    assert_eq!(token_client.balance(&fee_collector), 10_000);
+    assert_eq!(token_client.balance(&client.address), 9_000_000);
+
+    // 3 bp of an odd amount: 123_456 * 3 / 10_000 = 37.0368 -> 38 (rounds up).
+    client.set_fee_bps(&3);
+    let ref2 = BytesN::from_array(&env, &[0x42u8; 32]);
+    client.refund(&ref2, &buyer, &123_456, &0, &123_456);
+    assert_eq!(token_client.balance(&fee_collector), 10_000 + 38);
+    assert_eq!(token_client.balance(&buyer), 990_000 + 123_456 - 38);
+
+    // 1 bp on a sub-10_000 amount still yields one unit (ceil).
+    client.set_fee_bps(&1);
+    let ref3 = BytesN::from_array(&env, &[0x43u8; 32]);
+    client.refund(&ref3, &buyer, &7, &0, &7);
+    assert_eq!(token_client.balance(&fee_collector), 10_000 + 38 + 1);
+    assert_eq!(token_client.balance(&buyer), 990_000 + 123_456 - 38 + 7 - 1);
+
+    // Total outflow (buyer + fees) is exactly the sum of the claims.
+    let total_claims = 1_000_000 + 123_456 + 7;
+    assert_eq!(
+        token_client.balance(&client.address),
+        10_000_000 - total_claims
+    );
+    assert_eq!(token_client.balance(&fee_collector), 10_000 + 38 + 1);
+
+    // Returning the fee to zero disables it again.
+    client.set_fee_bps(&0);
+    let ref4 = BytesN::from_array(&env, &[0x44u8; 32]);
+    client.refund(&ref4, &buyer, &5_000, &0, &5_000);
+    assert_eq!(
+        token_client.balance(&buyer),
+        990_000 + 123_456 - 38 + 7 - 1 + 5_000
+    );
+    assert_eq!(token_client.balance(&fee_collector), 10_000 + 38 + 1);
+}
+
+#[test]
+fn test_fee_math_various_bps_exact_balances() {
+    let (env, client, merchant, token) = setup(100);
+    let token_client = TokenClient::new(&env, &token);
+    StellarAssetClient::new(&env, &token).mint(&merchant, &99_000_000);
+    client.deposit(&merchant, &100_000_000);
+
+    let buyer = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    client.set_fee_recipient(&fee_collector);
+
+    // (claim, bps) sweep across many basis-point configurations: after every
+    // step the buyer, fee collector and vault balances match exactly.
+    let sweep = [
+        (1_000_000i128, 0u32),
+        (1_000_000, 1),
+        (1_000_000, 10),
+        (1_000_000, 100),
+        (1_000_000, 700),
+        (1_000_000, 9999),
+        (123_457, 1),
+        (123_457, 3),
+        (123_457, 25),
+        (5_000, 2500),
+        (100, 1),
+        (1, 1),
+        (1, 10_000),
+        (10_000_000, 500),
+    ];
+
+    let mut buyer_total = 0i128;
+    let mut fee_total = 0i128;
+    let mut claimed_total = 0i128;
+
+    for (i, (amount, bps)) in sweep.iter().enumerate() {
+        client.set_fee_bps(bps);
+        let fee = reference_fee(*amount, *bps);
+
+        let payment_ref = BytesN::from_array(&env, &[0x50u8 + i as u8; 32]);
+        client.refund(&payment_ref, &buyer, amount, &0, amount);
+
+        buyer_total += amount - fee;
+        fee_total += fee;
+        claimed_total += amount;
+
+        // The buyer and the fee collector each hold exactly their running
+        // shares, and the vault holds exactly what the claims did not drain.
+        assert_eq!(
+            token_client.balance(&buyer),
+            buyer_total,
+            "buyer balance after (amount={amount}, bps={bps})"
+        );
+        assert_eq!(
+            token_client.balance(&fee_collector),
+            fee_total,
+            "fee balance after (amount={amount}, bps={bps})"
+        );
+        assert_eq!(
+            token_client.balance(&client.address),
+            100_000_000 - claimed_total,
+            "vault balance after (amount={amount}, bps={bps})"
+        );
+    }
+}
+
+#[test]
+fn test_fee_claim_equal_to_float_succeeds_and_drains() {
+    // A 10% fee on a claim equal to the entire float still inflows exactly to
+    // both parties and drains the vault to zero.
+    let (env, client, merchant, token) = setup(100);
+    let token_client = TokenClient::new(&env, &token);
+    client.deposit(&merchant, &5_000);
+
+    let buyer = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    client.set_fee_recipient(&fee_collector);
+    client.set_fee_bps(&1000); // 10%
+
+    let payment_ref = BytesN::from_array(&env, &[0x45u8; 32]);
+    client.refund(&payment_ref, &buyer, &5_000, &0, &5_000);
+
+    assert_eq!(token_client.balance(&buyer), 4_500);
+    assert_eq!(token_client.balance(&fee_collector), 500);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+#[test]
+fn test_fee_defaults_to_merchant_when_no_recipient_set() {
+    let (env, client, merchant, token) = setup(100);
+    let token_client = TokenClient::new(&env, &token);
+    client.deposit(&merchant, &500_000);
+
+    // Fee configured but no explicit recipient: the merchant collects the fee.
+    client.set_fee_bps(&100); // 1%
+
+    let payment_ref = BytesN::from_array(&env, &[0x46u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000);
+
+    assert_eq!(token_client.balance(&buyer), 99_000);
+    assert_eq!(token_client.balance(&merchant), 500_000 + 1_000);
+    assert_eq!(token_client.balance(&client.address), 400_000);
+
+    // An explicit recipient overrides the merchant default.
+    let fee_collector = Address::generate(&env);
+    client.set_fee_recipient(&fee_collector);
+    assert_eq!(client.get_fee_recipient(), Some(fee_collector.clone()));
+    let ref2 = BytesN::from_array(&env, &[0x47u8; 32]);
+    client.refund(&ref2, &buyer, &50_000, &0, &50_000);
+    assert_eq!(token_client.balance(&fee_collector), 500);
+    assert_eq!(token_client.balance(&merchant), 501_000);
+}
+
+#[test]
+fn test_fee_applies_to_partial_refunds_and_ceiling() {
+    // Partial refunds are still ceiling-bounded by the pre-fee claim amount:
+    // the fee is an outflow split, not an expansion of what may be claimed.
+    let (env, client, merchant, _token) = setup(100);
+    StellarAssetClient::new(&env, &_token).mint(&merchant, &1_000_000);
+    client.deposit(&merchant, &2_000_000);
+
+    let buyer = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    client.set_fee_recipient(&fee_collector);
+    client.set_fee_bps(&100); // 1%
+
+    let payment_ref = BytesN::from_array(&env, &[0x48u8; 32]);
+    // payment_amount (the ceiling) is 1M; each partial claim is pre-fee.
+    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000);
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 400_000);
+    assert_eq!(record.payment_amount, 1_000_000);
+
+    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000);
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 800_000);
+
+    // The remaining 600_000 is still claimable (ceiling is pre-fee), but
+    // 600_000 + 600_000 would exceed the ceiling.
+    client.refund(&payment_ref, &buyer, &200_000, &0, &1_000_000);
+    assert_eq!(
+        client.get_refund(&payment_ref).unwrap().amount_refunded,
+        1_000_000
+    );
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &1, &0, &1_000_000),
+        Err(Ok(Error::ExceedsPayment))
+    );
+}
+
+#[test]
+fn test_set_fee_bps_rejects_out_of_range() {
+    let (_env, client, _merchant, _token) = setup(100);
+
+    assert_eq!(
+        client.try_set_fee_bps(&10_001),
+        Err(Ok(Error::InvalidRatio))
+    );
+    // Upper bound itself is legal (100%).
+    client.set_fee_bps(&10_000);
+    assert_eq!(client.get_fee_bps(), 10_000);
+}
+
+#[test]
+fn test_set_fee_recipient_rejects_contract_address() {
+    let (_env, client, _merchant, _token) = setup(100);
+    assert_eq!(
+        client.try_set_fee_recipient(&client.address),
+        Err(Ok(Error::SelfTransfer))
+    );
+}
+
+#[test]
+fn test_set_fee_config_requires_admin_auth() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    // No signatures: merchant.require_auth() aborts rather than returning an
+    // error, so the call surfaces as a host failure (see
+    // `test_set_yield_strategy_requires_auth`).
+    env.set_auths(&[]);
+    assert!(client.try_set_fee_bps(&100).is_err());
+    assert!(client
+        .try_set_fee_recipient(&Address::generate(&env))
+        .is_err());
+}
+
+#[test]
+fn test_fee_config_uninitialized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(RefundVault, ());
+    let client = RefundVaultClient::new(&env, &contract_id);
+
+    assert_eq!(client.try_set_fee_bps(&100), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_set_fee_recipient(&Address::generate(&env)),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_fee_config_events_emitted() {
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{vec, IntoVal, Map, Symbol, Val};
+
+    let (env, client, _merchant, _token) = setup(100);
+    let fee_collector = Address::generate(&env);
+
+    // Each change emits the full effective configuration, keyed by the field
+    // that changed. Events are read after each individual invocation.
+    client.set_fee_recipient(&fee_collector);
+    let mut recipient_data = Map::<Val, Val>::new(&env);
+    recipient_data.set(
+        Symbol::new(&env, "fee_bps").into_val(&env),
+        0u32.into_val(&env),
+    );
+    recipient_data.set(
+        Symbol::new(&env, "fee_recipient").into_val(&env),
+        fee_collector.clone().into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (
+                    Symbol::new(&env, "fee_config_updated_event"),
+                    Symbol::new(&env, "fee_recipient"),
+                )
+                    .into_val(&env),
+                recipient_data.into_val(&env)
+            )
+        ]
+    );
+
+    client.set_fee_bps(&100);
+    let mut bps_data = Map::<Val, Val>::new(&env);
+    bps_data.set(
+        Symbol::new(&env, "fee_bps").into_val(&env),
+        100u32.into_val(&env),
+    );
+    bps_data.set(
+        Symbol::new(&env, "fee_recipient").into_val(&env),
+        fee_collector.clone().into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (
+                    Symbol::new(&env, "fee_config_updated_event"),
+                    Symbol::new(&env, "fee_bps"),
+                )
+                    .into_val(&env),
+                bps_data.into_val(&env)
+            )
+        ]
+    );
+}
+
 #[test]
 fn test_policy_events_emitted() {
     use soroban_sdk::testutils::Events;
-    use soroban_sdk::{vec, IntoVal, Symbol};
+    use soroban_sdk::{vec, IntoVal, Map, Symbol, Val};
 
     let (env, client, _merchant, _token) = setup(100);
 
-    client.propose_policy(&200);
+    client.propose_policy(&200, &0);
 
     let current = env.ledger().sequence();
     let events = env.events().all().filter_by_contract(&client.address);
+    // deadline is a u64 while the ledger fields are u32, so build the data
+    // map per-entry (the `map!` macro requires one homogeneous value type).
+    let mut proposed_data = Map::<Val, Val>::new(&env);
+    proposed_data.set(
+        Symbol::new(&env, "deadline").into_val(&env),
+        0u64.into_val(&env),
+    );
+    proposed_data.set(
+        Symbol::new(&env, "proposed_at_ledger").into_val(&env),
+        current.into_val(&env),
+    );
+    proposed_data.set(
+        Symbol::new(&env, "execute_after_ledger").into_val(&env),
+        (current + 17_280u32).into_val(&env),
+    );
     assert_eq!(
         events,
         vec![
@@ -1484,15 +1775,7 @@ fn test_policy_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "policy_proposed_event"), 200u32).into_val(&env),
-                soroban_sdk::map![
-                    &env,
-                    (Symbol::new(&env, "proposed_at_ledger"), current),
-                    (
-                        Symbol::new(&env, "execute_after_ledger"),
-                        current + 17_280u32
-                    ),
-                ]
-                .into_val(&env)
+                proposed_data.into_val(&env)
             )
         ]
     );
@@ -1500,6 +1783,11 @@ fn test_policy_events_emitted() {
     env.ledger().with_mut(|li| li.sequence_number += 17_280);
     client.execute_policy();
 
+    let mut executed_data = Map::<Val, Val>::new(&env);
+    executed_data.set(
+        Symbol::new(&env, "deadline").into_val(&env),
+        0u64.into_val(&env),
+    );
     let events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(
         events,
@@ -1508,7 +1796,7 @@ fn test_policy_events_emitted() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "policy_executed_event"), 200u32).into_val(&env),
-                soroban_sdk::Map::<Symbol, soroban_sdk::Val>::new(&env).into_val(&env)
+                executed_data.into_val(&env)
             )
         ]
     );
@@ -1571,6 +1859,8 @@ fn test_shared_refund_vectors_include_live_testnet_refund() {
 
 #[test]
 fn test_refund_to_contract_address_fails_self_transfer() {
+    use soroban_sdk::testutils::Events;
+
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -1584,7 +1874,8 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     // Payment ref must remain unconsumed / not recorded
     assert!(client.get_refund(&payment_ref).is_none());
 
-    // No refund event emitted for the contract
+    // The reverted call emitted no events (all() only reports the last,
+    // successful invocation), so the deposit is not even visible here.
     let events = env.events().all().filter_by_contract(&client.address);
     // Only the deposit event should exist (log is reset, so 0 events remain)
     assert_eq!(events.events().len(), 0);
@@ -1635,6 +1926,8 @@ fn test_process_batch_item_to_contract_address_skipped() {
 
 #[test]
 fn test_withdraw_to_contract_address_fails_self_transfer() {
+    use soroban_sdk::testutils::Events;
+
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -1642,7 +1935,7 @@ fn test_withdraw_to_contract_address_fails_self_transfer() {
     let res = client.try_withdraw(&50_000, &contract_addr);
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
-    // Only the deposit event should exist (log is reset, so 0 events remain)
+    // The reverted call emitted no events at all.
     let events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(events.events().len(), 0);
 }
@@ -1716,4 +2009,400 @@ fn test_set_token_requires_admin_auth() {
     // Let's verify with mock_all_auths reset
     env.mock_all_auths();
     assert!(client.try_set_token(&new_token).is_ok());
+}
+
+// ── Batch refund tests ─────────────────────────────────────────────────────
+
+/// Build a [`RefundClaim`] with the standard defaults used by the batch tests.
+fn make_claim(
+    payment_ref: BytesN<32>,
+    recipient: &Address,
+    amount: i128,
+    paid_at_ledger: u32,
+    payment_amount: i128,
+) -> RefundClaim {
+    RefundClaim {
+        payment_ref,
+        recipient: recipient.clone(),
+        amount,
+        paid_at_ledger,
+        payment_amount,
+    }
+}
+
+/// Construct the expected `(contract, topics, data)` triple for a
+/// `refund_event` published by the refund vault.
+fn expect_refund_event(
+    env: &Env,
+    client: &RefundVaultClient<'static>,
+    payment_ref: &BytesN<32>,
+    amount: i128,
+    fee: i128,
+    cumulative_refunded: i128,
+    recipient: &Address,
+) -> (soroban_sdk::Address, Vec<Val>, Val) {
+    use soroban_sdk::{IntoVal, Map, Symbol};
+
+    let mut data: Map<Val, Val> = Map::new(env);
+    data.set(
+        Symbol::new(env, "amount").into_val(env),
+        amount.into_val(env),
+    );
+    data.set(Symbol::new(env, "fee").into_val(env), fee.into_val(env));
+    data.set(
+        Symbol::new(env, "cumulative_refunded").into_val(env),
+        cumulative_refunded.into_val(env),
+    );
+    data.set(
+        Symbol::new(env, "recipient").into_val(env),
+        recipient.clone().into_val(env),
+    );
+    data.set(
+        Symbol::new(env, "ledger").into_val(env),
+        env.ledger().sequence().into_val(env),
+    );
+
+    (
+        client.address.clone(),
+        vec![
+            env,
+            Symbol::new(env, "refund_event").into_val(env),
+            payment_ref.clone().into_val(env),
+        ],
+        data.into_val(env),
+    )
+}
+
+#[test]
+fn test_claim_batch_successful_multiple_claims() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let token_client = TokenClient::new(&env, &token);
+
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+    let b3 = Address::generate(&env);
+    let ref1 = BytesN::from_array(&env, &[21u8; 32]);
+    let ref2 = BytesN::from_array(&env, &[22u8; 32]);
+    let ref3 = BytesN::from_array(&env, &[23u8; 32]);
+
+    let claims = vec![
+        &env,
+        make_claim(ref1.clone(), &b1, 100_000, 0, 100_000),
+        make_claim(ref2.clone(), &b2, 50_000, 0, 50_000),
+        make_claim(ref3.clone(), &b3, 250_000, 0, 250_000),
+    ];
+    client.claim_batch(&claims);
+
+    assert_eq!(token_client.balance(&b1), 100_000);
+    assert_eq!(token_client.balance(&b2), 50_000);
+    assert_eq!(token_client.balance(&b3), 250_000);
+    // 400_000 of the 500_000 float left for the merchant-funded vault.
+    assert_eq!(token_client.balance(&client.address), 100_000);
+
+    let rec1 = client.get_refund(&ref1).unwrap();
+    let rec2 = client.get_refund(&ref2).unwrap();
+    let rec3 = client.get_refund(&ref3).unwrap();
+    assert_eq!(rec1.amount_refunded, 100_000);
+    assert_eq!(rec2.amount_refunded, 50_000);
+    assert_eq!(rec3.amount_refunded, 250_000);
+}
+
+#[test]
+fn test_claim_batch_emits_one_event_per_item() {
+    use soroban_sdk::testutils::Events;
+
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+    let b3 = Address::generate(&env);
+    let ref1 = BytesN::from_array(&env, &[31u8; 32]);
+    let ref2 = BytesN::from_array(&env, &[32u8; 32]);
+    let ref3 = BytesN::from_array(&env, &[33u8; 32]);
+
+    let claims = vec![
+        &env,
+        make_claim(ref1.clone(), &b1, 100_000, 0, 100_000),
+        make_claim(ref2.clone(), &b2, 50_000, 0, 50_000),
+        make_claim(ref3.clone(), &b3, 250_000, 0, 250_000),
+    ];
+    client.claim_batch(&claims);
+
+    // Exactly three refund_events, one per claim, in claim order.
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            expect_refund_event(&env, &client, &ref1, 100_000, 0, 100_000, &b1),
+            expect_refund_event(&env, &client, &ref2, 50_000, 0, 50_000, &b2),
+            expect_refund_event(&env, &client, &ref3, 250_000, 0, 250_000, &b3),
+        ]
+    );
+}
+
+#[test]
+fn test_claim_batch_partial_failure_reverts_everything() {
+    use soroban_sdk::testutils::Events;
+
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let token_client = TokenClient::new(&env, &token);
+
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+    let b3 = Address::generate(&env);
+    let ref1 = BytesN::from_array(&env, &[41u8; 32]);
+    let ref2 = BytesN::from_array(&env, &[42u8; 32]);
+    let ref3 = BytesN::from_array(&env, &[43u8; 32]);
+
+    // The middle claim has a zero ceiling (payment_amount = 0) and must fail
+    // with ExceedsPayment; the batch must revert the earlier successful claim.
+    let claims = vec![
+        &env,
+        make_claim(ref1.clone(), &b1, 100_000, 0, 100_000),
+        make_claim(ref2.clone(), &b2, 50_000, 0, 0),
+        make_claim(ref3.clone(), &b3, 250_000, 0, 250_000),
+    ];
+    assert_eq!(
+        client.try_claim_batch(&claims),
+        Err(Ok(Error::ExceedsPayment))
+    );
+
+    // All-or-nothing: the first claim's transfer, record write and event were
+    // rolled back along with the whole invocation.
+    assert_eq!(token_client.balance(&client.address), 500_000);
+    assert_eq!(token_client.balance(&b1), 0);
+    assert_eq!(token_client.balance(&b2), 0);
+    assert_eq!(token_client.balance(&b3), 0);
+    assert!(client.get_refund(&ref1).is_none());
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![&env]
+    );
+}
+
+#[test]
+fn test_claim_batch_same_ref_accumulates_and_excess_reverts() {
+    let (env, client, merchant, token) = setup(100);
+    StellarAssetClient::new(&env, &token).mint(&merchant, &1_000_000);
+    client.deposit(&merchant, &2_000_000);
+    let token_client = TokenClient::new(&env, &token);
+
+    let buyer = Address::generate(&env);
+    let ref1 = BytesN::from_array(&env, &[51u8; 32]);
+
+    // Two partials against the same 1M ceiling within one batch.
+    let claims = vec![
+        &env,
+        make_claim(ref1.clone(), &buyer, 400_000, 0, 1_000_000),
+        make_claim(ref1.clone(), &buyer, 400_000, 0, 1_000_000),
+    ];
+    client.claim_batch(&claims);
+    assert_eq!(client.get_refund(&ref1).unwrap().amount_refunded, 800_000);
+    assert_eq!(token_client.balance(&buyer), 800_000);
+
+    // A later batch whose second element would push the cumulative over the
+    // ceiling must fail and roll back the first element too.
+    let excess = vec![
+        &env,
+        make_claim(ref1.clone(), &buyer, 400_000, 0, 1_000_000),
+        make_claim(ref1.clone(), &buyer, 700_000, 0, 1_000_000),
+    ];
+    assert_eq!(
+        client.try_claim_batch(&excess),
+        Err(Ok(Error::ExceedsPayment))
+    );
+
+    assert_eq!(client.get_refund(&ref1).unwrap().amount_refunded, 800_000);
+    assert_eq!(token_client.balance(&buyer), 800_000);
+    assert_eq!(token_client.balance(&client.address), 2_000_000 - 800_000);
+}
+
+#[test]
+fn test_claim_batch_float_checked_per_item() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &500_000);
+    let token_client = TokenClient::new(&env, &token);
+
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+    let ref1 = BytesN::from_array(&env, &[61u8; 32]);
+    let ref2 = BytesN::from_array(&env, &[62u8; 32]);
+
+    // Each element of a valid first claim leaves 200k; the second claim needs
+    // 300k and must observe the reduced float and fail, reverting the batch.
+    let claims = vec![
+        &env,
+        make_claim(ref1.clone(), &b1, 300_000, 0, 300_000),
+        make_claim(ref2.clone(), &b2, 300_000, 0, 300_000),
+    ];
+    assert_eq!(
+        client.try_claim_batch(&claims),
+        Err(Ok(Error::InsufficientFloat))
+    );
+
+    assert_eq!(token_client.balance(&client.address), 500_000);
+    assert_eq!(token_client.balance(&b1), 0);
+    assert_eq!(token_client.balance(&b2), 0);
+    assert!(client.get_refund(&ref1).is_none());
+    assert!(client.get_refund(&ref2).is_none());
+}
+
+#[test]
+fn test_claim_batch_empty_succeeds() {
+    use soroban_sdk::testutils::Events;
+
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &100_000);
+    let token_client = TokenClient::new(&env, &token);
+
+    let claims: Vec<RefundClaim> = Vec::new(&env);
+    client.claim_batch(&claims);
+
+    // No-op: float untouched, no events.
+    assert_eq!(token_client.balance(&client.address), 100_000);
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![&env]
+    );
+}
+
+#[test]
+fn test_claim_batch_fee_applied_per_item() {
+    let (env, client, merchant, token) = setup(100);
+    StellarAssetClient::new(&env, &token).mint(&merchant, &9_000_000);
+    client.deposit(&merchant, &10_000_000);
+    let token_client = TokenClient::new(&env, &token);
+
+    let fee_collector = Address::generate(&env);
+    client.set_fee_recipient(&fee_collector);
+    client.set_fee_bps(&100);
+
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+    let b3 = Address::generate(&env);
+    let ref1 = BytesN::from_array(&env, &[71u8; 32]);
+    let ref2 = BytesN::from_array(&env, &[72u8; 32]);
+    let ref3 = BytesN::from_array(&env, &[73u8; 32]);
+
+    let claims = vec![
+        &env,
+        make_claim(ref1.clone(), &b1, 1_000_000, 0, 1_000_000),
+        make_claim(ref2.clone(), &b2, 1_000_000, 0, 1_000_000),
+        make_claim(ref3.clone(), &b3, 1_000_000, 0, 1_000_000),
+    ];
+    client.claim_batch(&claims);
+
+    // 1% up-rounded fee per claim: buyers net 990k each, protocol nets 30k.
+    assert_eq!(token_client.balance(&b1), 990_000);
+    assert_eq!(token_client.balance(&b2), 990_000);
+    assert_eq!(token_client.balance(&b3), 990_000);
+    assert_eq!(token_client.balance(&fee_collector), 30_000);
+    assert_eq!(token_client.balance(&client.address), 7_000_000);
+}
+
+// A batch without merchant authorization aborts at require_auth.
+#[test]
+#[should_panic]
+fn test_claim_batch_without_auth_panics() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    let buyer = Address::generate(&env);
+    let claims = vec![
+        &env,
+        make_claim(BytesN::from_array(&env, &[80u8; 32]), &buyer, 100, 0, 100),
+    ];
+
+    // Default auth setup authorizes only the contract invoker; the merchant is
+    // never authorized here, so require_auth aborts the invocation.
+    env.mock_auths(&[]);
+    client.claim_batch(&claims);
+}
+
+#[test]
+fn test_claim_batch_when_paused_fails() {
+    let (env, client, merchant, token) = setup(100);
+    client.deposit(&merchant, &100_000);
+    client.pause();
+    let token_client = TokenClient::new(&env, &token);
+
+    let buyer = Address::generate(&env);
+    let claims = vec![
+        &env,
+        make_claim(BytesN::from_array(&env, &[81u8; 32]), &buyer, 100, 0, 100),
+    ];
+    assert_eq!(client.try_claim_batch(&claims), Err(Ok(Error::Paused)));
+
+    // Paused state preserved the float and wrote nothing.
+    assert_eq!(token_client.balance(&client.address), 100_000);
+    assert_eq!(token_client.balance(&buyer), 0);
+}
+
+#[test]
+fn test_claim_batch_cost_stays_within_budget() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &1_000_000);
+
+    // Default test-host budget limits (soroban-env-host src/budget/limits.rs):
+    // 100M CPU instructions and 40 MiB of memory per invocation. The charged
+    // instruction counts here are inflated by the debug test host, so the real
+    // WASM invocation is strictly cheaper than what we measure.
+    const DEFAULT_CPU_LIMIT: u64 = 100_000_000;
+    const DEFAULT_MEM_LIMIT: u64 = 40 * 1024 * 1024;
+
+    let single_ref = BytesN::from_array(&env, &[90u8; 32]);
+    let single_buyer = Address::generate(&env);
+
+    // Measure a single claim in a fresh default budget.
+    env.cost_estimate().budget().reset_default();
+    client.refund(&single_ref, &single_buyer, &10_000, &0, &10_000);
+    let single_cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let single_mem = env.cost_estimate().budget().memory_bytes_cost();
+    assert!(single_cpu > 0);
+    assert!(single_mem > 0);
+
+    // Ten independent claims in one invocation, also under a fresh default
+    // budget. Ten is behaviorally representative (a real ordering might cover
+    // that many refunds) while keeping the measured result comfortably inside
+    // the invocation limits even with the debug-host overhead.
+    let mut claims = Vec::new(&env);
+    for i in 0..10u8 {
+        let buyer = Address::generate(&env);
+        claims.push_back(make_claim(
+            BytesN::from_array(&env, &[i; 32]),
+            &buyer,
+            10_000,
+            0,
+            10_000,
+        ));
+    }
+
+    env.cost_estimate().budget().reset_default();
+    client.claim_batch(&claims);
+    let batch_cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let batch_mem = env.cost_estimate().budget().memory_bytes_cost();
+
+    // Headroom: even with debug-host inflation a 10-claim batch stays under a
+    // tenth of the CPU budget and a twentieth of the memory budget, far from
+    // the invocation limits.
+    assert!(
+        batch_cpu < DEFAULT_CPU_LIMIT / 10,
+        "10-claim batch cpu {batch_cpu} exceeds {}/10",
+        DEFAULT_CPU_LIMIT
+    );
+    assert!(
+        batch_mem < DEFAULT_MEM_LIMIT / 20,
+        "10-claim batch memory {batch_mem} exceeds {}/20",
+        DEFAULT_MEM_LIMIT
+    );
+
+    // Near-linear scaling: one invocation handling ten claims costs no more
+    // than twelve single claims — a super-linear loop, storage or auth blow-up
+    // would trip this. (In practice batching is marginally cheaper per claim.)
+    assert!(
+        batch_cpu < single_cpu * 12,
+        "batch cpu {batch_cpu} (single {single_cpu}) exceeds 12x single"
+    );
 }

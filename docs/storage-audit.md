@@ -25,6 +25,9 @@ Soroban provides three storage classes:
 | `Admin` | Instance | `Address` (Merchant) | Small | Required for authentication of merchant operations (`deposit`, `refund`, `withdraw`, `pause`). |
 | `Token` | Instance | `Address` (SEP-41 token contract; the USDC SAC by default) | Small | The underlying asset contract address. The vault is token-agnostic — any SEP-41 token is accepted — but each vault instance is bound to exactly one token. Crucial for token transfers. |
 | `RefundWindow` | Instance | `u32` (Ledgers) | Small | Global policy parameter determining refund eligibility. |
+| `RefundDeadline` | Instance | `u64` (Unix seconds) | Small | Wall-clock deadline after which refund claims are rejected; `0` = no deadline. Set together with the window by `propose_policy`/`execute_policy` and consulted at claim time in `refund`. |
+| `FeeBps` | Instance | `u32` | Small | Refund fee rate in basis points (`0` = no fee, max `10_000`); consulted at claim time by `refund` and updated by `set_fee_bps`. |
+| `FeeRecipient` | Instance | `Address` (Optional) | Small | Explicit fee collector; when unset, `refund` pays the fee to the merchant (admin). Set by `set_fee_recipient`. |
 | `IsPaused` | Instance | `bool` | Small | Emergency halt flag. Must be immediately available at all times. |
 | `Metadata` | Instance | Reserved | Variable | Reserved for future contract configuration or metadata. |
 | `RefundMax` | Instance | `i128` | Small | Reserved configuration for maximum allowed refund limits. |
