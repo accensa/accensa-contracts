@@ -567,6 +567,8 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         extend_to,
     );
 
+    let nonce = increment_nonce(env);
+
     RefundEvent {
         payment_ref: claim.payment_ref.clone(),
         amount: claim.amount,
@@ -574,6 +576,7 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         cumulative_refunded,
         recipient: record.recipient,
         ledger: record.ledger,
+        nonce,
     }
     .publish(env);
 
