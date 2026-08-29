@@ -29,7 +29,9 @@ pub enum Error {
     NotInitialized = 2,
     /// The caller is not the authorized merchant/admin.
     Unauthorized = 3,
-    /// The full refund ceiling for a payment has already been reached.
+    /// Legacy single-refund marker (pre-#99). Retained for interface
+    /// stability; the vault reports `ExceedsPayment` for over-ceiling and
+    /// legacy records since cumulative partial refunds.
     AlreadyRefunded = 4,
     /// The refund window (measured from the original payment) has expired.
     WindowExpired = 5,
@@ -41,10 +43,6 @@ pub enum Error {
     Paused = 8,
     /// No refund record exists for the given payment ref.
     RefundNotFound = 9,
-    /// A metadata payload exceeded the allowed length.
-    MetadataTooLong = 10,
-    /// A requested amount exceeded the configured maximum.
-    AmountExceedsMax = 11,
     /// No admin transfer is pending.
     NoPendingTransfer = 12,
     /// No yield strategy has been configured.
@@ -68,6 +66,8 @@ pub enum Error {
     SelfTransfer = 21,
     /// An attempt to change the vault's token address was made while the vault holds a non-zero token balance.
     FloatNotEmpty = 22,
+    /// A refund claim was submitted after the policy deadline timestamp passed.
+    RefundExpired = 23,
     /// The requested batch does not exist (or was pruned).
     BatchNotFound = 100,
     /// A batch larger than `MAX_BATCH_SIZE` was submitted.

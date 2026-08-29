@@ -128,6 +128,9 @@
               "args": [
                 {
                   "u32": 200
+                },
+                {
+                  "u64": "0"
                 }
               ]
             }
@@ -305,6 +308,14 @@
                       },
                       "val": {
                         "map": [
+                          {
+                            "key": {
+                              "symbol": "deadline"
+                            },
+                            "val": {
+                              "u64": "0"
+                            }
+                          },
                           {
                             "key": {
                               "symbol": "proposed_at_ledger"
@@ -586,6 +597,14 @@
             ],
             "data": {
               "map": [
+                {
+                  "key": {
+                    "symbol": "deadline"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                },
                 {
                   "key": {
                     "symbol": "execute_after_ledger"
