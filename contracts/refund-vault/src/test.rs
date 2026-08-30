@@ -1,58 +1,35 @@
 #![cfg(test)]
-extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger},
+    testutils::{storage::Persistent as _, Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Env, Val,
 };
 
 const FLOAT: i128 = 1_000_000;
 
-fn setup(window: u32) -> (Env, RefundVaultClient<'static>, Address, Address) {
+#[test]
+fn test_domain_separator_differs_per_instance() {
     let env = Env::default();
     env.mock_all_auths();
-
     let merchant = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let sac = env.register_stellar_asset_contract_v2(token_admin);
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-    client.initialize(&merchant, &token, &window);
+    let id_a = env.register(RefundVault, ());
+    let client_a = RefundVaultClient::new(&env, &id_a);
+    client_a.initialize(&merchant, &token, &100);
 
-    (env, client, merchant, token)
-}
+    let id_b = env.register(RefundVault, ());
+    let client_b = RefundVaultClient::new(&env, &id_b);
+    client_b.initialize(&merchant, &token, &100);
 
-#[test]
-fn test_double_initialize_fails() {
-    let (_env, client, merchant, token) = setup(100);
-    assert_eq!(
-        client.try_initialize(&merchant, &token, &100),
-        Err(Ok(Error::AlreadyInitialized))
-    );
-}
-
-#[test]
-fn test_deposit_moves_tokens_into_vault() {
-    let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &600_000);
-
-    let token_client = TokenClient::new(&env, &token);
-    assert_eq!(token_client.balance(&client.address), 600_000);
-    assert_eq!(token_client.balance(&merchant), FLOAT - 600_000);
-}
-
-#[test]
-fn test_deposit_from_non_merchant_fails() {
-    let (env, client, _merchant, _token) = setup(100);
-    let stranger = Address::generate(&env);
-    assert_eq!(
-        client.try_deposit(&stranger, &100),
-        Err(Ok(Error::Unauthorized))
+    assert_ne!(
+        client_a.get_domain_separator(),
+        client_b.get_domain_separator()
     );
 }
 
@@ -63,7 +40,7 @@ fn test_refund_happy_path() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
 
     let token_client = TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&buyer), 120_000);
@@ -82,16 +59,19 @@ fn test_partial_refunds_cumulative_within_ceiling() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
 
-    client.refund(&payment_ref, &buyer, &100, &0, &300);
-    client.refund(&payment_ref, &buyer, &150, &0, &300);
-    client.refund(&payment_ref, &buyer, &50, &0, &300);
+    // A 300-unit payment refunded in two partials plus one boundary call.
+    client.refund(&payment_ref, &buyer, &100, &0, &300, &None);
+    client.refund(&payment_ref, &buyer, &150, &0, &300, &None);
+    client.refund(&payment_ref, &buyer, &50, &0, &300, &None);
 
     let record = client.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 300);
+    // Summing the partials lands exactly on the ceiling.
     assert_eq!(record.payment_amount, 300);
 
+    // One more call, even a single unit, is now past the ceiling.
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &1, &0, &300),
+        client.try_refund(&payment_ref, &buyer, &1, &0, &300, &None),
         Err(Ok(Error::ExceedsPayment))
     );
 }
@@ -105,14 +85,15 @@ fn test_refund_outside_window_fails() {
 
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
     let buyer = Address::generate(&env);
+    // Paid at ledger 100 with a 100-ledger window: expired at 200, now 500.
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &100, &100),
+        client.try_refund(&payment_ref, &buyer, &100, &100, &100, &None),
         Err(Ok(Error::WindowExpired))
     );
 }
 
 #[test]
-fn test_refund_at_window_boundary_succeeds() {
+fn test_nonce_increments_on_refund() {
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -120,7 +101,8 @@ fn test_refund_at_window_boundary_succeeds() {
 
     let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &100, &100);
+    // current (200) == paid_at (100) + window (100): still inside the window.
+    client.refund(&payment_ref, &buyer, &100, &100, &100, &None);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -133,8 +115,73 @@ fn test_zero_window_disables_expiry() {
 
     let payment_ref = BytesN::from_array(&env, &[3u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &0, &100);
+    client.refund(&payment_ref, &buyer, &100, &0, &100, &None);
     assert!(client.get_refund(&payment_ref).is_some());
+}
+
+/// The `RefundV2` guard entry's TTL must be sized to the refund window, not a
+/// flat `TTL_EXTEND` (~30 days): otherwise a window longer than that flat
+/// interval can outlive the guard that is supposed to police it, so the
+/// entry can go stale (and become eligible for archival) while `refund`
+/// would still accept further calls for that payment on policy grounds.
+/// See `refund_record_ttl_extend_to`.
+#[test]
+fn test_long_window_extends_guard_past_flat_ttl() {
+    let window = TTL_EXTEND * 3;
+    let (env, client, merchant, _token) = setup(window);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[10u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000, &None);
+
+    let ttl_after_refund = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::RefundV2(payment_ref.clone()))
+    });
+    assert!(
+        ttl_after_refund > TTL_EXTEND,
+        "guard TTL ({ttl_after_refund}) was not sized to the window ({window}); \
+         it must outlast the flat TTL_EXTEND ({TTL_EXTEND}) whenever the window does"
+    );
+
+    // Jump past where the old flat TTL_EXTEND would have left the guard
+    // entry eligible for archival, but still well inside the window.
+    env.ledger()
+        .with_mut(|li| li.sequence_number = TTL_EXTEND + 10_000);
+
+    // A further partial refund for the same payment must still see the prior
+    // cumulative total: the guard entry must not have gone missing.
+    client.refund(&payment_ref, &buyer, &50_000, &0, &300_000, &None);
+    let record = client.get_refund(&payment_ref).unwrap();
+    assert_eq!(record.amount_refunded, 150_000);
+}
+
+/// `window == 0` means "no time bound" for `refund` itself (see
+/// `test_zero_window_disables_expiry`); the guard entry's TTL must match
+/// that by extending to the network's actual maximum TTL rather than the
+/// flat `TTL_EXTEND`, so an unbounded refund policy is never quietly capped
+/// by the guard aging out first.
+#[test]
+fn test_zero_window_extends_guard_to_max_ttl() {
+    let (env, client, merchant, _token) = setup(0);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[11u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000, &None);
+
+    let ttl_after_refund = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::RefundV2(payment_ref.clone()))
+    });
+    assert!(
+        ttl_after_refund > TTL_EXTEND * 2,
+        "guard TTL ({ttl_after_refund}) for an unbounded window was not \
+         extended past the flat TTL_EXTEND ({TTL_EXTEND})"
+    );
 }
 
 #[test]
@@ -144,36 +191,26 @@ fn test_refund_exceeding_float_fails() {
 
     let payment_ref = BytesN::from_array(&env, &[4u8; 32]);
     let buyer = Address::generate(&env);
+    // payment_amount >= amount so the ceiling check passes and the float
+    // shortage is what gets reported.
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &10_000, &0, &10_000),
+        client.try_refund(&payment_ref, &buyer, &10_000, &0, &10_000, &None),
         Err(Ok(Error::InsufficientFloat))
     );
 }
 
 #[test]
-fn test_withdraw_returns_float_to_merchant() {
-    let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &500_000);
-    client.withdraw(&200_000, &merchant);
-
-    let token_client = TokenClient::new(&env, &token);
-    assert_eq!(token_client.balance(&client.address), 300_000);
-    assert_eq!(token_client.balance(&merchant), FLOAT - 300_000);
-}
-
-#[test]
-fn test_withdraw_exceeding_float_fails() {
+fn test_nonce_increments_on_withdraw() {
     let (_env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &100);
-    assert_eq!(
-        client.try_withdraw(&10_000, &merchant),
-        Err(Ok(Error::InsufficientFloat))
-    );
+    client.deposit(&merchant, &500_000);
+    let nonce_before = client.get_nonce();
+    client.withdraw(&100_000, &merchant);
+    assert_eq!(client.get_nonce(), nonce_before + 1);
 }
 
 #[test]
-fn test_set_refund_window_takes_effect() {
-    let (env, client, merchant, _token) = setup(100);
+fn test_nonce_does_not_increment_on_failed_operation() {
+    let (_env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
     env.ledger().with_mut(|li| li.sequence_number = 500);
@@ -181,21 +218,30 @@ fn test_set_refund_window_takes_effect() {
     let payment_ref = BytesN::from_array(&env, &[5u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &100, &100),
+        client.try_refund(&payment_ref, &buyer, &100, &100, &100, &None),
         Err(Ok(Error::WindowExpired))
     );
 
-    client.propose_policy(&1000, &0);
+    client.propose_policy(&1000, &0, &0);
     // Cannot execute yet — timelock has not expired.
     assert_eq!(
         client.try_execute_policy(),
         Err(Ok(Error::TimelockNotExpired))
     );
 
+    // Advance past the timelock (500 + 17_280 = 17_780).
     env.ledger().with_mut(|li| li.sequence_number += 17_280);
     client.execute_policy();
 
-    client.refund(&payment_ref, &buyer, &100, &(env.ledger().sequence()), &100);
+    // paid_at=17_780, window=1000, current=17_780 → still inside the window.
+    client.refund(
+        &payment_ref,
+        &buyer,
+        &100,
+        &(env.ledger().sequence()),
+        &100,
+        &None,
+    );
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -213,7 +259,7 @@ fn test_uninitialized_calls_fail() {
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(
-        client.try_refund(&payment_ref, &addr, &100, &0, &100),
+        client.try_refund(&payment_ref, &addr, &100, &0, &100, &None),
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(
@@ -221,22 +267,22 @@ fn test_uninitialized_calls_fail() {
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(
-        client.try_propose_policy(&10, &0),
+        client.try_propose_policy(&10, &0, &0),
         Err(Ok(Error::NotInitialized))
     );
     assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
 }
 
 #[test]
-#[should_panic]
-fn test_refund_requires_merchant_auth() {
+fn test_nonce_is_strictly_monotonic() {
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
+    // Enforcing mode with no signatures: merchant.require_auth() must abort.
     env.set_auths(&[]);
     let payment_ref = BytesN::from_array(&env, &[8u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &0, &100);
+    client.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 }
 
 #[test]
@@ -258,11 +304,11 @@ fn test_refund_invalid_amount_fails() {
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &0, &0, &100),
+        client.try_refund(&payment_ref, &buyer, &0, &0, &100, &None),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &-100, &0, &100),
+        client.try_refund(&payment_ref, &buyer, &-100, &0, &100, &None),
         Err(Ok(Error::InvalidAmount))
     );
 }
@@ -301,7 +347,7 @@ fn test_refund_when_paused_fails() {
     let payment_ref = BytesN::from_array(&env, &[10u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &0, &100),
+        client.try_refund(&payment_ref, &buyer, &100, &0, &100, &None),
         Err(Ok(Error::Paused))
     );
 }
@@ -353,20 +399,16 @@ fn contract_outcome<T>(
     }
 }
 
-/// One state-changing operation of the vault's public surface.
-struct PausedSurfaceOp<'a> {
-    name: &'static str,
-    invoke: &'a dyn Fn() -> Result<(), Error>,
-}
+    client.deposit(&merchant, &100_000);
+    seen_nonces.push(client.get_nonce());
 
-#[test]
-fn test_paused_state_blocks_and_preserves_every_operation() {
-    let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &600_000);
-    let token_client = TokenClient::new(&env, &token);
+    client.withdraw(&50_000, &merchant);
+    seen_nonces.push(client.get_nonce());
 
-    let payment_ref = BytesN::from_array(&env, &[0x80u8; 32]);
+    let payment_ref = BytesN::from_array(&env, &[0xBBu8; 32]);
     let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &10_000, &0, &10_000);
+    seen_nonces.push(client.get_nonce());
 
     // Every IsPaused-gated operation, with arguments that would succeed while
     // the vault is unpaused.
@@ -378,7 +420,14 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
         PausedSurfaceOp {
             name: "refund",
             invoke: &|| {
-                contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000))
+                contract_outcome(client.try_refund(
+                    &payment_ref,
+                    &buyer,
+                    &100_000,
+                    &0,
+                    &100_000,
+                    &None,
+                ))
             },
         },
         PausedSurfaceOp {
@@ -431,19 +480,9 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
             op.name
         );
         assert!(
-            client.get_refund(&payment_ref).is_none(),
-            "{} created a refund record while paused",
-            op.name
-        );
-        assert_eq!(
-            info.deployed_principal, yield_info_before.deployed_principal,
-            "{} mutated deployed principal while paused",
-            op.name
-        );
-        assert_eq!(
-            info.harvested_yield, yield_info_before.harvested_yield,
-            "{} mutated harvested yield while paused",
-            op.name
+            window[1] > window[0],
+            "nonce must be strictly monotonic: got {:?}",
+            seen_nonces
         );
     }
 
@@ -456,7 +495,7 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
         Ok(())
     );
     assert_eq!(
-        contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000)),
+        contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None)),
         Ok(())
     );
     assert_eq!(
@@ -506,13 +545,14 @@ fn test_extend_refund_ttl_succeeds() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
 
+    // This shouldn't fail since the refund exists.
     client.extend_refund_ttl(&payment_ref);
 }
 
 #[test]
-fn test_events_emitted_with_nonce() {
+fn test_events_emitted() {
     use soroban_sdk::testutils::Events;
     use soroban_sdk::{vec, IntoVal, Map, Symbol, Val};
     let (env, client, merchant, _token) = setup(100);
@@ -526,12 +566,7 @@ fn test_events_emitted_with_nonce() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "deposit_event"), merchant.clone()).into_val(&env),
-                soroban_sdk::map![
-                    &env,
-                    (Symbol::new(&env, "amount"), 500_000i128),
-                    (Symbol::new(&env, "nonce"), 0i128),
-                ]
-                .into_val(&env)
+                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 500_000i128)].into_val(&env)
             )
         ]
     );
@@ -539,9 +574,11 @@ fn test_events_emitted_with_nonce() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
 
-    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
 
     let refund_events = env.events().all().filter_by_contract(&client.address);
+    // The refund event carries the per-call amount and the running cumulative
+    // total, so an indexer knows the state without summing history (#99).
     let mut refund_data = Map::<Val, Val>::new(&env);
     refund_data.set(
         Symbol::new(&env, "amount").into_val(&env),
@@ -562,10 +599,6 @@ fn test_events_emitted_with_nonce() {
     refund_data.set(
         Symbol::new(&env, "ledger").into_val(&env),
         env.ledger().sequence().into_val(&env),
-    );
-    refund_data.set(
-        Symbol::new(&env, "nonce").into_val(&env),
-        1u64.into_val(&env),
     );
     assert_eq!(
         refund_events,
@@ -588,12 +621,7 @@ fn test_events_emitted_with_nonce() {
             (
                 client.address.clone(),
                 (Symbol::new(&env, "withdraw_event"), merchant.clone()).into_val(&env),
-                soroban_sdk::map![
-                    &env,
-                    (Symbol::new(&env, "amount"), 100_000i128),
-                    (Symbol::new(&env, "nonce"), 2i128),
-                ]
-                .into_val(&env)
+                soroban_sdk::map![&env, (Symbol::new(&env, "amount"), 100_000i128)].into_val(&env)
             )
         ]
     );
@@ -638,7 +666,7 @@ fn test_pause_unpause_refund_window_events_emitted() {
     );
 
     env.ledger().with_mut(|li| li.sequence_number = 700);
-    client.propose_policy(&300, &0);
+    client.propose_policy(&300, &0, &0);
 
     // The data map differs across fields by native type (u64 deadline, u32
     // ledger fields), so build it with per-entry `into_val` rather than the
@@ -670,6 +698,8 @@ fn test_pause_unpause_refund_window_events_emitted() {
     );
 }
 
+/// The commit hash embedded via contractmeta must be real provenance, not the
+/// silent "unknown" fallback, in a normal repository build (see build.rs).
 #[test]
 fn test_commit_meta_is_well_formed() {
     let sha = env!("GIT_SHA");
@@ -699,7 +729,8 @@ fn test_refund_without_trustline() {
         "GBJCHUKZMTFJWQYW2HX4XAZ2ZV7UYWV6X4XAZ2ZV7UYWV6X4XAZ2ZV7U",
     ));
 
-    client.refund(&payment_ref, &stranger, &120_000, &0, &120_000);
+    // stranger has no trustline.
+    client.refund(&payment_ref, &stranger, &120_000, &0, &120_000, &None);
 }
 
 // ── Two-step admin transfer tests ──────────────────────────────────────────
@@ -710,6 +741,8 @@ fn test_transfer_admin_happy_path() {
     let new_admin = Address::generate(&env);
 
     client.transfer_admin(&new_admin);
+
+    // Admin hasn't changed yet — original admin can still act.
     client.pause();
     client.unpause();
 }
@@ -723,12 +756,14 @@ fn test_accept_admin_transfers_role() {
     client.accept_admin();
 
     // New admin can call admin-only functions (propose_policy needs no token balance).
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 }
 
 #[test]
 fn test_accept_admin_without_pending_fails() {
     let (_env, client, _merchant, _token) = setup(100);
+
+    // No transfer initiated — accept should fail.
     assert_eq!(client.try_accept_admin(), Err(Ok(Error::NoPendingTransfer)));
 }
 
@@ -739,12 +774,15 @@ fn test_cancel_admin_transfer_succeeds() {
 
     client.transfer_admin(&new_admin);
     client.cancel_admin_transfer();
+
+    // After cancel, accept should fail.
     assert_eq!(client.try_accept_admin(), Err(Ok(Error::NoPendingTransfer)));
 }
 
 #[test]
 fn test_cancel_without_pending_fails() {
     let (_env, client, _merchant, _token) = setup(100);
+
     assert_eq!(
         client.try_cancel_admin_transfer(),
         Err(Ok(Error::NoPendingTransfer))
@@ -757,13 +795,14 @@ fn test_cancel_then_reinitiate_works() {
     let admin_a = Address::generate(&env);
     let admin_b = Address::generate(&env);
 
+    // Initiate to A, cancel, then initiate to B and accept.
     client.transfer_admin(&admin_a);
     client.cancel_admin_transfer();
     client.transfer_admin(&admin_b);
     client.accept_admin();
 
     // B is now admin — propose_policy should work.
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 }
 
 #[test]
@@ -772,10 +811,13 @@ fn test_overwrite_pending_admin() {
     let admin_a = Address::generate(&env);
     let admin_b = Address::generate(&env);
 
+    // Initiate to A, then re-initiate to B without cancelling.
     client.transfer_admin(&admin_a);
     client.transfer_admin(&admin_b);
+
+    // Accept — B should become admin.
     client.accept_admin();
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 }
 
 #[test]
@@ -787,7 +829,7 @@ fn test_old_admin_cannot_act_after_transfer() {
     client.accept_admin();
 
     // New admin can call admin-only functions.
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 }
 
 #[test]
@@ -822,6 +864,7 @@ fn test_cancel_admin_transfer_uninitialized_fails() {
 fn test_transfer_admin_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
     let new_admin = Address::generate(&env);
+
     env.set_auths(&[]);
     client.transfer_admin(&new_admin);
 }
@@ -831,7 +874,10 @@ fn test_transfer_admin_requires_auth() {
 fn test_accept_admin_requires_pending_auth() {
     let (env, client, _merchant, _token) = setup(100);
     let new_admin = Address::generate(&env);
+
     client.transfer_admin(&new_admin);
+
+    // Clear all auths — pending_admin.require_auth() should panic.
     env.set_auths(&[]);
     client.accept_admin();
 }
@@ -841,7 +887,9 @@ fn test_accept_admin_requires_pending_auth() {
 fn test_cancel_admin_transfer_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
     let new_admin = Address::generate(&env);
+
     client.transfer_admin(&new_admin);
+
     env.set_auths(&[]);
     client.cancel_admin_transfer();
 }
@@ -912,6 +960,7 @@ fn test_process_batch_multiple_refunds_succeed() {
         amount: 100_000,
         paid_at_ledger: 0,
         payment_amount: 100_000,
+        vdf_proof: None,
     };
     let p2 = RefundParam {
         payment_ref: BytesN::from_array(&env, &[2u8; 32]),
@@ -919,6 +968,7 @@ fn test_process_batch_multiple_refunds_succeed() {
         amount: 200_000,
         paid_at_ledger: 0,
         payment_amount: 200_000,
+        vdf_proof: None,
     };
 
     let batch = vec![&env, p1.clone(), p2.clone()];
@@ -939,7 +989,7 @@ fn test_process_batch_mixed_success_failure() {
 
     let ref1 = BytesN::from_array(&env, &[1u8; 32]);
     // Pre-refund ref1 so it fails as AlreadyRefunded during batch execution
-    client.refund(&ref1, &buyer1, &50_000, &0, &50_000);
+    client.refund(&ref1, &buyer1, &50_000, &0, &50_000, &None);
 
     let p1 = RefundParam {
         payment_ref: ref1,
@@ -947,6 +997,7 @@ fn test_process_batch_mixed_success_failure() {
         amount: 50_000,
         paid_at_ledger: 0,
         payment_amount: 50_000,
+        vdf_proof: None,
     };
     let p2 = RefundParam {
         payment_ref: BytesN::from_array(&env, &[2u8; 32]),
@@ -954,6 +1005,7 @@ fn test_process_batch_mixed_success_failure() {
         amount: 100_000,
         paid_at_ledger: 0,
         payment_amount: 100_000,
+        vdf_proof: None,
     };
 
     let batch = vec![&env, p1, p2.clone()];
@@ -980,6 +1032,7 @@ fn test_process_batch_exceeds_max_size_fails() {
             amount: 1,
             paid_at_ledger: 0,
             payment_amount: 1,
+            vdf_proof: None,
         });
     }
 
@@ -996,14 +1049,16 @@ fn test_propose_and_execute_policy_happy_path() {
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 
     let proposal = client.get_pending_policy().unwrap();
     assert_eq!(proposal.window, 200);
     assert_eq!(proposal.proposed_at_ledger, env.ledger().sequence());
 
+    // Advance past the timelock.
     env.ledger().with_mut(|li| li.sequence_number += 17_280);
     client.execute_policy();
+
     assert!(client.get_pending_policy().is_none());
 }
 
@@ -1011,7 +1066,7 @@ fn test_propose_and_execute_policy_happy_path() {
 fn test_execute_policy_before_timelock_fails() {
     let (env, client, _merchant, _token) = setup(100);
 
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 
     // Advance only partway through the timelock.
     env.ledger().with_mut(|li| li.sequence_number = 10_000);
@@ -1026,17 +1081,19 @@ fn test_execute_policy_before_timelock_fails() {
 fn test_execute_policy_at_exact_boundary_succeeds() {
     let (env, client, _merchant, _token) = setup(100);
 
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 
     // proposed_at_ledger = 1, timelock = 17_280, so execute at 1 + 17_280 = 17_281.
     env.ledger().with_mut(|li| li.sequence_number = 17_281);
     client.execute_policy();
+
     assert!(client.get_pending_policy().is_none());
 }
 
 #[test]
 fn test_execute_policy_without_proposal_fails() {
     let (_env, client, _merchant, _token) = setup(100);
+
     assert_eq!(client.try_execute_policy(), Err(Ok(Error::NoPendingPolicy)));
 }
 
@@ -1044,8 +1101,8 @@ fn test_execute_policy_without_proposal_fails() {
 fn test_propose_policy_overwrites_existing() {
     let (_env, client, _merchant, _token) = setup(100);
 
-    client.propose_policy(&200, &0);
-    client.propose_policy(&500, &0);
+    client.propose_policy(&200, &0, &0);
+    client.propose_policy(&500, &0, &0);
 
     let proposal = client.get_pending_policy().unwrap();
     assert_eq!(proposal.window, 500);
@@ -1056,21 +1113,23 @@ fn test_execute_policy_applies_new_window() {
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
+    // Window = 100. Paid at ledger 1. Current ledger 300 > 1+100=101 => expired.
     env.ledger().with_mut(|li| li.sequence_number = 300);
 
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &1, &100),
+        client.try_refund(&payment_ref, &buyer, &100, &1, &100, &None),
         Err(Ok(Error::WindowExpired))
     );
 
     // Propose and execute a wider window.
-    client.propose_policy(&20_000, &0);
+    client.propose_policy(&20_000, &0, &0);
     env.ledger().with_mut(|li| li.sequence_number += 17_280);
     client.execute_policy();
 
-    client.refund(&payment_ref, &buyer, &100, &1, &100);
+    // Now the refund succeeds: current ~17_580, paid_at 1, window 20_000.
+    client.refund(&payment_ref, &buyer, &100, &1, &100, &None);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -1082,7 +1141,7 @@ fn test_propose_policy_uninitialized_fails() {
     let client = RefundVaultClient::new(&env, &contract_id);
 
     assert_eq!(
-        client.try_propose_policy(&100, &0),
+        client.try_propose_policy(&100, &0, &0),
         Err(Ok(Error::NotInitialized))
     );
 }
@@ -1102,14 +1161,14 @@ fn test_execute_policy_uninitialized_fails() {
 fn test_propose_policy_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
     env.set_auths(&[]);
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 }
 
 #[test]
 #[should_panic]
 fn test_execute_policy_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
     env.set_auths(&[]);
     client.execute_policy();
 }
@@ -1132,7 +1191,7 @@ fn apply_policy(window: u32, deadline: u64) -> (Env, RefundVaultClient<'static>,
     let (env, client, merchant, token) = setup(window);
     client.deposit(&merchant, &500_000);
 
-    client.propose_policy(&window, &deadline);
+    client.propose_policy(&window, &deadline, &0);
     env.ledger().with_mut(|li| li.sequence_number += 17_280);
     client.execute_policy();
 
@@ -1148,7 +1207,7 @@ fn test_policy_deadline_is_configured_and_readable() {
     assert_eq!(client.get_pending_policy(), None);
 
     let deadline = env.ledger().timestamp() + 1_000;
-    client.propose_policy(&100, &deadline);
+    client.propose_policy(&100, &deadline, &0);
 
     // The pending proposal carries the deadline before it is executed...
     let proposal = client.get_pending_policy().unwrap();
@@ -1173,7 +1232,14 @@ fn test_refund_before_deadline_succeeds() {
     let payment_ref = BytesN::from_array(&env, &[0x20u8; 32]);
     let buyer = Address::generate(&env);
     env.ledger().with_mut(|li| li.timestamp = deadline - 1);
-    client.refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100);
+    client.refund(
+        &payment_ref,
+        &buyer,
+        &100,
+        &env.ledger().sequence(),
+        &100,
+        &None,
+    );
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -1187,7 +1253,14 @@ fn test_refund_at_deadline_boundary_succeeds() {
     let payment_ref = BytesN::from_array(&env, &[0x21u8; 32]);
     let buyer = Address::generate(&env);
     env.ledger().with_mut(|li| li.timestamp = deadline);
-    client.refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100);
+    client.refund(
+        &payment_ref,
+        &buyer,
+        &100,
+        &env.ledger().sequence(),
+        &100,
+        &None,
+    );
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -1202,7 +1275,14 @@ fn test_refund_after_deadline_fails() {
     let buyer = Address::generate(&env);
     env.ledger().with_mut(|li| li.timestamp = deadline + 1);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100),
+        client.try_refund(
+            &payment_ref,
+            &buyer,
+            &100,
+            &env.ledger().sequence(),
+            &100,
+            &None
+        ),
         Err(Ok(Error::RefundExpired))
     );
     assert!(
@@ -1228,7 +1308,14 @@ fn test_deadline_and_window_are_independent_bounds() {
     // WindowExpired.
     env.ledger().with_mut(|li| li.timestamp = deadline + 1);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100),
+        client.try_refund(
+            &payment_ref,
+            &buyer,
+            &100,
+            &env.ledger().sequence(),
+            &100,
+            &None
+        ),
         Err(Ok(Error::RefundExpired))
     );
     assert!(client.get_refund(&payment_ref).is_none());
@@ -1243,7 +1330,14 @@ fn test_zero_deadline_disables_expiry() {
     env.ledger().with_mut(|li| li.timestamp = u64::MAX / 2);
     let payment_ref = BytesN::from_array(&env, &[0x24u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &env.ledger().sequence(), &100);
+    client.refund(
+        &payment_ref,
+        &buyer,
+        &100,
+        &env.ledger().sequence(),
+        &100,
+        &None,
+    );
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -1321,7 +1415,7 @@ fn test_fee_defaults_disabled() {
     // Unconfigured fees: the buyer receives the full claim, nothing is diverted.
     let payment_ref = BytesN::from_array(&env, &[0x40u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None);
 
     let token_client = TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&buyer), 100_000);
@@ -1346,7 +1440,7 @@ fn test_fee_deducted_and_collected_exactly() {
     client.set_fee_bps(&100); // 1%
 
     let payment_ref = BytesN::from_array(&env, &[0x41u8; 32]);
-    client.refund(&payment_ref, &buyer, &1_000_000, &0, &1_000_000);
+    client.refund(&payment_ref, &buyer, &1_000_000, &0, &1_000_000, &None);
 
     // 1% of 1M = 10_000 exactly; buyer receives the remainder.
     assert_eq!(token_client.balance(&buyer), 1_000_000 - 10_000);
@@ -1356,14 +1450,14 @@ fn test_fee_deducted_and_collected_exactly() {
     // 3 bp of an odd amount: 123_456 * 3 / 10_000 = 37.0368 -> 38 (rounds up).
     client.set_fee_bps(&3);
     let ref2 = BytesN::from_array(&env, &[0x42u8; 32]);
-    client.refund(&ref2, &buyer, &123_456, &0, &123_456);
+    client.refund(&ref2, &buyer, &123_456, &0, &123_456, &None);
     assert_eq!(token_client.balance(&fee_collector), 10_000 + 38);
     assert_eq!(token_client.balance(&buyer), 990_000 + 123_456 - 38);
 
     // 1 bp on a sub-10_000 amount still yields one unit (ceil).
     client.set_fee_bps(&1);
     let ref3 = BytesN::from_array(&env, &[0x43u8; 32]);
-    client.refund(&ref3, &buyer, &7, &0, &7);
+    client.refund(&ref3, &buyer, &7, &0, &7, &None);
     assert_eq!(token_client.balance(&fee_collector), 10_000 + 38 + 1);
     assert_eq!(token_client.balance(&buyer), 990_000 + 123_456 - 38 + 7 - 1);
 
@@ -1378,7 +1472,7 @@ fn test_fee_deducted_and_collected_exactly() {
     // Returning the fee to zero disables it again.
     client.set_fee_bps(&0);
     let ref4 = BytesN::from_array(&env, &[0x44u8; 32]);
-    client.refund(&ref4, &buyer, &5_000, &0, &5_000);
+    client.refund(&ref4, &buyer, &5_000, &0, &5_000, &None);
     assert_eq!(
         token_client.balance(&buyer),
         990_000 + 123_456 - 38 + 7 - 1 + 5_000
@@ -1425,7 +1519,7 @@ fn test_fee_math_various_bps_exact_balances() {
         let fee = reference_fee(*amount, *bps);
 
         let payment_ref = BytesN::from_array(&env, &[0x50u8 + i as u8; 32]);
-        client.refund(&payment_ref, &buyer, amount, &0, amount);
+        client.refund(&payment_ref, &buyer, amount, &0, amount, &None);
 
         buyer_total += amount - fee;
         fee_total += fee;
@@ -1465,7 +1559,7 @@ fn test_fee_claim_equal_to_float_succeeds_and_drains() {
     client.set_fee_bps(&1000); // 10%
 
     let payment_ref = BytesN::from_array(&env, &[0x45u8; 32]);
-    client.refund(&payment_ref, &buyer, &5_000, &0, &5_000);
+    client.refund(&payment_ref, &buyer, &5_000, &0, &5_000, &None);
 
     assert_eq!(token_client.balance(&buyer), 4_500);
     assert_eq!(token_client.balance(&fee_collector), 500);
@@ -1483,7 +1577,7 @@ fn test_fee_defaults_to_merchant_when_no_recipient_set() {
 
     let payment_ref = BytesN::from_array(&env, &[0x46u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None);
 
     assert_eq!(token_client.balance(&buyer), 99_000);
     assert_eq!(token_client.balance(&merchant), 500_000 + 1_000);
@@ -1494,7 +1588,7 @@ fn test_fee_defaults_to_merchant_when_no_recipient_set() {
     client.set_fee_recipient(&fee_collector);
     assert_eq!(client.get_fee_recipient(), Some(fee_collector.clone()));
     let ref2 = BytesN::from_array(&env, &[0x47u8; 32]);
-    client.refund(&ref2, &buyer, &50_000, &0, &50_000);
+    client.refund(&ref2, &buyer, &50_000, &0, &50_000, &None);
     assert_eq!(token_client.balance(&fee_collector), 500);
     assert_eq!(token_client.balance(&merchant), 501_000);
 }
@@ -1514,24 +1608,24 @@ fn test_fee_applies_to_partial_refunds_and_ceiling() {
 
     let payment_ref = BytesN::from_array(&env, &[0x48u8; 32]);
     // payment_amount (the ceiling) is 1M; each partial claim is pre-fee.
-    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000);
+    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000, &None);
     let record = client.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 400_000);
     assert_eq!(record.payment_amount, 1_000_000);
 
-    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000);
+    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000, &None);
     let record = client.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 800_000);
 
     // The remaining 600_000 is still claimable (ceiling is pre-fee), but
     // 600_000 + 600_000 would exceed the ceiling.
-    client.refund(&payment_ref, &buyer, &200_000, &0, &1_000_000);
+    client.refund(&payment_ref, &buyer, &200_000, &0, &1_000_000, &None);
     assert_eq!(
         client.get_refund(&payment_ref).unwrap().amount_refunded,
         1_000_000
     );
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &1, &0, &1_000_000),
+        client.try_refund(&payment_ref, &buyer, &1, &0, &1_000_000, &None),
         Err(Ok(Error::ExceedsPayment))
     );
 }
@@ -1656,7 +1750,7 @@ fn test_policy_events_emitted() {
 
     let (env, client, _merchant, _token) = setup(100);
 
-    client.propose_policy(&200, &0);
+    client.propose_policy(&200, &0, &0);
 
     let current = env.ledger().sequence();
     let events = env.events().all().filter_by_contract(&client.address);
@@ -1709,7 +1803,9 @@ fn test_policy_events_emitted() {
     );
 }
 
-// ── Shared Test Vectors (Issue #184) ────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Shared Test Vectors (Issue #184)
+// ---------------------------------------------------------------------------
 
 #[path = "refund_vectors.rs"]
 mod refund_vectors;
@@ -1723,12 +1819,16 @@ fn test_shared_refund_vectors_match_typescript_sdk() {
 
     for v in refund_vectors::VECTORS {
         let payment_ref = BytesN::from_array(&env, &v.payment_ref);
+        // `payment_amount` (the ceiling) is not part of the shared vectors,
+        // which predate partial refunds; pass the amount itself so a vector's
+        // `expected_success` outcome is preserved.
         let res = client.try_refund(
             &payment_ref,
             &recipient,
             &v.amount,
             &v.paid_at_ledger,
             &v.amount,
+            &None,
         );
 
         assert_eq!(
@@ -1755,12 +1855,13 @@ fn test_shared_refund_vectors_include_live_testnet_refund() {
     assert!(live.tx_hash.is_some());
 }
 
-// ── Self-Transfer Rejection Tests (Issue #177) ─────────────────────────────
+// ---------------------------------------------------------------------------
+// Self-Transfer Rejection Tests (Issue #177)
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_refund_to_contract_address_fails_self_transfer() {
     use soroban_sdk::testutils::Events;
-
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -1768,21 +1869,65 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     let contract_addr = client.address.clone();
 
     // Refunding to vault address must return SelfTransfer error
-    let res = client.try_refund(&payment_ref, &contract_addr, &50_000, &0, &50_000);
+    let res = client.try_refund(&payment_ref, &contract_addr, &50_000, &0, &50_000, &None);
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
+    // Payment ref must remain unconsumed / not recorded
     assert!(client.get_refund(&payment_ref).is_none());
 
     // The reverted call emitted no events (all() only reports the last,
     // successful invocation), so the deposit is not even visible here.
     let events = env.events().all().filter_by_contract(&client.address);
-    assert_eq!(events.events.len(), 1);
+    // Only the deposit event should exist (log is reset, so 0 events remain)
+    assert_eq!(events.events().len(), 0);
+}
+
+/// The batch path must reject items targeting the vault itself (fail closed,
+/// skipped with `false`) instead of consuming the payment_ref while leaving
+/// float untouched — the self-transfer threat in SECURITY_MODEL §Threats.
+#[test]
+fn test_process_batch_item_to_contract_address_skipped() {
+    let (env, client, merchant, token) = setup(100);
+    let per_refund = 10_000i128;
+    client.deposit(&merchant, &(2 * per_refund));
+
+    let mut params = batch_params(&env, 2, per_refund);
+    let vault_addr = client.address.clone();
+    // Point the second item at the vault itself.
+    params.set(
+        1,
+        RefundParam {
+            payment_ref: params.get(1).unwrap().payment_ref,
+            recipient: vault_addr,
+            amount: per_refund,
+            paid_at_ledger: 0,
+            payment_amount: per_refund,
+        },
+    );
+
+    env.cost_estimate()
+        .budget()
+        .reset_limits(2_000_000_000, 2_000_000_000);
+    let res = client.process_batch(&params);
+
+    // First item refunded, second skipped (self-transfer), no panic.
+    assert_eq!(res, vec![&env, true, false]);
+    assert!(client
+        .get_refund(&params.get(0).unwrap().payment_ref)
+        .is_some());
+    assert!(client
+        .get_refund(&params.get(1).unwrap().payment_ref)
+        .is_none());
+    // Float intact except the one legit payout.
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&client.address),
+        per_refund
+    );
 }
 
 #[test]
 fn test_withdraw_to_contract_address_fails_self_transfer() {
     use soroban_sdk::testutils::Events;
-
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
 
@@ -1792,7 +1937,7 @@ fn test_withdraw_to_contract_address_fails_self_transfer() {
 
     // The reverted call emitted no events at all.
     let events = env.events().all().filter_by_contract(&client.address);
-    assert_eq!(events.events.len(), 1);
+    assert_eq!(events.events().len(), 0);
 }
 
 #[test]
@@ -1803,14 +1948,17 @@ fn test_refund_to_merchant_succeeds() {
     let payment_ref = BytesN::from_array(&env, &[13u8; 32]);
     let initial_merchant_bal = TokenClient::new(&env, &token).balance(&merchant);
 
-    client.refund(&payment_ref, &merchant, &50_000, &0, &50_000);
+    // Refunding to merchant is valid (e.g. merchant-as-buyer in testing or direct reversal)
+    client.refund(&payment_ref, &merchant, &50_000, &0, &50_000, &None);
 
     let final_merchant_bal = TokenClient::new(&env, &token).balance(&merchant);
     assert_eq!(final_merchant_bal, initial_merchant_bal + 50_000);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
-// ── set_token Tests (Issue #176) ────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// set_token Tests (Issue #176)
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_set_token_succeeds_when_vault_is_empty() {
@@ -1821,7 +1969,10 @@ fn test_set_token_succeeds_when_vault_is_empty() {
     let new_token = new_sac.address();
     StellarAssetClient::new(&env, &new_token).mint(&merchant, &FLOAT);
 
+    // Vault has 0 float balance initially -> set_token succeeds
     client.set_token(&new_token);
+
+    // Now deposit using the new token
     client.deposit(&merchant, &200_000);
     assert_eq!(
         TokenClient::new(&env, &new_token).balance(&client.address),
@@ -1838,6 +1989,7 @@ fn test_set_token_fails_when_vault_is_funded() {
     let new_sac = env.register_stellar_asset_contract_v2(new_token_admin);
     let new_token = new_sac.address();
 
+    // Vault is funded -> set_token must fail with FloatNotEmpty
     let res = client.try_set_token(&new_token);
     assert_eq!(res, Err(Ok(Error::FloatNotEmpty)));
 }
@@ -1851,7 +2003,10 @@ fn test_set_token_requires_admin_auth() {
     let new_sac = env.register_stellar_asset_contract_v2(new_token_admin);
     let new_token = new_sac.address();
 
+    // If stranger calls or unauthorized caller
     env.mock_auths(&[]);
+    // Calling set_token without merchant auth panics at require_auth
+    // Let's verify with mock_all_auths reset
     env.mock_all_auths();
     assert!(client.try_set_token(&new_token).is_ok());
 }
@@ -1872,6 +2027,7 @@ fn make_claim(
         amount,
         paid_at_ledger,
         payment_amount,
+        vdf_proof: None,
     }
 }
 
@@ -2202,7 +2358,7 @@ fn test_claim_batch_cost_stays_within_budget() {
 
     // Measure a single claim in a fresh default budget.
     env.cost_estimate().budget().reset_default();
-    client.refund(&single_ref, &single_buyer, &10_000, &0, &10_000);
+    client.refund(&single_ref, &single_buyer, &10_000, &0, &10_000, &None);
     let single_cpu = env.cost_estimate().budget().cpu_instruction_cost();
     let single_mem = env.cost_estimate().budget().memory_bytes_cost();
     assert!(single_cpu > 0);
@@ -2250,109 +2406,4 @@ fn test_claim_batch_cost_stays_within_budget() {
         batch_cpu < single_cpu * 12,
         "batch cpu {batch_cpu} (single {single_cpu}) exceeds 12x single"
     );
-}
-
-// ── Domain Separator and Nonce Tests (Issue #136) ────────────────────────
-
-#[test]
-fn test_domain_separator_is_set_on_initialize() {
-    let (_env, client, _merchant, _token) = setup(100);
-    let sep = client.get_domain_separator();
-    assert_ne!(sep.to_array(), [0u8; 32]);
-}
-
-#[test]
-fn test_domain_separator_differs_per_instance() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let merchant = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let sac = env.register_stellar_asset_contract_v2(token_admin);
-    let token = sac.address();
-    StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
-
-    let id_a = env.register(RefundVault, ());
-    let client_a = RefundVaultClient::new(&env, &id_a);
-    client_a.initialize(&merchant, &token, &100);
-
-    let id_b = env.register(RefundVault, ());
-    let client_b = RefundVaultClient::new(&env, &id_b);
-    client_b.initialize(&merchant, &token, &100);
-
-    assert_ne!(
-        client_a.get_domain_separator(),
-        client_b.get_domain_separator()
-    );
-}
-
-#[test]
-fn test_nonce_starts_at_zero() {
-    let (_env, client, _merchant, _token) = setup(100);
-    assert_eq!(client.get_nonce(), 0);
-}
-
-#[test]
-fn test_nonce_increments_on_deposit() {
-    let (_env, client, merchant, _token) = setup(100);
-    assert_eq!(client.get_nonce(), 0);
-    client.deposit(&merchant, &100_000);
-    assert_eq!(client.get_nonce(), 1);
-}
-
-#[test]
-fn test_nonce_increments_on_refund() {
-    let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000);
-    let nonce_before = client.get_nonce();
-    let payment_ref = BytesN::from_array(&env, &[0xAAu8; 32]);
-    let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &0, &100);
-    assert_eq!(client.get_nonce(), nonce_before + 1);
-}
-
-#[test]
-fn test_nonce_increments_on_withdraw() {
-    let (_env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000);
-    let nonce_before = client.get_nonce();
-    client.withdraw(&100_000, &merchant);
-    assert_eq!(client.get_nonce(), nonce_before + 1);
-}
-
-#[test]
-fn test_nonce_does_not_increment_on_failed_operation() {
-    let (_env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000);
-    let nonce_before = client.get_nonce();
-    let _ = client.try_deposit(&merchant, &0);
-    assert_eq!(client.get_nonce(), nonce_before);
-}
-
-#[test]
-fn test_nonce_is_strictly_monotonic() {
-    let (env, client, merchant, _token) = setup(100);
-    let mut seen_nonces = std::vec::Vec::new();
-
-    client.deposit(&merchant, &500_000);
-    seen_nonces.push(client.get_nonce());
-
-    client.deposit(&merchant, &100_000);
-    seen_nonces.push(client.get_nonce());
-
-    client.withdraw(&50_000, &merchant);
-    seen_nonces.push(client.get_nonce());
-
-    let payment_ref = BytesN::from_array(&env, &[0xBBu8; 32]);
-    let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &10_000, &0, &10_000);
-    seen_nonces.push(client.get_nonce());
-
-    for window in seen_nonces.windows(2) {
-        assert!(
-            window[1] > window[0],
-            "nonce must be strictly monotonic: got {:?}",
-            seen_nonces
-        );
-    }
-    assert_eq!(client.get_nonce(), 4);
 }

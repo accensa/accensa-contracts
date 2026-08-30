@@ -8,7 +8,7 @@ use soroban_sdk::{
     Address, BytesN, Env,
 };
 
-use crate::{Error, RefundVault, RefundVaultClient};
+use crate::{DataKey, Error, RefundVault, RefundVaultClient, TTL_EXTEND};
 
 // ── Mock yield strategy contract ───────────────────────────────────────────
 
@@ -560,7 +560,7 @@ fn test_refund_succeeds_after_deploy_within_reserve() {
 
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
     let buyer = Address::generate(&env);
-    vault_client.refund(&payment_ref, &buyer, &500_000, &0, &500_000);
+    vault_client.refund(&payment_ref, &buyer, &500_000, &0, &500_000, &None);
 
     assert_eq!(tc.balance(&buyer), 500_000);
     assert_eq!(tc.balance(&vault_client.address), 1_500_000);
@@ -576,7 +576,7 @@ fn test_refund_exceeding_liquid_after_deploy_fails() {
     let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        vault_client.try_refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000),
+        vault_client.try_refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000, &None),
         Err(Ok(Error::InsufficientFloat))
     );
 }
@@ -592,7 +592,7 @@ fn test_refund_after_withdraw_from_yield() {
 
     let payment_ref = BytesN::from_array(&env, &[3u8; 32]);
     let buyer = Address::generate(&env);
-    vault_client.refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000);
+    vault_client.refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000, &None);
 
     assert_eq!(tc.balance(&buyer), 2_500_000);
 }
@@ -790,7 +790,7 @@ fn test_existing_deposit_refund_withdraw_still_works() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    vault_client.refund(&payment_ref, &buyer, &120_000, &0, &120_000);
+    vault_client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
 
     let tc = TokenClient::new(&env, &token);
     assert_eq!(tc.balance(&buyer), 120_000);
@@ -798,4 +798,168 @@ fn test_existing_deposit_refund_withdraw_still_works() {
 
     vault_client.withdraw(&200_000, &merchant);
     assert_eq!(tc.balance(&vault_client.address), 4_680_000);
+}
+
+// ── Persistent storage TTL tests (issue #131) ────────────────────────────
+//
+// Yield-related keys are stored in Persistent (not Instance) storage so
+// non-yield calls never pay their read/write byte cost. These tests verify
+// that (a) the keys are indeed persistent, and (b) each write extends the
+// TTL via the `persist_yield_ttl` helper.
+
+/// After `set_yield_strategy`, the `YieldStrategy` key must exist in
+/// Persistent storage with a TTL at or above `TTL_EXTEND`.
+#[test]
+fn test_yield_strategy_key_is_persistent_with_ttl() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (_env, vault_client, _merchant, _token, strategy_addr, _tc) =
+        setup_with_strategy(2000, 8000);
+
+    let ttl = _env.as_contract(&vault_client.address, || {
+        _env.storage().persistent().get_ttl(&DataKey::YieldStrategy)
+    });
+    assert!(
+        ttl >= TTL_EXTEND,
+        "YieldStrategy TTL ({ttl}) must be >= TTL_EXTEND ({TTL_EXTEND}) after set_yield_strategy"
+    );
+}
+
+/// After `set_reserve_ratio`, the `ReserveRatio` key must be persistent.
+#[test]
+fn test_reserve_ratio_key_is_persistent_with_ttl() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (_env, vault_client, _merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
+
+    let ttl = _env.as_contract(&vault_client.address, || {
+        _env.storage().persistent().get_ttl(&DataKey::ReserveRatio)
+    });
+    assert!(
+        ttl >= TTL_EXTEND,
+        "ReserveRatio TTL ({ttl}) must be >= TTL_EXTEND ({TTL_EXTEND}) after set_reserve_ratio"
+    );
+}
+
+/// After `set_max_deploy_ratio`, the `MaxDeployRatio` key must be persistent.
+#[test]
+fn test_max_deploy_ratio_key_is_persistent_with_ttl() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (_env, vault_client, _merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
+
+    let ttl = _env.as_contract(&vault_client.address, || {
+        _env.storage()
+            .persistent()
+            .get_ttl(&DataKey::MaxDeployRatio)
+    });
+    assert!(
+        ttl >= TTL_EXTEND,
+        "MaxDeployRatio TTL ({ttl}) must be >= TTL_EXTEND ({TTL_EXTEND}) after set_max_deploy_ratio"
+    );
+}
+
+/// After `deploy_to_yield`, the `DeployedPrincipal` key must be persistent
+/// with an appropriate TTL.
+#[test]
+fn test_deployed_principal_key_is_persistent_with_ttl() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
+
+    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deploy_to_yield(&3_000_000);
+
+    let ttl = _env.as_contract(&vault_client.address, || {
+        _env.storage()
+            .persistent()
+            .get_ttl(&DataKey::DeployedPrincipal)
+    });
+    assert!(
+        ttl >= TTL_EXTEND,
+        "DeployedPrincipal TTL ({ttl}) must be >= TTL_EXTEND ({TTL_EXTEND}) after deploy_to_yield"
+    );
+}
+
+/// After `harvest_yield`, the `HarvestedYield` key must be persistent
+/// with an appropriate TTL.
+#[test]
+fn test_harvested_yield_key_is_persistent_with_ttl() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup_with_strategy(0, 10_000);
+
+    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deploy_to_yield(&3_000_000);
+
+    let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
+    strategy_client.simulate_yield(&200_000);
+    vault_client.harvest_yield();
+
+    let ttl = env.as_contract(&vault_client.address, || {
+        env.storage().persistent().get_ttl(&DataKey::HarvestedYield)
+    });
+    assert!(
+        ttl >= TTL_EXTEND,
+        "HarvestedYield TTL ({ttl}) must be >= TTL_EXTEND ({TTL_EXTEND}) after harvest_yield"
+    );
+}
+
+/// Non-yield calls (deposit, refund, withdraw) must not create or extend
+/// persistent yield keys — only yield-related entry points should touch them.
+#[test]
+fn test_non_yield_calls_do_not_create_yield_persistent_keys() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
+
+    // Only do a deposit — no yield operations.
+    vault_client.deposit(&merchant, &5_000_000);
+
+    // DeployedPrincipal and HarvestedYield should not exist yet.
+    // (YieldStrategy, ReserveRatio, MaxDeployRatio were created by the
+    // setup_with_strategy helper, so we only check the operation-tracked keys.)
+    let deployed_exists = env.as_contract(&vault_client.address, || {
+        env.storage().persistent().has(&DataKey::DeployedPrincipal)
+    });
+    let harvested_exists = env.as_contract(&vault_client.address, || {
+        env.storage().persistent().has(&DataKey::HarvestedYield)
+    });
+
+    assert!(
+        !deployed_exists,
+        "DeployedPrincipal should not exist after deposit-only"
+    );
+    assert!(
+        !harvested_exists,
+        "HarvestedYield should not exist after deposit-only"
+    );
+}
+
+/// Yield keys should remain readable after a refund — proving they are
+/// truly persistent and not affected by non-yield entry points.
+#[test]
+fn test_yield_info_survives_refund() {
+    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
+
+    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deploy_to_yield(&3_000_000);
+
+    // Snapshot yield info before refund.
+    let info_before = vault_client.get_yield_info();
+
+    // Refund from liquid balance — must not alter yield state.
+    let payment_ref = BytesN::from_array(&env, &[0xAAu8; 32]);
+    let buyer = Address::generate(&env);
+    vault_client.refund(&payment_ref, &buyer, &500_000, &0, &500_000);
+
+    let info_after = vault_client.get_yield_info();
+    assert_eq!(
+        info_before.deployed_principal,
+        info_after.deployed_principal
+    );
+    assert_eq!(info_before.harvested_yield, info_after.harvested_yield);
+    assert_eq!(info_before.strategy, info_after.strategy);
+    assert_eq!(info_before.reserve_ratio, info_after.reserve_ratio);
+    assert_eq!(info_before.max_deploy_ratio, info_after.max_deploy_ratio);
 }
