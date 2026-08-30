@@ -257,6 +257,7 @@ fn test_set_yield_strategy_uninitialized_fails() {
 }
 
 #[test]
+#[should_panic]
 fn test_set_yield_strategy_requires_auth() {
     let (env, vault_client, _merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
     let new_strategy = Address::generate(&env);
