@@ -166,6 +166,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -210,6 +216,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     }
@@ -477,6 +489,18 @@
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

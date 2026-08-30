@@ -115,7 +115,8 @@
                 },
                 {
                   "i128": "10000"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -175,6 +176,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -219,6 +226,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -263,6 +276,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -307,6 +326,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -351,6 +376,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -395,6 +426,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -439,6 +476,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYRE5"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -483,6 +526,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2ZMN"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -527,6 +576,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4BV5"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -571,6 +626,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6J5N"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     }
@@ -1512,6 +1573,18 @@
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
