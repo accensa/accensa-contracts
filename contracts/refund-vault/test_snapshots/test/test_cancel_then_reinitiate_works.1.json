@@ -128,6 +128,12 @@
               "args": [
                 {
                   "u32": 200
+                },
+                {
+                  "u64": "0"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -307,7 +313,23 @@
                         "map": [
                           {
                             "key": {
+                              "symbol": "deadline"
+                            },
+                            "val": {
+                              "u64": "0"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "proposed_at_ledger"
+                            },
+                            "val": {
+                              "u32": 0
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "vdf_delay"
                             },
                             "val": {
                               "u32": 0
@@ -334,6 +356,18 @@
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
@@ -586,6 +620,14 @@
             ],
             "data": {
               "map": [
+                {
+                  "key": {
+                    "symbol": "deadline"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                },
                 {
                   "key": {
                     "symbol": "execute_after_ledger"
