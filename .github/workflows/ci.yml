@@ -5,8 +5,61 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+    types: [ opened, synchronize, reopened, labeled, unlabeled ]
 
 jobs:
+  changelog:
+    name: changelog & version check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check CHANGELOG enforcement and version matching
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.sha }}"
+          
+          # Find changed files in PR
+          CHANGED_FILES=$(git diff --name-only $BASE $HEAD)
+          
+          # Check if contract source files are modified
+          CONTRACT_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^contracts/.*/src/' || true)
+          
+          if [ -n "$CONTRACT_CHANGED" ]; then
+            echo "Contract source files modified:"
+            echo "$CONTRACT_CHANGED"
+            
+            # Check if CHANGELOG.md is in modified files
+            if ! echo "$CHANGED_FILES" | grep -q '^CHANGELOG.md$'; then
+              echo "Error: CHANGELOG.md was not updated for contract source changes."
+              echo "Add a changelog entry under ## [Unreleased], or add the 'skip-changelog' label to your PR for internal changes."
+              exit 1
+            fi
+            echo "CHANGELOG.md update confirmed."
+          fi
+
+      - name: Verify CHANGELOG released version matches workspace Cargo.toml
+        run: |
+          # Extract highest released version from CHANGELOG.md (excluding Unreleased)
+          CHANGELOG_VER=$(grep -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | head -n1 | sed -E 's/## \[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+          
+          # Extract version from receipt-anchor and refund-vault Cargo.toml
+          RECEIPT_VER=$(grep '^version =' contracts/receipt-anchor/Cargo.toml | head -n1 | cut -d '"' -f 2)
+          REFUND_VER=$(grep '^version =' contracts/refund-vault/Cargo.toml | head -n1 | cut -d '"' -f 2)
+          
+          echo "CHANGELOG top released version: $CHANGELOG_VER"
+          echo "receipt-anchor version: $RECEIPT_VER"
+          echo "refund-vault version: $REFUND_VER"
+          
+          if [ "$CHANGELOG_VER" != "$RECEIPT_VER" ] || [ "$CHANGELOG_VER" != "$REFUND_VER" ]; then
+            echo "Error: CHANGELOG.md top released version ($CHANGELOG_VER) does not match crate versions ($RECEIPT_VER, $REFUND_VER)."
+            exit 1
+          fi
+          echo "Version matching confirmed."
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest
@@ -28,6 +81,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: wasm32v1-none
       - name: Cache cargo
         uses: actions/cache@v3
         with:
@@ -36,6 +90,10 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build receipt-shard wasm
+        # receipt-anchor's test/clippy target imports this wasm via
+        # `contractimport!` to test the shard factory end-to-end.
+        run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
@@ -56,8 +114,34 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build receipt-shard wasm
+        # receipt-anchor's tests import this wasm via `contractimport!` to
+        # test the shard factory end-to-end.
+        run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run Tests
-        run: cargo test
+        run: cargo test --workspace
+
+  benchmarks:
+    name: benchmark-budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - name: Cache cargo
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run Budget Measurement Tests
+        # Placeholder for actual budget enforcement (Issue #66).
+        # Ensures that the testutils budget harness compiles and works.
+        run: cargo test -p testutils --profile release-with-logs
 
   build-wasm:
     name: build-wasm
@@ -78,3 +162,43 @@ jobs:
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
       - name: Wasm build
         run: cargo build --target wasm32v1-none --release
+
+      - name: Report WASM sizes & enforce size budget
+        run: |
+          RECEIPT_SIZE=$(stat -c%s target/wasm32v1-none/release/receipt_anchor.wasm 2>/dev/null || stat -f%z target/wasm32v1-none/release/receipt_anchor.wasm)
+          REFUND_SIZE=$(stat -c%s target/wasm32v1-none/release/refund_vault.wasm 2>/dev/null || stat -f%z target/wasm32v1-none/release/refund_vault.wasm)
+
+          RECEIPT_BUDGET=$(jq -r '.receipt_anchor' .wasm-budget.json)
+          REFUND_BUDGET=$(jq -r '.refund_vault' .wasm-budget.json)
+
+          echo "### WASM Build Sizes" >> $GITHUB_STEP_SUMMARY
+          echo "| Contract | Size (bytes) | Budget (bytes) | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
+
+          FAILED=0
+          if [ "$RECEIPT_SIZE" -gt "$RECEIPT_BUDGET" ]; then
+            echo "| \`receipt_anchor.wasm\` | $RECEIPT_SIZE | $RECEIPT_BUDGET | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
+            FAILED=1
+          else
+            echo "| \`receipt_anchor.wasm\` | $RECEIPT_SIZE | $RECEIPT_BUDGET | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$REFUND_SIZE" -gt "$REFUND_BUDGET" ]; then
+            echo "| \`refund_vault.wasm\` | $REFUND_SIZE | $REFUND_BUDGET | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
+            FAILED=1
+          else
+            echo "| \`refund_vault.wasm\` | $REFUND_SIZE | $REFUND_BUDGET | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "Error: WASM size budget exceeded."
+            exit 1
+          fi
+
+      - name: Upload WASM Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-artifacts-${{ github.sha }}
+          path: |
+            target/wasm32v1-none/release/receipt_anchor.wasm
+            target/wasm32v1-none/release/refund_vault.wasm

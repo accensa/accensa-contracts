@@ -1,8 +1,9 @@
 #![no_std]
 
+use accensa_common::Error;
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, BytesN, Env,
+    contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
+    Address, BytesN, Env, Vec,
 };
 
 contractmeta!(key = "name", val = "RefundVault");
@@ -13,27 +14,16 @@ contractmeta!(
 );
 contractmeta!(key = "commit", val = env!("GIT_SHA"));
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    Unauthorized = 3,
-    AlreadyRefunded = 4,
-    WindowExpired = 5,
-    InsufficientFloat = 6,
-    InvalidAmount = 7,
-    Paused = 8,
-    RefundNotFound = 9,
-    MetadataTooLong = 10,
-    AmountExceedsMax = 11,
-    NoPendingTransfer = 12,
-    StrategyNotSet = 13,
-    InsufficientReserve = 14,
-    DeploymentExceedsMax = 15,
-    NothingToWithdraw = 16,
-    NothingToHarvest = 17,
-    InvalidRatio = 18,
+contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefundParam {
+    pub payment_ref: BytesN<32>,
+    pub recipient: Address,
+    pub amount: i128,
+    pub paid_at_ledger: u32,
+    pub payment_amount: i128,
 }
 
 #[contracttype]
@@ -41,6 +31,14 @@ pub enum DataKey {
     Admin,
     Token,
     RefundWindow,
+    /// Cumulative refund record for a payment (new partial-refund layout).
+    ///
+    /// Stored under `RefundV2` so the decoder never attempts to interpret a
+    /// legacy `Refund` record written by the single-refund rule.
+    RefundV2(BytesN<32>),
+    /// Legacy single-refund record (0.1.0 layout). Retained read-only for
+    /// migration detection: a present `Refund` key means the payment was
+    /// already fully refunded under the old rule.
     Refund(BytesN<32>),
     IsPaused,
     Metadata,
@@ -53,14 +51,35 @@ pub enum DataKey {
     HarvestedYield,
     ReserveRatio,
     MaxDeployRatio,
+    PendingPolicy,
+    /// Reentrancy guard flag. Set for the duration of any entry point that
+    /// makes an external call (token transfer or yield-strategy invocation)
+    /// so a callback into another guarded entry point during that call is
+    /// rejected rather than allowed to observe pre-update state.
+    ReentrancyLock,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundRecord {
-    pub amount: i128,
+    /// Cumulative amount refunded so far for this payment.
+    pub amount_refunded: i128,
+    /// The original payment amount — the hard ceiling on cumulative refunds.
+    pub payment_amount: i128,
+    /// The ledger at which the original payment occurred (window is measured
+    /// from here, never from a partial).
+    pub paid_at_ledger: u32,
     pub recipient: Address,
+    /// Ledger of the most recent refund call.
     pub ledger: u32,
+}
+
+/// A pending policy change waiting for the timelock to expire.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyProposal {
+    pub window: u32,
+    pub proposed_at_ledger: u32,
 }
 
 #[contracttype]
@@ -73,16 +92,21 @@ pub struct YieldInfo {
     pub max_deploy_ratio: u32,
 }
 
-/// Emitted when a payment is refunded from the vault float.
+/// Emitted when a (possibly partial) refund is made from the vault float.
 ///
-/// Topics: `("refund_event", payment_ref)`. The data map mirrors [`RefundRecord`],
-/// so indexers can decode it with the same shape stored under the payment ref.
+/// Topics: `("refund_event", payment_ref)`. The data map carries the amount
+/// for **this call** (`amount`) and the running total after it
+/// (`cumulative_refunded`), so an indexer knows the state of a payment without
+/// summing history.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundEvent {
     #[topic]
     pub payment_ref: BytesN<32>,
+    /// Amount refunded in this call.
     pub amount: i128,
+    /// Running cumulative total across all refunds for this payment.
+    pub cumulative_refunded: i128,
     pub recipient: Address,
     pub ledger: u32,
 }
@@ -93,6 +117,28 @@ pub struct DepositEvent {
     #[topic]
     pub from: Address,
     pub amount: i128,
+}
+
+/// Emitted when the merchant pauses the vault, halting deposits, refunds and withdrawals.
+///
+/// Topics: `("pause_event", ledger)`. The ledger sequence lets an indexer
+/// reconstruct the pause window from the event log alone.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseEvent {
+    #[topic]
+    pub ledger: u32,
+}
+
+/// Emitted when the merchant unpauses the vault.
+///
+/// Topics: `("unpause_event", ledger)`. Together with `PauseEvent` this
+/// brackets a pause window in the event log.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnpauseEvent {
+    #[topic]
+    pub ledger: u32,
 }
 
 #[contractevent]
@@ -144,11 +190,30 @@ pub struct YieldHarvestedEvent {
     pub amount: i128,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyProposedEvent {
+    #[topic]
+    pub window: u32,
+    pub proposed_at_ledger: u32,
+    pub execute_after_ledger: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyExecutedEvent {
+    #[topic]
+    pub window: u32,
+}
+
 /// Interface for external yield-generating strategies (e.g., Soroban lending protocols).
 ///
 /// Any contract that implements these methods can be registered as the vault's yield
 /// strategy. The vault calls these to deploy idle funds and harvest accrued yield.
-#[contractimpl]
+/// The trait is annotated `#[contractclient(name = "YieldStrategyClient")]` (not
+/// `#[contractimpl]`, which only accepts `impl` blocks) so its client is
+/// generated from the interface.
+#[contractclient(name = "YieldStrategyClient")]
 pub trait YieldStrategy {
     /// Deploy `amount` tokens into the strategy. The vault transfers tokens to the
     /// strategy contract before calling this.
@@ -176,6 +241,94 @@ pub trait YieldStrategy {
 const TTL_EXTEND: u32 = 518_400;
 /// The threshold before TTL is actually bumped, to prevent spamming updates on every call.
 const TTL_THRESHOLD: u32 = 100;
+/// Timelock delay for policy changes in ledgers (~24 hours at 5s/ledger).
+const POLICY_TIMELOCK: u32 = 17_280;
+
+/// Reentrancy guard for entry points that make an external call (a token
+/// transfer or a yield-strategy invocation).
+///
+/// Soroban does not have EVM-style fallback functions, but an external call
+/// still hands control to arbitrary contract code before this contract's own
+/// state update runs: a non-standard token can invoke recipient/sender hooks
+/// during `transfer`, and a registered yield strategy is fully untrusted
+/// (`docs/AUDIT.md` §5, known issue #7) and can call straight back into any
+/// `RefundVault` entry point from inside `deposit`/`withdraw`/`harvest`. A
+/// single shared instance-storage flag protects every such entry point:
+/// whichever one is first sets the flag before doing its external call and
+/// clears it only after its own state has been fully written, so a reentrant
+/// call — into the same entry point or a different one — observes the flag
+/// set and is rejected with [`Error::ReentrancyBlocked`] instead of racing
+/// ahead of the pending state update.
+///
+/// Because a `Result::Err` returned from a contract entry point rolls back
+/// every storage write that invocation made (including the flag itself),
+/// callers do not need to clear the flag on error paths — only the success
+/// path needs an explicit `release_reentrancy_lock` call.
+fn acquire_reentrancy_lock(env: &Env) -> Result<(), Error> {
+    let locked: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::ReentrancyLock)
+        .unwrap_or(false);
+    if locked {
+        return Err(Error::ReentrancyBlocked);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::ReentrancyLock, &true);
+    Ok(())
+}
+
+fn release_reentrancy_lock(env: &Env) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReentrancyLock, &false);
+}
+
+/// How many ledgers to extend a payment's `RefundV2` record's TTL by, so the
+/// double-refund guard cannot go archived while `refund` calls against that
+/// payment are still policy-valid.
+///
+/// The guard in `refund` is `storage().persistent().get/has(RefundV2(..))`,
+/// backed by a persistent entry whose TTL was, before this fix, always bumped
+/// by a flat [`TTL_EXTEND`] (~30 days) regardless of the merchant's configured
+/// `refund_window_ledgers`. A window longer than 30 days — or `0`, which
+/// `refund` treats as "no time bound" — could then legitimately still accept
+/// a partial refund on a payment whose guard entry had already aged past its
+/// TTL and gone archived, because nothing but `refund` itself (or the manual
+/// `extend_refund_ttl`) ever touched that TTL. Sizing the extension to the
+/// window itself closes that gap: the record is kept live for exactly as
+/// long as the policy says another `refund` call could legitimately arrive.
+///
+/// `window == 0` mirrors `refund`'s own "no expiry" semantics: rather than
+/// picking an arbitrary flat interval, extend to the network's actual
+/// maximum TTL so the guard is never the reason a policy that says "any time"
+/// stops holding.
+///
+/// Callers must pass the *returned value itself* as `extend_ttl`'s
+/// `threshold` argument, not [`TTL_THRESHOLD`]. A freshly written entry
+/// already carries the network's `min_persistent_entry_ttl` floor, which on
+/// any realistic network exceeds `TTL_THRESHOLD` (100 ledgers, ~8 minutes) —
+/// so `extend_ttl(TTL_THRESHOLD, extend_to)` is a no-op right after `set`,
+/// no matter what `extend_to` is, and the record is left at the network
+/// floor rather than the intended TTL. Using the target as its own
+/// threshold (`extend_ttl(extend_to, extend_to)`) instead extends whenever
+/// the current TTL is below what's needed, which is the actual invariant
+/// this guard is supposed to hold.
+fn refund_record_ttl_extend_to(env: &Env, window: u32, paid_at_ledger: u32) -> u32 {
+    if window == 0 {
+        return env.storage().max_ttl();
+    }
+    let target_live_until = paid_at_ledger.saturating_add(window);
+    let current_ledger = env.ledger().sequence();
+    target_live_until
+        .saturating_sub(current_ledger)
+        .max(TTL_EXTEND)
+}
+
+/// Maximum number of refund requests allowed in a single `process_batch` call.
+/// Bounds CPU and memory usage to ensure the transaction stays within Soroban limits.
+const MAX_REFUND_BATCH_SIZE: u32 = 100;
 
 #[contract]
 pub struct RefundVault;
@@ -204,6 +357,8 @@ impl RefundVault {
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
         if env
             .storage()
             .instance()
@@ -241,16 +396,57 @@ impl RefundVault {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        release_reentrancy_lock(&env);
         Ok(())
     }
 
+    pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let current_token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_client = token::Client::new(&env, &current_token);
+        let balance = token_client.balance(&env.current_contract_address());
+        if balance > 0 {
+            return Err(Error::FloatNotEmpty);
+        }
+
+        env.storage().instance().set(&DataKey::Token, &new_token);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Refund part (or all) of an original payment.
+    ///
+    /// `payment_amount` is the original payment amount and therefore the hard
+    /// ceiling: cumulative refunds for a payment may never exceed it. It is
+    /// supplied by the merchant on **every** call, mirroring how `paid_at_ledger`
+    /// is supplied, so the ceiling never depends on partial bookkeeping. The
+    /// refund window is evaluated against `paid_at_ledger` (the original
+    /// payment), not against a previous partial — each partial does not extend
+    /// the window for the next.
+    ///
+    /// Storage note (#99): the layout changed from a single `amount` record to a
+    /// cumulative record under a new `RefundV2` key. A `Refund` key written by
+    /// the legacy single-refund rule still denotes a fully-refunded payment and
+    /// is rejected with [`Error::ExceedsPayment`] rather than a silent
+    /// misinterpretation.
     pub fn refund(
         env: Env,
         payment_ref: BytesN<32>,
         recipient: Address,
         amount: i128,
         paid_at_ledger: u32,
+        payment_amount: i128,
     ) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
         if env
             .storage()
             .instance()
@@ -264,6 +460,10 @@ impl RefundVault {
             return Err(Error::InvalidAmount);
         }
 
+        if recipient == env.current_contract_address() {
+            return Err(Error::SelfTransfer);
+        }
+
         let merchant: Address = env
             .storage()
             .instance()
@@ -271,12 +471,32 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        Self::refund_internal(
+            &env,
+            &payment_ref,
+            &recipient,
+            amount,
+            paid_at_ledger,
+            payment_amount,
+        )
+    }
+
+    fn refund_internal(
+        env: &Env,
+        payment_ref: &BytesN<32>,
+        recipient: &Address,
+        amount: i128,
+        paid_at_ledger: u32,
+        payment_amount: i128,
+    ) -> Result<(), Error> {
+        // Legacy record: the payment was fully refunded under the single-refund
+        // rule. Reject explicitly rather than mis-decoding the old shape.
         if env
             .storage()
             .persistent()
             .has(&DataKey::Refund(payment_ref.clone()))
         {
-            return Err(Error::AlreadyRefunded);
+            return Err(Error::ExceedsPayment);
         }
 
         let window: u32 = env
@@ -291,46 +511,121 @@ impl RefundVault {
             }
         }
 
+        // Ceiling check: cumulative refunds must not exceed the original amount.
+        // The ceiling is read from the (re)stored record, freshly minted on the
+        // first partial for this payment.
+        let existing: Option<RefundRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RefundV2(payment_ref.clone()));
+        let (previous_refunded, record_ceiling) = match existing {
+            Some(rec) => (rec.amount_refunded, rec.payment_amount),
+            None => (0i128, payment_amount),
+        };
+
+        if previous_refunded.checked_add(amount).is_none()
+            || record_ceiling <= 0
+            || previous_refunded + amount > record_ceiling
+        {
+            return Err(Error::ExceedsPayment);
+        }
+
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
+        let token_client = token::Client::new(env, &token_addr);
         let balance = token_client.balance(&env.current_contract_address());
         if balance < amount {
             return Err(Error::InsufficientFloat);
         }
 
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+        token_client.transfer(&env.current_contract_address(), recipient, &amount);
 
+        let cumulative_refunded = previous_refunded + amount;
+        let current_ledger = env.ledger().sequence();
         let record = RefundRecord {
-            amount,
+            amount_refunded: cumulative_refunded,
+            payment_amount: record_ceiling,
+            paid_at_ledger,
             recipient: recipient.clone(),
-            ledger: env.ledger().sequence(),
+            ledger: current_ledger,
         };
 
         env.storage()
             .persistent()
-            .set(&DataKey::Refund(payment_ref.clone()), &record);
+            .set(&DataKey::RefundV2(payment_ref.clone()), &record);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        let extend_to = refund_record_ttl_extend_to(env, window, paid_at_ledger);
+        // Threshold == extend_to (not TTL_THRESHOLD): see
+        // `refund_record_ttl_extend_to` for why a small fixed threshold makes
+        // this a no-op on a freshly-written entry.
         env.storage().persistent().extend_ttl(
-            &DataKey::Refund(payment_ref.clone()),
-            TTL_THRESHOLD,
-            TTL_EXTEND,
+            &DataKey::RefundV2(payment_ref.clone()),
+            extend_to,
+            extend_to,
         );
 
         RefundEvent {
-            payment_ref,
-            amount: record.amount,
+            payment_ref: payment_ref.clone(),
+            amount,
+            cumulative_refunded,
             recipient: record.recipient,
             ledger: record.ledger,
         }
-        .publish(&env);
+        .publish(env);
 
+        release_reentrancy_lock(env);
         Ok(())
     }
 
+    /// Processes a batch of refund requests in a single transaction.
+    ///
+    /// Design choice: Best-effort execution model with per-item result booleans.
+    /// Each refund is invoked via `refund_internal` logic to ensure code reuse
+    /// and strict adherence to pause, auth, window, and balance constraints.
+    /// If an individual refund fails (e.g. `AlreadyRefunded` or `WindowExpired`), it records `false`
+    /// for that item and continues processing subsequent items rather than aborting the entire batch.
+    /// This allows valid refunds in a multi-item batch to complete successfully.
+    pub fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error> {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            return Err(Error::Paused);
+        }
+
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        if refunds.len() > MAX_REFUND_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+
+        let mut results = Vec::new(&env);
+        for item in refunds.into_iter() {
+            let res = Self::refund_internal(
+                &env,
+                &item.payment_ref,
+                &item.recipient,
+                item.amount,
+                item.paid_at_ledger,
+                item.payment_amount,
+            );
+            results.push_back(res.is_ok());
+        }
+        Ok(results)
+    }
+
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
         if env
             .storage()
             .instance()
@@ -342,6 +637,10 @@ impl RefundVault {
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+
+        if to == env.current_contract_address() {
+            return Err(Error::SelfTransfer);
         }
 
         let merchant: Address = env
@@ -369,10 +668,15 @@ impl RefundVault {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        release_reentrancy_lock(&env);
         Ok(())
     }
 
-    pub fn set_refund_window(env: Env, ledgers: u32) -> Result<(), Error> {
+    /// Propose a new refund window. The change is not applied immediately;
+    /// the admin must call `execute_policy` after the timelock (17,280 ledgers,
+    /// ~24 hours) has elapsed. Proposing a new policy overwrites any existing
+    /// pending proposal.
+    pub fn propose_policy(env: Env, ledgers: u32) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
@@ -380,9 +684,59 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        let current_ledger = env.ledger().sequence();
+        let proposal = PolicyProposal {
+            window: ledgers,
+            proposed_at_ledger: current_ledger,
+        };
+
         env.storage()
             .instance()
-            .set(&DataKey::RefundWindow, &ledgers);
+            .set(&DataKey::PendingPolicy, &proposal);
+
+        PolicyProposedEvent {
+            window: ledgers,
+            proposed_at_ledger: current_ledger,
+            execute_after_ledger: current_ledger + POLICY_TIMELOCK,
+        }
+        .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Execute a pending policy change. Fails if no policy is pending or if
+    /// the timelock has not yet expired.
+    pub fn execute_policy(env: Env) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let proposal: PolicyProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingPolicy)
+            .ok_or(Error::NoPendingPolicy)?;
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger < proposal.proposed_at_ledger + POLICY_TIMELOCK {
+            return Err(Error::TimelockNotExpired);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &proposal.window);
+        env.storage().instance().remove(&DataKey::PendingPolicy);
+
+        PolicyExecutedEvent {
+            window: proposal.window,
+        }
+        .publish(&env);
 
         env.storage()
             .instance()
@@ -393,7 +747,17 @@ impl RefundVault {
     pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {
         env.storage()
             .persistent()
-            .get(&DataKey::Refund(payment_ref))
+            .get(&DataKey::RefundV2(payment_ref))
+    }
+
+    /// Returns the current pending policy proposal, if any.
+    pub fn get_pending_policy(env: Env) -> Option<PolicyProposal> {
+        env.storage().instance().get(&DataKey::PendingPolicy)
+    }
+
+    /// Returns the policy timelock delay in ledgers (read-only).
+    pub fn get_policy_timelock() -> u32 {
+        POLICY_TIMELOCK
     }
 
     // ── Yield strategy management ──────────────────────────────────────────
@@ -473,6 +837,8 @@ impl RefundVault {
     /// - Post-deployment liquid balance >= reserve_ratio * total_value
     /// - Total deployed <= max_deploy_ratio * total_value
     pub fn deploy_to_yield(env: Env, amount: i128) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
         if env
             .storage()
             .instance()
@@ -547,12 +913,11 @@ impl RefundVault {
             return Err(Error::DeploymentExceedsMax);
         }
 
-        // Transfer tokens to strategy and record the deposit.
-        token_client.transfer(
-            &env.current_contract_address(),
-            &strategy,
-            &amount,
-        );
+        // Transfer tokens to strategy, then notify the strategy of the deposit
+        // (it needs to record the principal so it can return it on withdrawal).
+        token_client.transfer(&env.current_contract_address(), &strategy, &amount);
+        let strategy_client = YieldStrategyClient::new(&env, &strategy);
+        strategy_client.deposit(&amount);
 
         env.storage()
             .instance()
@@ -567,6 +932,7 @@ impl RefundVault {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        release_reentrancy_lock(&env);
         Ok(())
     }
 
@@ -575,6 +941,8 @@ impl RefundVault {
     ///
     /// `principal` is the amount of originally-deployed principal to reclaim.
     pub fn withdraw_from_yield(env: Env, principal: i128) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
         if env
             .storage()
             .instance()
@@ -619,12 +987,10 @@ impl RefundVault {
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
 
-        env.storage()
-            .instance()
-            .set(
-                &DataKey::DeployedPrincipal,
-                &(deployed - principal_returned),
-            );
+        env.storage().instance().set(
+            &DataKey::DeployedPrincipal,
+            &(deployed - principal_returned),
+        );
         env.storage()
             .instance()
             .set(&DataKey::HarvestedYield, &(harvested + yield_returned));
@@ -639,12 +1005,15 @@ impl RefundVault {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        release_reentrancy_lock(&env);
         Ok(())
     }
 
     /// Harvest accrued yield from the strategy without touching deployed principal.
     /// Yield tokens are transferred to the vault and tracked for operator withdrawal.
     pub fn harvest_yield(env: Env) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
         if env
             .storage()
             .instance()
@@ -691,6 +1060,7 @@ impl RefundVault {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        release_reentrancy_lock(&env);
         Ok(())
     }
 
@@ -732,6 +1102,12 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage().instance().set(&DataKey::IsPaused, &true);
+
+        PauseEvent {
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -747,6 +1123,12 @@ impl RefundVault {
         merchant.require_auth();
 
         env.storage().instance().set(&DataKey::IsPaused, &false);
+
+        UnpauseEvent {
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -754,17 +1136,28 @@ impl RefundVault {
     }
 
     pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), Error> {
-        if !env
+        let record: RefundRecord = env
             .storage()
             .persistent()
-            .has(&DataKey::Refund(payment_ref.clone()))
-        {
-            return Err(Error::RefundNotFound);
-        }
+            .get(&DataKey::RefundV2(payment_ref.clone()))
+            .ok_or(Error::RefundNotFound)?;
+
+        let window: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .unwrap();
+
+        let extend_to = refund_record_ttl_extend_to(&env, window, record.paid_at_ledger);
+        // Threshold == extend_to: a caller invoking this well before expiry
+        // (which is the whole point of a manual top-up) must still see it
+        // take effect. TTL_THRESHOLD (100 ledgers, ~8 minutes) would make
+        // this silently succeed as a no-op unless called in that final
+        // sliver before the entry actually expires.
         env.storage().persistent().extend_ttl(
-            &DataKey::Refund(payment_ref),
-            TTL_THRESHOLD,
-            TTL_EXTEND,
+            &DataKey::RefundV2(payment_ref),
+            extend_to,
+            extend_to,
         );
         Ok(())
     }
@@ -841,6 +1234,11 @@ impl RefundVault {
     }
 }
 
+#[cfg(test)]
 mod fuzz_test;
+#[cfg(test)]
+mod reentrancy_tests;
+#[cfg(test)]
 mod test;
+mod token_agnostic_tests;
 mod yield_tests;

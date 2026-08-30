@@ -61,3 +61,25 @@ Emitted when the merchant withdraws funds from the float.
 - **Topics**: `("withdraw_event", to: Address)`
 - **Data Map**:
   - `amount` (`i128`): The amount withdrawn (in the token's smallest unit).
+
+### 6. `PauseEvent`
+Emitted when the merchant pauses the vault, halting deposits, refunds and withdrawals.
+
+- **Topics**: `("pause_event", ledger: u32)`
+- **Data Map**: *(empty)*
+
+### 7. `UnpauseEvent`
+Emitted when the merchant unpauses the vault.
+
+- **Topics**: `("unpause_event", ledger: u32)`
+- **Data Map**: *(empty)*
+
+The `ledger` topic lets an indexer reconstruct pause windows from the event log alone: a vault is paused between a `pause_event` and the next `unpause_event`.
+
+### 8. `RefundWindowUpdatedEvent`
+Emitted when the merchant changes the refund window.
+
+- **Topics**: `("refund_window_updated_event", previous_window: u32, new_window: u32)`
+- **Data Map**: *(empty)*
+
+Both values are carried so a reader can tell whether a refund rejected at a given ledger was rejected under the old rule or the new one.

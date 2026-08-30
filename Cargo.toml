@@ -1,12 +1,23 @@
 [workspace]
 members = [
+    "contracts/common",
+    "contracts/multisig-account",
     "contracts/receipt-anchor",
+    "contracts/receipt-shard",
     "contracts/refund-vault",
+    "contracts/testutils",
+    "contracts/upto-authorization",
 ]
 resolver = "2"
 
+[workspace.package]
+license = "MIT"
+repository = "https://github.com/accensa/accensa-contracts"
+edition = "2021"
+
 [workspace.dependencies]
 soroban-sdk = "27.0.4"
+accensa-common = { path = "contracts/common" }
 
 [workspace.lints.rust]
 warnings = "deny"
