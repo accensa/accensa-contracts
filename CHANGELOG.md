@@ -10,6 +10,9 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+- **Upto settlement authorization support**: implemented the new
+  `upto-authorization` contract for the upto settlement scheme, including the
+  authorization policy flow and tests covering the contract behavior.
 - **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
   `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
   from the event log alone, and `RefundWindowUpdatedEvent` carries both the

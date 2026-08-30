@@ -143,23 +143,17 @@ impl ReceiptShard {
         let batch = Self::get_batch(env.clone(), batch_id)?;
         let mut computed_hash = leaf.to_array();
 
-        // Use a static buffer on the guest stack to process the Merkle proof
-        // avoiding dynamic host object overhead or heap allocations.
-        let mut proof_buffer = [[0u8; 32]; 128];
-        let len = proof.len() as usize;
-        assert!(len <= 128, "proof length exceeds static buffer limit");
-
-        for (i, sibling_bytes) in proof.into_iter().enumerate() {
-            proof_buffer[i] = sibling_bytes.to_array();
-        }
-
-        for sibling in proof_buffer.iter().take(len) {
+        // Process the proof directly without materializing a large stack buffer.
+        // The hot path only needs one sibling hash at a time and the static
+        // 128-slot array was dominating the per-call CPU budget.
+        for sibling_bytes in proof.iter() {
+            let sibling = sibling_bytes.to_array();
             let mut combined = [0u8; 64];
-            if computed_hash <= *sibling {
+            if computed_hash <= sibling {
                 combined[..32].copy_from_slice(&computed_hash);
-                combined[32..].copy_from_slice(sibling);
+                combined[32..].copy_from_slice(&sibling);
             } else {
-                combined[..32].copy_from_slice(sibling);
+                combined[..32].copy_from_slice(&sibling);
                 combined[32..].copy_from_slice(&computed_hash);
             }
             let mut hasher = Sha256::new();

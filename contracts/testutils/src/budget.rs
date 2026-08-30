@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use soroban_sdk::Env;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
