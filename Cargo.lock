@@ -1277,6 +1277,7 @@ dependencies = [
  "multisig-account",
  "proptest",
  "receipt-shard",
+ "sha2",
  "soroban-sdk",
 ]
 
@@ -1285,6 +1286,7 @@ name = "receipt-shard"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "sha2",
  "soroban-sdk",
 ]
 
@@ -1313,6 +1315,7 @@ name = "refund-vault"
 version = "0.3.0"
 dependencies = [
  "accensa-common",
+ "crypto-bigint",
  "multisig-account",
  "proptest",
  "receipt-anchor",
@@ -1856,6 +1859,13 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "testutils"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

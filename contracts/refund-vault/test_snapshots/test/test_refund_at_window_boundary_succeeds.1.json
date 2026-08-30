@@ -115,7 +115,8 @@
                 },
                 {
                   "i128": "100"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -302,7 +303,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4295
+        "live_until": 518600
       },
       {
         "entry": {
@@ -335,12 +336,36 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "ReentrancyLock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "RefundWindow"
                           }
                         ]
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

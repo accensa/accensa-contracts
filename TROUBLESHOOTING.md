@@ -43,7 +43,7 @@ The transaction is missing a required signature, or the signature provided does 
 
 **Solution:**
 - Verify that the `--source` identity you are using in the CLI matches the account expected by the contract.
-- If you are trying to call an admin-only function (like `deposit` or `set_refund_window`), ensure you are signing with the correct merchant identity.
+- If you are trying to call an admin-only function (like `deposit` or `propose_policy`), ensure you are signing with the correct merchant identity.
 
 ### 4. `HostError` during Refund or Withdraw
 

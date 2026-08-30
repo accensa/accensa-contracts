@@ -900,3 +900,75 @@ fn test_regression_reversed_level_sequence_rejected() {
         "reversed level sequence must be rejected"
     );
 }
+
+/// Headroom percentage (15%) chosen to account for minor toolchain/host optimization differences.
+const HEADROOM_PERCENT: u64 = 15;
+
+/// Cost baselines for `anchor_batch` (N=1000-leaf batch root, including first-anchor shard contract deployment)
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()` on 2026-08-26.
+const ANCHOR_BATCH_BASELINE_CPU: u64 = 1_591_284;
+const ANCHOR_BATCH_BASELINE_MEM: u64 = 3_819_993;
+
+/// Cost baselines for `verify_receipt` (4-leaf Merkle proof, including cross-contract shard routing)
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()`.
+/// Re-measured on 2026-08-29: the pure-WASM SHA-256 folding merged in #250 (08-27)
+/// moved hashing out of the host into WASM, which raised the host CPU instruction
+/// count for this path (~569.9k -> ~780.8k) while cutting WASM instruction usage.
+const VERIFY_RECEIPT_BASELINE_CPU: u64 = 780_762;
+const VERIFY_RECEIPT_BASELINE_MEM: u64 = 1_378_946;
+
+#[test]
+fn benchmark_gas_and_cpu_instructions() {
+    let (env, client, _merchant) = setup();
+
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+
+    env.cost_estimate().budget().reset_default();
+    let batch_id = client.anchor_batch(&root, &1000, &0, &100);
+    let cpu_anchor = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_anchor = env.cost_estimate().budget().memory_bytes_cost();
+
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let proof = soroban_sdk::vec![&env, BytesN::from_array(&env, &[2u8; 32])];
+
+    env.cost_estimate().budget().reset_default();
+    let _verified = client.verify_receipt(&batch_id, &leaf, &proof);
+    let cpu_verify = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_verify = env.cost_estimate().budget().memory_bytes_cost();
+
+    let max_cpu_anchor =
+        ANCHOR_BATCH_BASELINE_CPU + (ANCHOR_BATCH_BASELINE_CPU * HEADROOM_PERCENT / 100);
+    let max_mem_anchor =
+        ANCHOR_BATCH_BASELINE_MEM + (ANCHOR_BATCH_BASELINE_MEM * HEADROOM_PERCENT / 100);
+
+    assert!(
+        cpu_anchor <= max_cpu_anchor,
+        "anchor_batch CPU cost regression! Function: anchor_batch, Limit: {}, Measured: {}",
+        max_cpu_anchor,
+        cpu_anchor
+    );
+    assert!(
+        mem_anchor <= max_mem_anchor,
+        "anchor_batch Memory cost regression! Function: anchor_batch, Limit: {}, Measured: {}",
+        max_mem_anchor,
+        mem_anchor
+    );
+
+    let max_cpu_verify =
+        VERIFY_RECEIPT_BASELINE_CPU + (VERIFY_RECEIPT_BASELINE_CPU * HEADROOM_PERCENT / 100);
+    let max_mem_verify =
+        VERIFY_RECEIPT_BASELINE_MEM + (VERIFY_RECEIPT_BASELINE_MEM * HEADROOM_PERCENT / 100);
+
+    assert!(
+        cpu_verify <= max_cpu_verify,
+        "verify_receipt CPU cost regression! Function: verify_receipt, Limit: {}, Measured: {}",
+        max_cpu_verify,
+        cpu_verify
+    );
+    assert!(
+        mem_verify <= max_mem_verify,
+        "verify_receipt Memory cost regression! Function: verify_receipt, Limit: {}, Measured: {}",
+        max_mem_verify,
+        mem_verify
+    );
+}

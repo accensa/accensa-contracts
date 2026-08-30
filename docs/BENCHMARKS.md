@@ -1,6 +1,24 @@
 # Accensa Benchmarks
 
-> **Note:** This document is currently a skeleton pending the resolution of Issue #65 (`upto` contract implementation). The measurements will be populated once the implementation is available.
+This document records the Soroban budget methodology used for contract resource
+regressions. Receipt-anchor Merkle verification is measured independently from
+setup and anchoring, across representative batch sizes.
+
+## ReceiptAnchor Merkle verification (#125)
+
+`contracts/receipt-anchor/src/test.rs::test_verify_receipt_batch_size_instruction_benchmark`
+measures CPU instruction usage for batch sizes 1, 10, 25, 50, and 100. The test
+builds a valid sorted-pair proof for each depth, resets the Soroban budget before
+verification, and prints the measured value as a CI artifact. The implementation
+uses one iterative pure-WASM SHA-256 fold: proof elements are not copied into a
+second buffer and no host crypto call is made per level.
+
+The test is intentionally a measurement suite rather than a fragile absolute
+threshold: Soroban SDK/toolchain revisions can legitimately change budget values.
+The existing budget-regression test continues to protect the checked-in baseline;
+run the benchmark before and after changes and compare the printed
+`cpu_instructions` values for the same batch size.
+
 
 ## Methodology
 

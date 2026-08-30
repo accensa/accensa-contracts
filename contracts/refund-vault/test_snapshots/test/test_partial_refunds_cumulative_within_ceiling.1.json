@@ -115,7 +115,8 @@
                 },
                 {
                   "i128": "300"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -146,7 +147,8 @@
                 },
                 {
                   "i128": "300"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -177,7 +179,8 @@
                 },
                 {
                   "i128": "300"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -405,7 +408,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 518400
       },
       {
         "entry": {
@@ -438,12 +441,36 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "ReentrancyLock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "RefundWindow"
                           }
                         ]
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
