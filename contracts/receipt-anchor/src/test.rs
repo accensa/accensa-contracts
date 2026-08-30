@@ -3,6 +3,12 @@ mod test {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Address, Env, BytesN, Symbol};
 
+// This crate is `#![no_std]`; the test harness still links `std`, so bring it
+// into scope for `println!` and `std::vec::Vec` below. (The std prelude is not
+// auto-injected in no_std crates, so the macro needs an explicit import.)
+extern crate std;
+use std::println;
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
