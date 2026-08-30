@@ -1,7 +1,10 @@
 [package]
 name = "receipt-anchor"
 version = "0.3.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Merkle batch anchoring for x402 receipts on Stellar"
 
 [lints]
 workspace = true
@@ -10,9 +13,17 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Enables the Tier A budget-assertion tests in `src/budget_test.rs`. Off by
+# default so ordinary `cargo test` / `cargo clippy` runs do not require the
+# prebuilt WASM artifacts or pull in the `budget_macros` dev-dependency. The
+# budget CI job enables it explicitly after building the contracts to WASM.
+budget-assert = ["dep:budget_macros"]
+
 [dependencies]
 soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
+sha2 = { version = "0.10.9", default-features = false }
 
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
@@ -24,3 +35,10 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 # crate's generated functions into a native test binary creates no symbol
 # collisions with receipt-anchor's own same-named functions.
 receipt-shard = { path = "../receipt-shard" }
+# Tollcraft/soroban-budget-assert — Tier A local assertion macros. Pinned to a
+# stable ref; the macros read `env.cost_estimate().budget()` on the WASM-mode
+# estimate and fail the test if the pinned limit is exceeded. Optional so it is
+# only compiled when the `budget-assert` feature is on.
+# NOTE: pin this to a released tag (e.g. `tag = "v0.1.0"`) once a tag exists;
+# `main` is used here so the dependency always resolves.
+budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git", branch = "main", package = "budget-macros", optional = true }

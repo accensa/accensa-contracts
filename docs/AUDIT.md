@@ -179,18 +179,28 @@ merchant retained the root off-chain.
 
 ### `RefundVault`
 
-#### I-7. A `payment_ref` is refunded at most once, under any call interleaving
-The executed refund is recorded as a persistent tombstone keyed by `payment_ref`;
-a second `refund` for the same ref returns `AlreadyRefunded`. This is the
-double-refund guarantee that makes the vault safe to hold float.
-*Attack (the one spot worth scrutiny):* the tombstone is written **after** the
-outbound token transfer completes. The auditor should verify whether the
-outbound `transfer` to a *contract* recipient can re-enter `refund` before the
-tombstone exists, and confirm that re-entry re-runs the float and window checks
-in a way that cannot pay out twice. The fuzz suite asserts the invariant over
-random interleavings, but a single adversarial recipient contract is exactly the
-case generated sequences do not cover — call this out as a targeted test for the
-engagement.
+#### I-7. Cumulative refunds for a `payment_ref` never exceed the payment ceiling
+Since issue #99 a `payment_ref` is refunded in **partials**, not all-or-nothing:
+each claim reads the stored cumulative `RefundV2` record (freshly minted on the
+first partial) and adds the claim to `amount_refunded`; a claim that would push
+the running total past the `payment_amount` ceiling — or whose `payment_amount`
+is not positive — returns `ExceedsPayment`. A `Refund` key written by the
+legacy single-refund rule denotes a fully-used payment and also returns
+`ExceedsPayment`. The ceiling check, the record write and the payout all occur
+in the same invocation, so there is no interleaving that pays the same amount
+twice for one payment; that is the double-refund guarantee that makes the vault
+safe to hold float.
+*Attack (the one spot worth scrutiny):* the cumulative ceiling update is written
+**after** the outbound token transfer completes. The auditor should verify
+whether the outbound `transfer` to a *contract* recipient can re-enter a claim
+before the update lands, and confirm that re-entry re-runs the float, window,
+deadline and ceiling checks in a way that cannot pay out twice. The fuzz suite
+asserts ceiling compliance over random interleavings, and
+`reentrancy_tests.rs` attacks the adversarial recipient-contract case directly
+(the host refuses contract re-entry before any vault code runs, and the
+`acquire_reentrancy_lock` guard is the defence-in-depth backup); but a single
+adversarial recipient contract is exactly the case generated sequences do not
+cover — keep it as a targeted test for the engagement.
 
 #### I-8. Refunds outside `refund_window_ledgers` are impossible
 `refund` rejects when `current_ledger > paid_at_ledger + window`
