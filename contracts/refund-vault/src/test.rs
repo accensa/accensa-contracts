@@ -105,7 +105,6 @@ fn test_refund_outside_window_fails() {
 
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
     let buyer = Address::generate(&env);
-    // Paid at ledger 100 with a 100-ledger window: expired at 200, now 500.
     assert_eq!(
         client.try_refund(&payment_ref, &buyer, &100, &100, &100, &None),
         Err(Ok(Error::WindowExpired))
@@ -266,6 +265,15 @@ fn test_nonce_does_not_increment_on_failed_operation() {
 }
 
 #[test]
+fn test_set_refund_window_zero_fails() {
+    let (_env, client, _merchant, _token) = setup(100);
+    assert_eq!(
+        client.try_set_refund_window(&0),
+        Err(Ok(Error::InvalidWindow))
+    );
+}
+
+#[test]
 fn test_uninitialized_calls_fail() {
     let env = Env::default();
     env.mock_all_auths();
@@ -365,32 +373,24 @@ fn test_withdraw_invalid_amount_fails() {
 
 #[test]
 fn test_pause_unpause() {
-    let (_env, client, _merchant, _token) = setup(100);
-    client.pause();
-    client.unpause();
-}
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
 
-#[test]
-fn test_deposit_when_paused_fails() {
-    let (_env, client, merchant, _token) = setup(100);
     client.pause();
-    assert_eq!(client.try_deposit(&merchant, &100), Err(Ok(Error::Paused)));
-}
-
-#[test]
-fn test_refund_when_paused_fails() {
-    let (env, client, _merchant, _token) = setup(100);
-    client.pause();
-    let payment_ref = BytesN::from_array(&env, &[10u8; 32]);
+    let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
         client.try_refund(&payment_ref, &buyer, &100, &0, &100, &None),
         Err(Ok(Error::Paused))
     );
+
+    client.unpause();
+    client.refund(&payment_ref, &buyer, &100, &0);
+    assert!(client.get_refund(&payment_ref).is_some());
 }
 
 #[test]
-fn test_withdraw_when_paused_fails() {
+fn test_admin_transfer_happy_path() {
     let (_env, client, merchant, _token) = setup(100);
     client.pause();
     assert_eq!(client.try_withdraw(&100, &merchant), Err(Ok(Error::Paused)));

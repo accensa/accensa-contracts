@@ -189,6 +189,10 @@ window-based refunds.
   WASM). Treat the shipped modulus as a testnet-grade placeholder, not a
   mainnet parameter.
 
+### Zero Window Misconfiguration
+- **Threat:** A merchant accidentally or intentionally sets a refund window of `0`, implicitly attempting to create an 'unlimited' refund window.
+- **Mitigation:** Unlimited refund windows are deemed illegitimate to eliminate silent misconfigurations and unsafe defaults. Both `initialize` and `set_refund_window` explicitly reject any window value of `0` (or below `MIN_REFUND_WINDOW`) with an `InvalidWindow` error.
+
 ### Float Draining (Negative/Zero Amounts)
 - **Threat:** An attacker tries to refund a negative amount to cause an underflow or steal funds.
 - **Mitigation:** Explicit validation ensures that the `amount` is strictly greater than zero (`InvalidAmount` error) before executing token transfers, preventing unintended arithmetic behaviors or logical exploits.
