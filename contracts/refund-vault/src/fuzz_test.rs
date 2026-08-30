@@ -194,7 +194,7 @@ impl Model {
                 let payment_ref = BytesN::from_array(&env, &ref_bytes);
                 let recipient = Address::generate(&env);
 
-                if client.try_refund(&payment_ref, &recipient, &amt, &0, &amt).is_ok() {
+                if client.try_refund(&payment_ref, &recipient, &amt, &0, &amt, &None).is_ok() {
                     expected_balance -= amt;
                 }
                 let actual_balance = token_client.balance(&client.address);
@@ -235,7 +235,7 @@ fn test_refund_resource_cost_budget() {
     let recipient = Address::generate(&env);
 
     env.cost_estimate().budget().reset_default();
-    client.refund(&payment_ref, &recipient, &100_000, &0, &100_000);
+    client.refund(&payment_ref, &recipient, &100_000, &0, &100_000, &None);
     let cpu_refund = env.cost_estimate().budget().cpu_instruction_cost();
     let mem_refund = env.cost_estimate().budget().memory_bytes_cost();
 
@@ -340,7 +340,7 @@ fn execute(
             Op::SetWindow { window } => {
                 // propose_policy is not gated on pause; execute requires timelock.
                 // The fuzz model does not model deadlines, so no deadline (0) is proposed.
-                let _ = client.try_propose_policy(window, &0);
+                let _ = client.try_propose_policy(window, &0, &0);
                 model.window = *window;
             }
             Op::Deposit { amount } => {
@@ -399,6 +399,7 @@ fn execute(
                     amount,
                     paid_at_ledger,
                     payment_amount,
+                    &None,
                 );
                 // The ceiling is fixed by the first partial for this slot.
                 let (cumulative, ceiling) = model.refunded[idx].unwrap_or((0, *payment_amount));
@@ -698,7 +699,7 @@ proptest! {
         client.deposit(&merchant, &1_000_000);
         let buyer = Address::generate(&env);
         let ref_ = payment_ref(&env, 0);
-        client.refund(&ref_, &buyer, &100_000, &0, &100_000);
+        client.refund(&ref_, &buyer, &100_000, &0, &100_000, &None);
 
         // Extension on a record that does not exist errors. Slot 0 is the
         // refunded one, so pick a guaranteed-distinct slot (1..REF_SLOTS).
@@ -798,7 +799,7 @@ fn test_regression_float_accounts_across_full_cycle() {
 
     let ref_a = payment_ref(&env, 0);
     let buyer = Address::generate(&env);
-    client.refund(&ref_a, &buyer, &400_000, &0, &400_000);
+    client.refund(&ref_a, &buyer, &400_000, &0, &400_000, &None);
     assert_eq!(token_client.balance(&client.address), 2_600_000);
 
     client.withdraw(&500_000, &merchant);
@@ -807,7 +808,7 @@ fn test_regression_float_accounts_across_full_cycle() {
     // The ceiling guard holds even after other activity: cumulative 400_000
     // + 100 would exceed the 400_000 ceiling.
     assert_eq!(
-        client.try_refund(&ref_a, &buyer, &100, &0, &400_000),
+        client.try_refund(&ref_a, &buyer, &100, &0, &400_000, &None),
         Err(Ok(Error::ExceedsPayment))
     );
     assert_eq!(token_client.balance(&client.address), 2_100_000);
@@ -827,13 +828,13 @@ fn test_regression_pause_blocks_and_preserves_state() {
     let buyer = Address::generate(&env);
     let ref_ = payment_ref(&env, 1);
     assert_eq!(
-        client.try_refund(&ref_, &buyer, &100, &0, &100),
+        client.try_refund(&ref_, &buyer, &100, &0, &100, &None),
         Err(Ok(Error::Paused))
     );
     assert!(client.get_refund(&ref_).is_none());
     assert_eq!(token_client.balance(&client.address), 1_000_000);
 
     client.unpause();
-    client.refund(&ref_, &buyer, &100, &0, &100);
+    client.refund(&ref_, &buyer, &100, &0, &100, &None);
     assert_eq!(token_client.balance(&client.address), 999_900);
 }

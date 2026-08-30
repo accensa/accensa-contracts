@@ -70,6 +70,8 @@ they were charged correctly, with no trusted API in the path.
 |---|---|
 | `initialize(merchant)` | Binds the contract to a merchant admin address. |
 | `anchor_batch(root, count, period_start, period_end) -> u64` | Anchors a batch root, returns its `batch_id`. Merchant auth required. `count` must be $\le$ 1000 (`MAX_BATCH_SIZE`). Rate-limited if `min_anchor_interval > 0`. |
+| `anchor_batch_zk(state_root, proof, count, period_start, period_end) -> u64` | Anchors a batch by verifying a ZK validity proof of the batch state root. |
+| `verify_zk_proof(proof, vk, public_inputs) -> bool` | Verifies a Groth16 zero-knowledge proof against public inputs in $O(1)$ time. |
 | `get_batch(batch_id) -> BatchRecord` | Reads an anchored batch. |
 | `get_batch_count() -> u64` | Returns the total number of anchored batches. Read-only. |
 | `get_admin() -> Address` | Returns the configured merchant admin address. Read-only; fails with `NotInitialized` before `initialize`. |
@@ -115,15 +117,17 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 |---|---|
 | `initialize(merchant, token, refund_window_ledgers)` | Sets admin, settlement token, and refund window. |
 | `deposit(from, amount)` | Merchant tops up float. |
-| `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. A configured fee (if any) is deducted before the payout. |
+| `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount, vdf_proof)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. A configured fee (if any) is deducted before the payout. `vdf_proof` is `Option<BytesN<256>>` — the 128-byte output `x^(2^T) mod N` concatenated with the 128-byte Wesolowski witness — required only when the policy carries a VDF delay (see below). |
 | `claim_batch(claims)` | Refunds multiple claims in one transaction (`Vec<RefundClaim>`, one struct per `refund` call). Atomic: one failing claim reverts the whole batch. One merchant signature, one reentrancy lock, and a `RefundEvent` per claim. Per-element float checks mean it can never overdraw the vault. |
 | `process_batch(refunds)` | Best-effort batch refunds (`Vec<RefundParam>`, same shape as `RefundClaim`). Returns `Vec<bool>` — one entry per claim (`true` = applied), and a failing claim does **not** roll back the others. Capped at 100 claims per call (`BatchTooLarge`). Every claim runs the identical per-claim logic as `refund`, including the policy deadline check and the configured fee. Non-atomic by design: use `claim_batch` when all-or-nothing semantics are required. |
 | `withdraw(amount, to)` | Merchant withdraws float. |
-| `propose_policy(ledgers, deadline)` | Proposes a new refund policy — a window (in ledgers) plus a wall-clock deadline (Unix timestamp; `0` = no deadline); subject to timelock. |
-| `execute_policy()` | Executes a pending policy change after the timelock. Applies both the new window and the new deadline. |
+| `propose_policy(ledgers, deadline, vdf_delay)` | Proposes a new refund policy — a window (in ledgers), a wall-clock deadline (Unix timestamp; `0` = no deadline), and a VDF delay in squarings (`0` = none); subject to timelock. |
+| `execute_policy()` | Executes a pending policy change after the timelock. Applies the new window, deadline, and VDF delay. |
 | `get_pending_policy()` | Returns the current pending policy proposal, if any. |
 | `get_policy_timelock()` | Returns the policy timelock delay in ledgers (read-only). |
 | `get_refund_deadline()` | Returns the configured policy deadline as a Unix timestamp (`0` = none, read-only). |
+| `get_vdf_delay()` | Returns the policy's VDF delay in squarings (`0` = none, read-only). |
+| `verify_vdf(challenge, delay, proof)` | Read-only, unauthenticated Wesolowski VDF verifier against the contract's fixed 1024-bit modulus — the surface for randomness-verification flows that never touch the vault. Returns `InvalidVdfProof` if the proof does not verify. |
 | `set_fee_bps(bps)` | Sets the refund fee rate in basis points (0–10_000, default 0). Merchant auth, emits `FeeConfigUpdatedEvent`. |
 | `set_fee_recipient(recipient)` | Sets the address that collects the refund fee; rejects the vault's own address. Merchant auth, emits `FeeConfigUpdatedEvent`. |
 | `get_fee_bps()` | Returns the configured fee rate in basis points (read-only). |
@@ -182,6 +186,18 @@ would not fit if each emitted its own event. The token contract's per-refund
 `contracts/refund-vault/tests/integration_test.rs`):
 - **`payment_ref` ↔ receipt-leaf** *(covered by `readme_claim_payment_ref_is_receipt_leaf`)*: The `payment_ref` used to key refunds is identical to the `leaf` hash of the payment receipt anchored in `ReceiptAnchor`. This 1:1 mapping guarantees that the on-chain refund explicitly corresponds to the exact payment record provided to the agent.
 - **Refunds outlive pruned batches** *(covered by `readme_claim_refunds_outlive_pruned_batches`)*: Archiving or pruning a batch in `ReceiptAnchor` has no effect on the `RefundVault`. A payment can be successfully refunded even if its original anchor batch has been pruned, provided it still falls within the refund window.
+
+**VDF Fairness** — policies can carry a Verifiable Delay Function delay
+(`propose_policy(..., vdf_delay)`). When configured, finalizing a refund
+requires a valid [Wesolowski VDF proof](contracts/refund-vault/src/vdf.rs)
+that `vdf_delay` sequential squarings have genuinely elapsed. The delay is
+*computational*: unlike the ledger window or wall-clock deadline, a validator
+that controls block timestamps or transaction ordering cannot shorten it, and
+the proof is bound to the payment (`challenge = sha256(payment_ref)`), so it
+cannot be replayed across payments. Proofs are generated off-chain by the
+merchant's refund agent; the contract only verifies, in ≈51k CPU units (~a
+tenth of a refund call). See `docs/SECURITY_MODEL.md` § "VDF Fairness" for
+the threat model and the modulus-ceremony note.
 
 Enforced invariants, each covered by a test:
 
@@ -245,6 +261,7 @@ contracts instead of per-contract tables.
 | 200 | `RootNotFound` | The Merkle root is not in the historical ring buffer. |
 | 201 | `ProofTooLong` | The Merkle proof exceeds `MAX_PROOF_LEN`. |
 | 202 | `AnchorRateLimited` | An anchor was submitted before the minimum interval elapsed. |
+| 203 | `InvalidProof` | The zero-knowledge validity proof is invalid or malformed. |
 | 300 | `NoPendingPolicy` | No pending policy change exists to execute. |
 | 301 | `TimelockNotExpired` | The policy timelock period has not yet elapsed. |
 | 302 | `FuturePaidAtLedger` | A refund reported `paid_at_ledger` in the future (greater than the current ledger sequence). |
