@@ -10,6 +10,42 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+
+- **VDF-gated refunds for `RefundVault`** (issue #138): the refund policy now
+  carries a Verifiable Delay Function requirement — `propose_policy(ledgers,
+  deadline, vdf_delay)` configures a delay in squarings (subject to the same
+  timelock) and `execute_policy` applies it. When the policy has a delay
+  configured, `refund`, every claim in `claim_batch`, and every item in
+  `process_batch` must supply a valid **Wesolowski VDF proof** that the delay
+  has genuinely elapsed; claims without one fail with `VdfProofRequired`
+  (302), with an invalid or premature one with `InvalidVdfProof` (303), and a
+  proof supplied against a policy with no delay with `VdfNotConfigured` (304).
+  The proof is bound to the payment (challenge = `sha256(payment_ref)`), so it
+  cannot be replayed across payments, and the delay is *computational* — a
+  validator that controls block timestamps or transaction ordering cannot
+  shorten it without factoring the contract's fixed 1024-bit modulus. The
+  verifier (`contracts/refund-vault/src/vdf.rs`) runs in pure WASM via
+  `crypto-bigint` (already in the dependency tree, so no new transitive
+  crates), is exposed publicly as read-only `verify_vdf(challenge, delay,
+  proof)` for randomness-verification flows, and its cost is pinned by a
+  budget test (a verification measures ≈51k CPU units — about a tenth of a
+  refund call). The new `get_vdf_delay()` getter exposes the configured delay.
+  This is a **breaking change** for clients: the `propose_policy` signature is
+  extended and `refund`/`RefundClaim`/`RefundParam` gain a `vdf_proof`
+  argument/field. `initialize` is unchanged and existing deployments default
+  to no delay (`0`), keeping them behaviour- and storage-compatible. The
+  contract's modulus is a fixed constant with its factors discarded after
+  generation; a production deployment should replace it with a
+  ceremony-chosen modulus (see `docs/SECURITY_MODEL.md` § "VDF Fairness").
+
+- **ZK validity proof batch anchoring for `ReceiptAnchor`**: `anchor_batch_zk`
+  allows merchants to anchor batch state roots on-chain by providing a Groth16
+  zero-knowledge validity proof (`ZkProof`), verifying validity in $O(1)$ time
+  and saving computational overhead on-chain. Added `verify_zk_proof` to verify
+  Groth16 proofs against verifying keys and public inputs, and introduced
+  `Error::InvalidProof` (code 203).
+
+
 - **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
   processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
   as `RefundClaim`) under a single merchant authorization, returning
@@ -20,7 +56,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   (deadline, ceiling, float, and the configured fee), publishing a
   `RefundEvent` per applied claim. Non-atomic by design — callers that require
   all-or-nothing semantics should use `claim_batch` instead.
-
 - **Batch refunds for `RefundVault`**: `claim_batch(claims)` refunds multiple
   claims in a single transaction, each processed with exactly the same logic,
   checks, fees and events as `refund`, sharing one merchant authorization and
@@ -37,7 +72,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   endpoint are unchanged (the shared claim path is extracted verbatim), and gas
   is pinned by a budget test asserting a ten-claim batch stays well under the
   default CPU and memory limits and scales near-linearly with a single claim.
-
 - **Refund fees for `RefundVault`**: the merchant can configure a fee deducted
   from every successful refund — `set_fee_bps(bps)` fixes the rate (basis
   points, up to 10_000) and `set_fee_recipient(recipient)` the collector
@@ -52,7 +86,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   `get_fee_recipient()` getters expose the configuration, and the
   `RefundEvent` data map gains a `fee` field (append-only, see
   `docs/EVENTS.md`).
-
 - **Refund expiration deadline for `RefundVault`**: the refund policy now
   carries a wall-clock deadline (Unix timestamp) alongside the ledger-based
   window — `propose_policy(ledgers, deadline)` configures it (subject to the
@@ -79,8 +112,47 @@ breaking changes bump the **minor** version, and they are called out as such.
   `.git/HEAD`, the resolved branch ref, the index and `src/` so a cached build
   cannot report a stale hash. A `test_commit_meta_is_well_formed` test in both
   crates pins the embedded commit to 40 hex characters.
+- **Oracle aggregator for dynamic refund policies** (`RefundVault`): a
+  standard `Oracle` interface (`get_price` + `get_last_update_ledger`) that
+  any price/data feed contract can implement, merchant-whitelisted via
+  `add_oracle`/`remove_oracle`/`get_oracles`; a median aggregator
+  (`get_median_price`) that queries every whitelisted oracle for a feed and
+  returns the median of the fresh (non-stale) values, so no single provider
+  is trusted; and an `OraclePolicy` (feed, threshold, staleness bound,
+  `refund_when_below`) installed via `set_oracle_policy`/`clear_oracle_policy`
+  that gates `refund` and `process_batch` — a refund is only paid out while
+  the aggregated feed satisfies the condition, failing closed on a missing
+  whitelist or all-stale data. New events `oracle_policy_set_event` /
+  `oracle_policy_cleared_event` and error codes 302–307
+  (`NoOraclesConfigured`, `OracleAlreadyAdded`, `OracleNotFound`,
+  `StaleOracleData`, `NoOraclePolicy`, `OraclePolicyDenied`).
 
 ### Changed
+
+- **CI fixes**: the `build-wasm` job now builds the deployable contract crates
+  with `--workspace --exclude testutils` — the `testutils` workspace member
+  activates `soroban-sdk`'s `testutils` feature, which is not supported on the
+  `wasm32v1-none` target and made every wasm build fail at the SDK boundary.
+
+
+  The `.wasm-budget.json` size budgets are updated to the current deterministic
+  release builds (receipt-anchor 33,067 B, refund-vault 85,453 B) with ~5%
+  headroom — the exact-pin approach kept breaking on toolchain drift, and the
+  refund-vault budget had not caught up with the VDF crypto code.
+
+  The `ReceiptAnchor` budget gate in `fuzz_test.rs` is re-baselined for
+  `verify_receipt`: the pure-WASM SHA-256 folding merged in #250 moved hashing
+  out of the host into WASM, raising the host CPU instruction count for that
+  path (~569.9k → ~780.8k) while cutting WASM instructions; the gate's limits
+  now reflect the current implementation (measured 2026-08-29) and still allow
+  15% headroom for toolchain drift.
+
+- **Lower-cost Merkle proof verification** (issue #125): `ReceiptShard` and
+  `ReceiptAnchor` now fold sorted-pair proofs in a single iterative pure-WASM
+  SHA-256 loop, avoiding redundant proof buffering and host crypto roundtrips.
+  Batch-size instruction measurements were added to the ReceiptAnchor test suite
+  and documented in `docs/BENCHMARKS.md`.
+
 
 - **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
   Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
@@ -104,6 +176,20 @@ breaking changes bump the **minor** version, and they are called out as such.
   has not authorised, and `withdraw` stays merchant-only. The existing
   `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
   deliberate.
+
+### Fixed
+
+- **`main` was failing CI** (left red by the advanced-wasm-memory merge):
+  restored the truncated `assert_eq!` in
+  `test_process_batch_exceeds_max_size_fails` (the file would not parse),
+  fixed the clippy 1.98 `needless_borrow` / `unnecessary_cast` violations,
+  excluded the host-only `testutils` crate from the wasm artifact build (it
+  enables soroban-sdk's `testutils` feature, which the SDK rejects on wasm),
+  and re-baselined the cost-regression constants and wasm size budgets to the
+  freshly measured values (`verify_receipt` CPU 569,906 → 780,985 after the
+  pure-Wasm sha2 rewrite; `refund` CPU 397,721 → 477,714; `refund_vault.wasm`
+  37,376 → 56,320 bytes; `receipt_anchor.wasm` 24,576 → 33,792 bytes on the
+  current toolchain).
 
 ## [0.3.0] — 2026-08-26
 
@@ -297,3 +383,4 @@ the transactions that created them are recorded in
 [0.3.0]: https://github.com/accensa/accensa-contracts/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/accensa/accensa-contracts/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/accensa/accensa-contracts/releases/tag/v0.1.0
+

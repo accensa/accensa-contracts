@@ -71,6 +71,8 @@ they were charged correctly, with no trusted API in the path.
 |---|---|
 | `initialize(merchant)` | Binds the contract to a merchant admin address. |
 | `anchor_batch(root, count, period_start, period_end) -> u64` | Anchors a batch root, returns its `batch_id`. Merchant auth required. `count` must be $\le$ 1000 (`MAX_BATCH_SIZE`). Rate-limited if `min_anchor_interval > 0`. |
+| `anchor_batch_zk(state_root, proof, count, period_start, period_end) -> u64` | Anchors a batch by verifying a ZK validity proof of the batch state root. |
+| `verify_zk_proof(proof, vk, public_inputs) -> bool` | Verifies a Groth16 zero-knowledge proof against public inputs in $O(1)$ time. |
 | `get_batch(batch_id) -> BatchRecord` | Reads an anchored batch. |
 | `get_batch_count() -> u64` | Returns the total number of anchored batches. Read-only. |
 | `get_admin() -> Address` | Returns the configured merchant admin address. Read-only; fails with `NotInitialized` before `initialize`. |
@@ -116,24 +118,29 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 |---|---|
 | `initialize(merchant, token, refund_window_ledgers)` | Sets admin, settlement token, and refund window. |
 | `deposit(from, amount)` | Merchant tops up float. |
-| `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. A configured fee (if any) is deducted before the payout. |
+| `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount, vdf_proof)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. A configured fee (if any) is deducted before the payout. `vdf_proof` is `Option<BytesN<256>>` — the 128-byte output `x^(2^T) mod N` concatenated with the 128-byte Wesolowski witness — required only when the policy carries a VDF delay (see below). |
 | `claim_batch(claims)` | Refunds multiple claims in one transaction (`Vec<RefundClaim>`, one struct per `refund` call). Atomic: one failing claim reverts the whole batch. One merchant signature, one reentrancy lock, and a `RefundEvent` per claim. Per-element float checks mean it can never overdraw the vault. |
 | `process_batch(refunds)` | Best-effort batch refunds (`Vec<RefundParam>`, same shape as `RefundClaim`). Returns `Vec<bool>` — one entry per claim (`true` = applied), and a failing claim does **not** roll back the others. Capped at 100 claims per call (`BatchTooLarge`). Every claim runs the identical per-claim logic as `refund`, including the policy deadline check and the configured fee. Non-atomic by design: use `claim_batch` when all-or-nothing semantics are required. |
 | `withdraw(amount, to)` | Merchant withdraws float. |
-| `propose_policy(ledgers, deadline)` | Proposes a new refund policy — a window (in ledgers) plus a wall-clock deadline (Unix timestamp; `0` = no deadline); subject to timelock. |
-| `execute_policy()` | Executes a pending policy change after the timelock. Applies both the new window and the new deadline. |
+| `propose_policy(ledgers, deadline, vdf_delay)` | Proposes a new refund policy — a window (in ledgers), a wall-clock deadline (Unix timestamp; `0` = no deadline), and a VDF delay in squarings (`0` = none); subject to timelock. |
+| `execute_policy()` | Executes a pending policy change after the timelock. Applies the new window, deadline, and VDF delay. |
 | `get_pending_policy()` | Returns the current pending policy proposal, if any. |
 | `get_policy_timelock()` | Returns the policy timelock delay in ledgers (read-only). |
 | `get_refund_deadline()` | Returns the configured policy deadline as a Unix timestamp (`0` = none, read-only). |
+| `get_vdf_delay()` | Returns the policy's VDF delay in squarings (`0` = none, read-only). |
+| `verify_vdf(challenge, delay, proof)` | Read-only, unauthenticated Wesolowski VDF verifier against the contract's fixed 1024-bit modulus — the surface for randomness-verification flows that never touch the vault. Returns `InvalidVdfProof` if the proof does not verify. |
 | `set_fee_bps(bps)` | Sets the refund fee rate in basis points (0–10_000, default 0). Merchant auth, emits `FeeConfigUpdatedEvent`. |
 | `set_fee_recipient(recipient)` | Sets the address that collects the refund fee; rejects the vault's own address. Merchant auth, emits `FeeConfigUpdatedEvent`. |
 | `get_fee_bps()` | Returns the configured fee rate in basis points (read-only). |
 | `get_fee_recipient()` | Returns the configured fee recipient, if any (read-only; falls back to the merchant at claim time). |
 | `get_refund(payment_ref) -> Option<RefundRecord>` | Looks up a refund. |
-| `get_admin() -> Address` | Returns the admin (merchant) address. Read-only; fails with `NotInitialized` before `initialize`. |
-| `get_token() -> Address` | Returns the settlement token address. Read-only; fails with `NotInitialized` before `initialize`. |
-| `get_refund_window() -> u32` | Returns the refund window in ledgers (`0` = no time bound). Read-only; fails with `NotInitialized` before `initialize`. |
-| `is_paused() -> bool` | Returns whether the vault is paused. Read-only; fails with `NotInitialized` before `initialize`, `false` otherwise. |
+| `add_oracle(oracle)` | Whitelists an oracle contract implementing the standard `Oracle` interface (`get_price` + `get_last_update_ledger`); merchant auth required. |
+| `remove_oracle(oracle)` | Removes an oracle from the whitelist; merchant auth required. |
+| `get_oracles() -> Vec<Address>` | Returns the oracle whitelist, in insertion order (read-only). |
+| `get_median_price(feed_id, max_staleness_ledgers) -> Result<i128, Error>` | Queries every whitelisted oracle for the feed and returns the **median** of the fresh (non-stale) values. |
+| `set_oracle_policy(policy)` | Installs the dynamic oracle policy that gates refunds; merchant auth required. |
+| `clear_oracle_policy()` | Removes the dynamic oracle policy, restoring time-window-only refunds; merchant auth required. |
+| `get_oracle_policy() -> Option<OraclePolicy>` | Returns the current oracle policy, if any (read-only). |
 | `pause()` | Pauses operations for emergency stops. Merchant auth required. |
 | `unpause()` | Resumes paused operations. Merchant auth required. |
 | `extend_refund_ttl(payment_ref)` | Extends the TTL of a refund record to prevent archival. Publicly callable. |
@@ -159,9 +166,8 @@ Emits:
 | `PauseEvent` | `("pause_event", ledger)` | — |
 | `UnpauseEvent` | `("unpause_event", ledger)` | — |
 | `RefundWindowUpdatedEvent` | `("refund_window_updated_event", previous_window, new_window)` | — |
-| `PolicyProposedEvent` | `("policy_proposed_event", window)` | `deadline`, `proposed_at_ledger`, `execute_after_ledger` |
-| `PolicyExecutedEvent` | `("policy_executed_event", window)` | `deadline` |
-| `FeeConfigUpdatedEvent` | `("fee_config_updated_event", field)` | `fee_bps`, `fee_recipient` (full effective config) |
+| `OraclePolicySetEvent` | `("oracle_policy_set_event", feed_id)` | `threshold`, `refund_when_below`, `max_staleness_ledgers` |
+| `OraclePolicyClearedEvent` | `("oracle_policy_cleared_event", feed_id)` | — |
 
 Each partial refund emits its own `RefundEvent` carrying **both** the amount for
 that call (`amount`) and the running total (`cumulative_refunded`), so an indexer
@@ -172,10 +178,29 @@ cumulative total (`amount_refunded`) plus the `payment_amount` ceiling, the
 configured, each `RefundEvent` also carries the `fee` deducted from the claim,
 and the fee is paid to the `fee_recipient` alongside the recipient's payout.
 
+`process_batch` deliberately emits **one** `BatchRefundEvent` for the whole batch
+instead of one `RefundEvent` per item: a per-refund event costs ~530 bytes of
+contract-event budget, and mainnet caps a transaction at 16 KiB — so 50+ refunds
+would not fit if each emitted its own event. The token contract's per-refund
+`transfer` event (unavoidable) dominates what remains, which is why
+`MAX_REFUND_BATCH_SIZE` is 50.
+
 **Cross-Contract Joins** (both claims below are pinned by tests in
 `contracts/refund-vault/tests/integration_test.rs`):
 - **`payment_ref` ↔ receipt-leaf** *(covered by `readme_claim_payment_ref_is_receipt_leaf`)*: The `payment_ref` used to key refunds is identical to the `leaf` hash of the payment receipt anchored in `ReceiptAnchor`. This 1:1 mapping guarantees that the on-chain refund explicitly corresponds to the exact payment record provided to the agent.
 - **Refunds outlive pruned batches** *(covered by `readme_claim_refunds_outlive_pruned_batches`)*: Archiving or pruning a batch in `ReceiptAnchor` has no effect on the `RefundVault`. A payment can be successfully refunded even if its original anchor batch has been pruned, provided it still falls within the refund window.
+
+**VDF Fairness** — policies can carry a Verifiable Delay Function delay
+(`propose_policy(..., vdf_delay)`). When configured, finalizing a refund
+requires a valid [Wesolowski VDF proof](contracts/refund-vault/src/vdf.rs)
+that `vdf_delay` sequential squarings have genuinely elapsed. The delay is
+*computational*: unlike the ledger window or wall-clock deadline, a validator
+that controls block timestamps or transaction ordering cannot shorten it, and
+the proof is bound to the payment (`challenge = sha256(payment_ref)`), so it
+cannot be replayed across payments. Proofs are generated off-chain by the
+merchant's refund agent; the contract only verifies, in ≈51k CPU units (~a
+tenth of a refund call). See `docs/SECURITY_MODEL.md` § "VDF Fairness" for
+the threat model and the modulus-ceremony note.
 
 Enforced invariants, each covered by a test:
 
@@ -205,6 +230,21 @@ Enforced invariants, each covered by a test:
   [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)).
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
 
+**Dynamic (oracle-gated) policies** — beyond the static refund window, the
+merchant can install an `OraclePolicy` so refunds are only paid out while an
+externally-sourced value satisfies a condition (e.g. *"refund while the asset
+price is below the SLA floor"*). The vault never trusts a single feed:
+whitelisted oracles implement the standard `Oracle` interface
+(`get_price` / `get_last_update_ledger`), the aggregator queries all of them
+and takes the **median** of the fresh values, and a value older than the
+policy's `max_staleness_ledgers` is excluded. If no oracle is whitelisted, or
+every whitelisted oracle is stale, the vault **fails closed**
+(`NoOraclesConfigured` / `StaleOracleData`) rather than guessing; a refund
+rejected by the condition returns `OraclePolicyDenied`. The gate applies to
+both `refund` and every item of `process_batch`. See
+[`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#6-the-oracle-aggregator-optional)
+for the trust model.
+
 ## Error Codes
 
 Both contracts return errors from a **single, shared enum** in
@@ -231,7 +271,12 @@ contracts instead of per-contract tables.
 | 17 | `NothingToHarvest` | Nothing to harvest from the yield strategy. |
 | 18 | `InvalidRatio` | A configured ratio was out of range. |
 | 19 | `ExceedsPayment` | Cumulative refunds would exceed the payment ceiling. |
-| 23 | `RefundExpired` | A refund claim was submitted after the policy deadline passed. |
+| 302 | `NoOraclesConfigured` | No oracle contracts are whitelisted on the vault. |
+| 303 | `OracleAlreadyAdded` | An oracle contract is already on the whitelist. |
+| 304 | `OracleNotFound` | The oracle contract is not on the whitelist. |
+| 305 | `StaleOracleData` | Every whitelisted oracle returned stale data for the requested feed. |
+| 306 | `NoOraclePolicy` | No dynamic oracle policy is configured. |
+| 307 | `OraclePolicyDenied` | A refund was rejected because the oracle policy condition was not met. |
 | 100 | `BatchNotFound` | The requested batch does not exist (or was pruned). |
 | 101 | `BatchTooLarge` | A batch larger than `MAX_BATCH_SIZE` was submitted. |
 | 102 | `ShardCallFailed` | A shard call returned an unexpected shape. |
@@ -239,6 +284,7 @@ contracts instead of per-contract tables.
 | 200 | `RootNotFound` | The Merkle root is not in the historical ring buffer. |
 | 201 | `ProofTooLong` | The Merkle proof exceeds `MAX_PROOF_LEN`. |
 | 202 | `AnchorRateLimited` | An anchor was submitted before the minimum interval elapsed. |
+| 203 | `InvalidProof` | The zero-knowledge validity proof is invalid or malformed. |
 | 300 | `NoPendingPolicy` | No pending policy change exists to execute. |
 | 301 | `TimelockNotExpired` | The policy timelock period has not yet elapsed. |
 | 302 | `FuturePaidAtLedger` | A refund reported `paid_at_ledger` in the future (greater than the current ledger sequence). |

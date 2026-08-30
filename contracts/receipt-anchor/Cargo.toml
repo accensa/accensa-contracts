@@ -23,6 +23,7 @@ budget-assert = ["dep:budget_macros"]
 [dependencies]
 soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
+sha2 = { version = "0.10.9", default-features = false }
 
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
