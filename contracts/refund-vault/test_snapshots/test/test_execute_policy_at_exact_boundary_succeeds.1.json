@@ -63,6 +63,9 @@
                 },
                 {
                   "u64": "0"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -272,6 +275,18 @@
                       },
                       "val": {
                         "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "VdfDelay"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     }
                   ]

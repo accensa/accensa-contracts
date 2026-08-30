@@ -104,7 +104,7 @@ fn readme_claim_refunds_outlive_pruned_batches() {
     // provided it falls within the refund window (paid_at_ledger >= 100 here).
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &150, &100);
+    vault.refund(&payment_ref, &buyer, &100, &150, &100, &None);
 
     let record = vault.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 100);
@@ -135,7 +135,7 @@ fn readme_claim_payment_ref_is_receipt_leaf() {
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 
     // Both contracts agree: verify_receipt accepts the leaf and get_refund
     // returns a record keyed by the same bytes.
@@ -168,7 +168,7 @@ fn test_happy_path_and_payment_ref_correspondence() {
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 
     assert!(anchor.verify_receipt(&1, &leaf, &proof));
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
@@ -196,7 +196,7 @@ fn test_refund_of_payment_in_pruned_batch() {
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &150, &100);
+    vault.refund(&payment_ref, &buyer, &100, &150, &100, &None);
 
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }
@@ -222,11 +222,11 @@ fn test_full_refund_then_exceed_payment() {
     let buyer = Address::generate(&env);
 
     // First refund takes a partial; a second past the ceiling is rejected.
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 
     // Over the ceiling -> Error(Contract, #19) ExceedsPayment.
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn test_pause_interaction() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
     assert!(vault
-        .try_refund(&payment_ref, &buyer, &100, &0, &100)
+        .try_refund(&payment_ref, &buyer, &100, &0, &100, &None)
         .is_err());
 
     let root = payment_ref.clone();
@@ -271,7 +271,7 @@ fn test_ttl_archival_across_both() {
     vault.deposit(&merchant, &500_000);
 
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 
     anchor.extend_batch_ttl(&1);
     vault.extend_refund_ttl(&payment_ref);

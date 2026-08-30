@@ -910,9 +910,12 @@ const ANCHOR_BATCH_BASELINE_CPU: u64 = 1_591_284;
 const ANCHOR_BATCH_BASELINE_MEM: u64 = 3_819_993;
 
 /// Cost baselines for `verify_receipt` (4-leaf Merkle proof, including cross-contract shard routing)
-/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()` on 2026-08-26.
-const VERIFY_RECEIPT_BASELINE_CPU: u64 = 569_906;
-const VERIFY_RECEIPT_BASELINE_MEM: u64 = 1_500_000;
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()`.
+/// Re-measured on 2026-08-29: the pure-WASM SHA-256 folding merged in #250 (08-27)
+/// moved hashing out of the host into WASM, which raised the host CPU instruction
+/// count for this path (~569.9k -> ~780.8k) while cutting WASM instruction usage.
+const VERIFY_RECEIPT_BASELINE_CPU: u64 = 780_762;
+const VERIFY_RECEIPT_BASELINE_MEM: u64 = 1_378_946;
 
 #[test]
 fn benchmark_gas_and_cpu_instructions() {

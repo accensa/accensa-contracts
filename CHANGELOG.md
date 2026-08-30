@@ -10,12 +10,41 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
-- **Versioned `RefundVault` migrations** (issue #126): added an admin-authorized
-  storage version marker and an idempotent migration entry point for future
-  state upgrades, plus an admin-authorized WASM upgrade handoff through the
-  Soroban deployer. Legacy instances without a version key are treated as
-  version 1; migration details and the two-phase upgrade procedure are
-  documented in `docs/REFUND_VAULT_MIGRATION.md`.
+
+- **VDF-gated refunds for `RefundVault`** (issue #138): the refund policy now
+  carries a Verifiable Delay Function requirement — `propose_policy(ledgers,
+  deadline, vdf_delay)` configures a delay in squarings (subject to the same
+  timelock) and `execute_policy` applies it. When the policy has a delay
+  configured, `refund`, every claim in `claim_batch`, and every item in
+  `process_batch` must supply a valid **Wesolowski VDF proof** that the delay
+  has genuinely elapsed; claims without one fail with `VdfProofRequired`
+  (302), with an invalid or premature one with `InvalidVdfProof` (303), and a
+  proof supplied against a policy with no delay with `VdfNotConfigured` (304).
+  The proof is bound to the payment (challenge = `sha256(payment_ref)`), so it
+  cannot be replayed across payments, and the delay is *computational* — a
+  validator that controls block timestamps or transaction ordering cannot
+  shorten it without factoring the contract's fixed 1024-bit modulus. The
+  verifier (`contracts/refund-vault/src/vdf.rs`) runs in pure WASM via
+  `crypto-bigint` (already in the dependency tree, so no new transitive
+  crates), is exposed publicly as read-only `verify_vdf(challenge, delay,
+  proof)` for randomness-verification flows, and its cost is pinned by a
+  budget test (a verification measures ≈51k CPU units — about a tenth of a
+  refund call). The new `get_vdf_delay()` getter exposes the configured delay.
+  This is a **breaking change** for clients: the `propose_policy` signature is
+  extended and `refund`/`RefundClaim`/`RefundParam` gain a `vdf_proof`
+  argument/field. `initialize` is unchanged and existing deployments default
+  to no delay (`0`), keeping them behaviour- and storage-compatible. The
+  contract's modulus is a fixed constant with its factors discarded after
+  generation; a production deployment should replace it with a
+  ceremony-chosen modulus (see `docs/SECURITY_MODEL.md` § "VDF Fairness").
+
+- **ZK validity proof batch anchoring for `ReceiptAnchor`**: `anchor_batch_zk`
+  allows merchants to anchor batch state roots on-chain by providing a Groth16
+  zero-knowledge validity proof (`ZkProof`), verifying validity in $O(1)$ time
+  and saving computational overhead on-chain. Added `verify_zk_proof` to verify
+  Groth16 proofs against verifying keys and public inputs, and introduced
+  `Error::InvalidProof` (code 203).
+
 
 - **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
   processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
@@ -88,6 +117,31 @@ breaking changes bump the **minor** version, and they are called out as such.
   crates pins the embedded commit to 40 hex characters.
 
 ### Changed
+
+- **CI fixes**: the `build-wasm` job now builds the deployable contract crates
+  with `--workspace --exclude testutils` — the `testutils` workspace member
+  activates `soroban-sdk`'s `testutils` feature, which is not supported on the
+  `wasm32v1-none` target and made every wasm build fail at the SDK boundary.
+
+
+  The `.wasm-budget.json` size budgets are updated to the current deterministic
+  release builds (receipt-anchor 33,067 B, refund-vault 85,453 B) with ~5%
+  headroom — the exact-pin approach kept breaking on toolchain drift, and the
+  refund-vault budget had not caught up with the VDF crypto code.
+
+  The `ReceiptAnchor` budget gate in `fuzz_test.rs` is re-baselined for
+  `verify_receipt`: the pure-WASM SHA-256 folding merged in #250 moved hashing
+  out of the host into WASM, raising the host CPU instruction count for that
+  path (~569.9k → ~780.8k) while cutting WASM instructions; the gate's limits
+  now reflect the current implementation (measured 2026-08-29) and still allow
+  15% headroom for toolchain drift.
+
+- **Lower-cost Merkle proof verification** (issue #125): `ReceiptShard` and
+  `ReceiptAnchor` now fold sorted-pair proofs in a single iterative pure-WASM
+  SHA-256 loop, avoiding redundant proof buffering and host crypto roundtrips.
+  Batch-size instruction measurements were added to the ReceiptAnchor test suite
+  and documented in `docs/BENCHMARKS.md`.
+
 
 - **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
   Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
@@ -304,3 +358,4 @@ the transactions that created them are recorded in
 [0.3.0]: https://github.com/accensa/accensa-contracts/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/accensa/accensa-contracts/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/accensa/accensa-contracts/releases/tag/v0.1.0
+

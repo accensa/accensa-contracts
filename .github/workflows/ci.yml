@@ -161,7 +161,11 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
       - name: Wasm build
-        run: cargo build --locked --target wasm32v1-none --release
+        # Build the deployable contract crates only: building the `testutils`
+        # workspace member for the wasm target activates soroban-sdk's
+        # `testutils` feature, which is not supported on wasm and fails with
+        # `compile_error!("'testutils' feature is not supported on 'wasm'")`.
+        run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
 
       - name: Report WASM sizes & enforce size budget
         run: |

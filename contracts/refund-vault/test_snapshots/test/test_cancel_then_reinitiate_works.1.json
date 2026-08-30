@@ -131,6 +131,9 @@
                 },
                 {
                   "u64": "0"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -319,6 +322,14 @@
                           {
                             "key": {
                               "symbol": "proposed_at_ledger"
+                            },
+                            "val": {
+                              "u32": 0
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "vdf_delay"
                             },
                             "val": {
                               "u32": 0

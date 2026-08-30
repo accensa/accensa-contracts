@@ -166,6 +166,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -210,6 +216,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     }
