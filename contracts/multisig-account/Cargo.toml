@@ -13,5 +13,5 @@ soroban-sdk = { workspace = true }
 default = []
 testutils = ["soroban-sdk/testutils"]
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

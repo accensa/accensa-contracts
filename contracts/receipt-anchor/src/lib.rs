@@ -323,7 +323,7 @@ impl ReceiptAnchor {
         }
 
         let mut computed_hash = leaf.to_array();
-        for sibling_bytes in proof.into_iter() {
+        for sibling_bytes in proof.iter() {
             let sibling = sibling_bytes.to_array();
             let mut combined = [0u8; 64];
             if computed_hash <= sibling {

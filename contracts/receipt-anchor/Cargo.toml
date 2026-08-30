@@ -20,10 +20,12 @@ accensa-common = { workspace = true }
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
-soroban-sdk = { workspace = true, features = ["testutils"] }
 # Test-only: lets fuzz_test.rs peek at a shard's own storage (e.g. TTLs) by
 # its DataKey type. Safe as a dev-dependency only — soroban-sdk's contract
 # export attribute is gated on `target_family = "wasm"`, so linking this
 # crate's generated functions into a native test binary creates no symbol
 # collisions with receipt-anchor's own same-named functions.
 receipt-shard = { path = "../receipt-shard" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

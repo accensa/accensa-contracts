@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger, Events},
+    testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Env,
 };

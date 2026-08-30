@@ -20,5 +20,7 @@ accensa-common = { workspace = true }
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
-soroban-sdk = { workspace = true, features = ["testutils"] }
 receipt-anchor = { path = "../receipt-anchor" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
