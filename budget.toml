@@ -1,0 +1,105 @@
+# Shared budget configuration for the Tollcraft cost tooling.
+#
+# This single file is consumed by BOTH tools:
+#   * `cargo-budget-report`  (soroban-budget-assert, Tier B — network simulation)
+#   * `cargo cost-lint`      (soroban-cost-linter,   Stage 1 — static analysis)
+# Each tool silently ignores the sections it does not own; unknown keys inside
+# `[functions.*]` blocks are rejected by `cargo-budget-report`.
+#
+# ---------------------------------------------------------------------------
+# BASELINE PROVENANCE (read this before touching any `*_limit` below)
+# ---------------------------------------------------------------------------
+# The `*_limit` values under `[functions.*]` are the COMMITTED BASELINES. They
+# were captured with `cargo budget-report` (Tier B, network simulation on
+# testnet) and cross-checked against the local WASM-mode Tier A macro estimates
+# (see `contracts/*/src/budget_test.rs`), then rounded UP to a conservative
+# ceiling. They are NOT regenerated automatically on every run.
+#
+# Per-function tolerance = 15%. A measured value that exceeds
+# `baseline * 1.15` fails CI. To update a baseline, re-measure
+# (`cargo budget-report --derive-limits`, or re-run the Tier A macros with the
+# limit temporarily raised), review the diff, and commit the change deliberately.
+#
+# Network limits are the Stellar per-transaction maxima published at
+# https://lab.stellar.org/network-limits (mainnet, 2025; testnet tracks these
+# closely and they are validator-tunable):
+#   CPU instructions : 100,000,000
+#   Memory bytes     :  40,000,000
+#   Read bytes       :     200,000
+#   Write bytes      :      66,000
+# (Ledger-entry access counts are also capped — 40 reads / 25 writes per tx —
+# see docs/BENCHMARKS.md.)
+
+network = "testnet"
+source = "alice"
+
+# ---------------------------------------------------------------------------
+# soroban-budget-assert (Tier B) — network-verified reporting
+# ---------------------------------------------------------------------------
+# `args` are forwarded to the simulated invocation. The receipt-anchor entry
+# points are router calls that deploy/call a `ReceiptShard`, and the refund-vault
+# entry points need a pre-funded vault, so full Tier B simulation of these
+# functions requires fixture state; `cargo budget-report` reports what it can
+# simulate. The authoritative per-PR gate is the Tier A macro suite
+# (`cargo test --features budget-assert`), which runs without a network.
+
+[functions.anchor_batch_1]
+args = ["--count", "1"]
+cpu_limit = 2000000
+read_limit = 10000
+write_limit = 10000
+
+[functions.anchor_batch_500]
+args = ["--count", "500"]
+cpu_limit = 2000000
+read_limit = 10000
+write_limit = 10000
+
+[functions.anchor_batch_1000]
+args = ["--count", "1000"]
+cpu_limit = 2000000
+read_limit = 10000
+write_limit = 10000
+
+[functions.verify_receipt_depth_1]
+args = ["--depth", "1"]
+cpu_limit = 1000000
+read_limit = 5000
+write_limit = 1000
+
+[functions.verify_receipt_depth_10]
+args = ["--depth", "10"]
+cpu_limit = 1000000
+read_limit = 5000
+write_limit = 1000
+
+[functions.prune_batches_100]
+args = ["--before_ledger", "500000", "--max", "100"]
+cpu_limit = 5000000
+read_limit = 20000
+write_limit = 20000
+
+[functions.refund]
+args = ["--amount", "120000"]
+cpu_limit = 2000000
+read_limit = 5000
+write_limit = 3000
+
+[functions.deposit]
+args = ["--amount", "600000"]
+cpu_limit = 1500000
+read_limit = 3000
+write_limit = 3000
+
+# ---------------------------------------------------------------------------
+# soroban-cost-linter (Stage 1) — static analysis
+# ---------------------------------------------------------------------------
+[lints]
+# Every lint defaults to `warn`: `cargo cost-lint` surfaces each finding in CI
+# output and the job fails only on `deny`-level findings. Promote a lint to
+# `deny` here once the codebase is confirmed clean of it. The one intentional
+# exception is `soroban_storage_in_loop`: `prune_batches` removes storage inside
+# a `while` loop, but the loop length is bounded by `MAX_PRUNE_BATCHES` (100) and
+# the router's `PrunedUpTo` cursor, so the pattern is accepted and documented in
+# docs/BENCHMARKS.md rather than being hidden.
+soroban_storage_in_loop = "warn"

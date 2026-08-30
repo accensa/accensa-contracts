@@ -1,7 +1,10 @@
 [package]
 name = "refund-vault"
 version = "0.3.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Policy-bounded merchant refund vault for x402 on Stellar"
 
 [lints]
 workspace = true
@@ -10,12 +13,31 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Enables the Tier A budget-assertion tests in `src/budget_test.rs`. Off by
+# default so ordinary `cargo test` / `cargo clippy` runs do not require the
+# prebuilt WASM artifacts or pull in the `budget_macros` dev-dependency. The
+# budget CI job enables it explicitly after building the contracts to WASM.
+budget-assert = ["dep:budget_macros"]
+
 [dependencies]
 soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
+# VDF verification (issue #138): big-integer modular exponentiation in pure
+# WASM. Already in the dependency tree transitively (via `elliptic-curve`), so
+# this adds no new crates; `default-features = false` keeps it no_std / no
+# rand. Pure RustCrypto code, no_std, wasm32-compatible.
+crypto-bigint = { version = "0.5.5", default-features = false }
 
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
 soroban-sdk = { workspace = true, features = ["testutils"] }
 receipt-anchor = { path = "../receipt-anchor" }
+# Tollcraft/soroban-budget-assert — Tier A local assertion macros. Pinned to a
+# stable ref; the macros read `env.cost_estimate().budget()` on the WASM-mode
+# estimate and fail the test if the pinned limit is exceeded. Optional so it is
+# only compiled when the `budget-assert` feature is on.
+# NOTE: pin this to a released tag (e.g. `tag = "v0.1.0"`) once a tag exists;
+# `main` is used here so the dependency always resolves.
+budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git", branch = "main", package = "budget-macros", optional = true }
