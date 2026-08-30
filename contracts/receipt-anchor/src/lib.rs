@@ -1,10 +1,14 @@
 #![no_std]
 
+pub mod zk_verifier;
+
 use accensa_common::Error;
+use sha2::{Digest, Sha256};
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, Address,
     BytesN, Env, InvokeError, Vec,
 };
+pub use zk_verifier::{VerifyingKey, ZkProof};
 
 contractmeta!(key = "name", val = "ReceiptAnchor");
 contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
@@ -184,8 +188,37 @@ impl ReceiptAnchor {
         Ok(())
     }
 
+    /// Anchors a batch of receipts using a state root.
     pub fn anchor_batch(
         env: Env,
+        root: BytesN<32>,
+        count: u32,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<u64, Error> {
+        Self::anchor_batch_internal(&env, root, count, period_start, period_end)
+    }
+
+    /// Anchors a batch of receipts by verifying a ZK validity proof of the state root.
+    /// Returns the assigned `batch_id` upon successful verification.
+    pub fn anchor_batch_zk(
+        env: Env,
+        state_root: BytesN<32>,
+        proof: ZkProof,
+        count: u32,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<u64, Error> {
+        let is_valid = zk_verifier::verify_batch_zk_proof(&env, &state_root, &proof, count)?;
+        if !is_valid {
+            return Err(Error::InvalidProof);
+        }
+        Self::anchor_batch_internal(&env, state_root, count, period_start, period_end)
+    }
+
+    /// Internal batch anchoring helper.
+    fn anchor_batch_internal(
+        env: &Env,
         root: BytesN<32>,
         count: u32,
         period_start: u64,
@@ -231,10 +264,10 @@ impl ReceiptAnchor {
         }
         let batch_id = batch_count + 1;
         let shard_index = (batch_id - 1) / SHARD_CAPACITY;
-        let shard_addr = Self::get_or_create_shard(&env, shard_index)?;
+        let shard_addr = Self::get_or_create_shard(env, shard_index)?;
 
         let anchored_ledger = env.ledger().sequence();
-        ShardClient::new(&env, &shard_addr).anchor_batch(
+        ShardClient::new(env, &shard_addr).anchor_batch(
             &batch_id,
             &root,
             &count,
@@ -272,9 +305,19 @@ impl ReceiptAnchor {
             period_end,
             anchored_ledger,
         }
-        .publish(&env);
+        .publish(env);
 
         Ok(batch_id)
+    }
+
+    /// Verifies a Groth16 zero-knowledge proof against public inputs and a verifying key.
+    pub fn verify_zk_proof(
+        env: Env,
+        proof: ZkProof,
+        vk: VerifyingKey,
+        public_inputs: Vec<BytesN<32>>,
+    ) -> Result<bool, Error> {
+        zk_verifier::verify_groth16(&env, &proof, &vk, &public_inputs)
     }
 
     pub fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error> {
@@ -322,7 +365,13 @@ impl ReceiptAnchor {
             return Err(Error::RootNotFound);
         }
 
-        let mut computed_hash = leaf.to_array();
+        let computed_hash = Self::fold_proof(leaf.to_array(), proof);
+
+        Ok(computed_hash == root.to_array())
+    }
+
+    /// Folds a sorted-pair Merkle proof with one allocation-free guest loop.
+    fn fold_proof(mut computed_hash: [u8; 32], proof: Vec<BytesN<32>>) -> [u8; 32] {
         for sibling_bytes in proof.into_iter() {
             let sibling = sibling_bytes.to_array();
             let mut combined = [0u8; 64];
@@ -333,13 +382,11 @@ impl ReceiptAnchor {
                 combined[..32].copy_from_slice(&sibling);
                 combined[32..].copy_from_slice(&computed_hash);
             }
-            computed_hash = env
-                .crypto()
-                .sha256(&soroban_sdk::Bytes::from_slice(&env, &combined))
-                .to_array();
+            let mut hasher = Sha256::new();
+            hasher.update(combined);
+            computed_hash = hasher.finalize().into();
         }
-
-        Ok(computed_hash == root.to_array())
+        computed_hash
     }
 
     /// Returns the current ring buffer of historical roots (read-only).
@@ -389,6 +436,23 @@ impl ReceiptAnchor {
             .instance()
             .get(&DataKey::MinAnchorInterval)
             .unwrap_or(0)
+    }
+    /// Returns the admin (merchant) address, or `NotInitialized` if the
+    /// contract has not been initialized.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// Returns the pruned-up-to batch ID. Batches with IDs less than or equal
+    /// to this value have been pruned and are no longer verifiable on-chain.
+    pub fn get_pruned_up_to(env: Env) -> Result<u64, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PrunedUpTo)
+            .ok_or(Error::NotInitialized)
     }
 
     /// Returns the maximum number of receipts allowed in a single `anchor_batch`.
