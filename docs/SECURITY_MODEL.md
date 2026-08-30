@@ -154,6 +154,41 @@ window-based refunds.
 - **Mitigation:** The contract enforces the refund window by strictly comparing the current ledger sequence against the `paid_at_ledger` plus the `RefundWindow`. If the threshold is crossed, the transaction is rejected with a `WindowExpired` error.
 - **Wall-clock deadline:** The policy may additionally carry a Unix-timestamp `deadline`. `refund` rejects any claim whose current ledger timestamp is *strictly past* the deadline with `RefundExpired` (a claim landing exactly on the deadline still succeeds, mirroring the window arithmetic). A deadline of `0` (the default) disables expiry. Because the two bounds are independent, a claim must pass *both* — a window still open in ledger terms is not sufficient once the wall-clock deadline has passed.
 
+### VDF Fairness
+- **Threat:** A refund policy that gates finalization on elapsed time or on
+  random selection can be gamed by a validator that controls block timestamps
+  or transaction ordering — e.g. front-running a delay by backdating the
+  ledger timestamp, or steering the order of refund transactions. A pure
+  timestamp or ledger-sequence gate is only as honest as the validators that
+  set those values.
+- **Mitigation (issue #138):** a policy may carry a Verifiable Delay Function
+  delay (`vdf_delay`, in squarings). When configured, every `refund`,
+  `claim_batch` element, and `process_batch` item must include a valid
+  **Wesolowski VDF proof** that `x^(2^T) mod N` was computed for exactly `T`
+  sequential squarings. The delay is *computational*: producing the output
+  requires `T` sequential modular squarings no matter how the caller or a
+  validator manipulates timestamps or ordering, and the verifier's cost is
+  independent of `T` (only the 128-bit challenge `l` and remainder `r` are
+  ever used as exponents on-chain).
+- **Payment binding and replay:** the challenge is derived on-chain as
+  `x = sha256(payment_ref)`, so a proof computed for one payment cannot be
+  replayed against another, and the transcript-bound prime `l` (Fiat-Shamir)
+  prevents the prover from choosing the challenge after committing to `y`.
+  The degenerate challenges `x ≡ 0, 1` are rejected (`InvalidVdfProof`), so a
+  caller cannot "prove" a delay with zero work.
+- **Modulus trust (known limitation):** the delay is only real while the
+  factorization of the fixed 1024-bit modulus `MODULUS` in
+  `contracts/refund-vault/src/vdf.rs` stays unknown — anyone who factors `N`
+  can compute `x^(2^T) mod N` in `O(log T)` steps via `phi(N)`. The constant
+  shipped in this release was generated for the source release with its prime
+  factors discarded after generation; because the contracts are immutable,
+  rotating the modulus requires a new deployment (ADR 003). A production
+  deployment should replace `MODULUS` with one from a trusted-setup ceremony
+  (ideally ≥2048 bits, which would require a larger big-int implementation
+  than the SDK's 256-bit host integers — the 1024-bit arithmetic here is pure
+  WASM). Treat the shipped modulus as a testnet-grade placeholder, not a
+  mainnet parameter.
+
 ### Float Draining (Negative/Zero Amounts)
 - **Threat:** An attacker tries to refund a negative amount to cause an underflow or steal funds.
 - **Mitigation:** Explicit validation ensures that the `amount` is strictly greater than zero (`InvalidAmount` error) before executing token transfers, preventing unintended arithmetic behaviors or logical exploits.

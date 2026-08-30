@@ -3,8 +3,11 @@
 use accensa_common::Error;
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, BytesN, Env, Symbol, Vec,
+    Address, Bytes, BytesN, Env, Symbol, Vec,
 };
+
+mod vdf;
+use vdf::VdfProof;
 
 contractmeta!(key = "name", val = "RefundVault");
 contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
@@ -24,6 +27,11 @@ pub struct RefundParam {
     pub amount: i128,
     pub paid_at_ledger: u32,
     pub payment_amount: i128,
+    /// Wesolowski VDF proof, required when the policy carries a VDF delay
+    /// (issue #138). The 256 bytes are the 128-byte big-endian output
+    /// `x^(2^T) mod N` concatenated with the 128-byte witness `x^(floor(2^T/l))
+    /// mod N`. `None` for policies without a delay.
+    pub vdf_proof: Option<BytesN<256>>,
 }
 
 #[contracttype]
@@ -35,6 +43,11 @@ pub enum DataKey {
     /// rejected. `0` (the default) means no deadline. Configured with the
     /// policy (propose/execute) and read at claim time in `refund`.
     RefundDeadline,
+    /// VDF delay (in squarings) required to finalize refund claims against
+    /// this policy (issue #138). `0` (the default) means no VDF proof is
+    /// required. Configured with the policy (propose/execute) and read at
+    /// claim time in `claim_single`.
+    VdfDelay,
     /// Refund fee, in basis points (1 bp = 0.01%), deducted from the amount
     /// sent to a refund recipient and paid to the fee recipient. `0` (the
     /// default) means no fee. Set via `set_fee_bps` and read at claim time.
@@ -70,6 +83,8 @@ pub enum DataKey {
     /// so a callback into another guarded entry point during that call is
     /// rejected rather than allowed to observe pre-update state.
     ReentrancyLock,
+    /// Monotonic storage-layout version. Missing on legacy deployments (v1).
+    StorageVersion,
 }
 
 #[contracttype]
@@ -95,6 +110,9 @@ pub struct PolicyProposal {
     /// Wall-clock deadline (Unix timestamp) after which refund claims are
     /// rejected. `0` disables the deadline ("no expiry").
     pub deadline: u64,
+    /// VDF delay in squarings that a refund claim against this policy must
+    /// prove. `0` (the default) means no VDF proof is required.
+    pub vdf_delay: u32,
     pub proposed_at_ledger: u32,
 }
 
@@ -114,6 +132,11 @@ pub struct RefundClaim {
     /// The original payment amount — the hard ceiling on cumulative refunds —
     /// supplied fresh on every claim.
     pub payment_amount: i128,
+    /// Wesolowski VDF proof, required when the policy carries a VDF delay
+    /// (issue #138). The 256 bytes are the 128-byte big-endian output
+    /// `x^(2^T) mod N` concatenated with the 128-byte witness `x^(floor(2^T/l))
+    /// mod N`. `None` for policies without a delay.
+    pub vdf_proof: Option<BytesN<256>>,
 }
 
 #[contracttype]
@@ -126,12 +149,17 @@ pub struct YieldInfo {
     pub max_deploy_ratio: u32,
 }
 
-/// Emitted when a (possibly partial) refund is made from the vault float.
+/// Emitted when a (possibly partial) refund is made from the vault float via
+/// the single-refund `refund` entry point.
 ///
 /// Topics: `("refund_event", payment_ref)`. The data map carries the amount
 /// for **this call** (`amount`) and the running total after it
 /// (`cumulative_refunded`), so an indexer knows the state of a payment without
 /// summing history.
+///
+/// Refunds processed through [`RefundVault::process_batch`] do **not** emit
+/// one of these per item: a batch emits a single [`BatchRefundEvent`] instead
+/// (see its docs for why).
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundEvent {
@@ -499,6 +527,38 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         return Err(Error::RefundExpired);
     }
 
+    // VDF delay (policy trigger, issue #138): when the policy carries a
+    // configured delay, finalizing this refund requires a valid Wesolowski
+    // proof that `vdf_delay` sequential squarings have genuinely elapsed. The
+    // delay is computational, so unlike the ledger window or the wall-clock
+    // deadline above it cannot be shortened by a validator controlling block
+    // timestamps or transaction ordering. The challenge is derived from the
+    // payment ref (`sha256(payment_ref)`), binding the proof to this payment
+    // and preventing replay across payments or across policy changes.
+    let vdf_delay: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::VdfDelay)
+        .unwrap_or(0);
+    match (vdf_delay, &claim.vdf_proof) {
+        (0, None) => {}
+        (0, Some(_)) => return Err(Error::VdfNotConfigured),
+        (_, None) => return Err(Error::VdfProofRequired),
+        (delay, Some(proof)) => {
+            let payment_hash = env
+                .crypto()
+                .sha256(&Bytes::from_slice(env, &claim.payment_ref.to_array()));
+            let mut challenge = [0u8; 128];
+            challenge[96..].copy_from_slice(&payment_hash.to_array());
+            let packed = proof.to_array();
+            let mut output = [0u8; 128];
+            let mut witness = [0u8; 128];
+            output.copy_from_slice(&packed[..128]);
+            witness.copy_from_slice(&packed[128..]);
+            vdf::verify_vdf(env, &challenge, delay, &output, &witness)?;
+        }
+    }
+
     // Ceiling check: cumulative refunds must not exceed the original amount.
     // The ceiling is read from the (re)stored record, freshly minted on the
     // first partial for this payment.
@@ -597,6 +657,8 @@ const MAX_REFUND_BATCH_SIZE: u32 = 100;
 #[contract]
 pub struct RefundVault;
 
+const INITIAL_STORAGE_VERSION: u32 = 1;
+
 #[contractimpl]
 impl RefundVault {
     pub fn initialize(
@@ -613,6 +675,9 @@ impl RefundVault {
         env.storage()
             .instance()
             .set(&DataKey::RefundWindow, &refund_window_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &INITIAL_STORAGE_VERSION);
 
         env.storage()
             .instance()
@@ -711,6 +776,7 @@ impl RefundVault {
         amount: i128,
         paid_at_ledger: u32,
         payment_amount: i128,
+        vdf_proof: Option<BytesN<256>>,
     ) -> Result<(), Error> {
         acquire_reentrancy_lock(&env)?;
 
@@ -736,6 +802,7 @@ impl RefundVault {
             amount,
             paid_at_ledger,
             payment_amount,
+            vdf_proof,
         };
         claim_single(&env, &claim)?;
 
@@ -873,6 +940,17 @@ impl RefundVault {
             return Err(Error::BatchTooLarge);
         }
 
+        // An empty batch is a no-op; return before touching any state so the
+        // caller can probe auth without paying for state loads.
+        if refunds.is_empty() {
+            return Ok(Vec::new(&env));
+        }
+
+        // State loads shared across the whole batch: one balance query and one
+        // window/ledger/token read — the loop below only touches per-payment
+        // storage and performs the transfers.
+        let mut ctx = Self::load_refund_context(&env);
+        let mut payment_refs: Vec<BytesN<32>> = Vec::new(&env);
         let mut results = Vec::new(&env);
         for item in refunds.into_iter() {
             let claim = RefundClaim {
@@ -881,9 +959,20 @@ impl RefundVault {
                 amount: item.amount,
                 paid_at_ledger: item.paid_at_ledger,
                 payment_amount: item.payment_amount,
+                vdf_proof: item.vdf_proof,
             };
             results.push_back(claim_single(&env, &claim).is_ok());
         }
+
+        BatchRefundEvent {
+            payment_refs,
+            results: results.clone(),
+        }
+        .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(results)
     }
 
@@ -936,12 +1025,18 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Propose a new refund policy: a window (in ledgers) and a wall-clock
-    /// deadline (Unix timestamp, `0` = no deadline). The change is not applied
-    /// immediately; the admin must call `execute_policy` after the timelock
-    /// (17,280 ledgers, ~24 hours) has elapsed. Proposing a new policy
-    /// overwrites any existing pending proposal.
-    pub fn propose_policy(env: Env, ledgers: u32, deadline: u64) -> Result<(), Error> {
+    /// Propose a new refund policy: a window (in ledgers), a wall-clock
+    /// deadline (Unix timestamp, `0` = no deadline), and a VDF delay in
+    /// squarings (`0` = no VDF proof required, see `vdf` module docs). The
+    /// change is not applied immediately; the admin must call `execute_policy`
+    /// after the timelock (17,280 ledgers, ~24 hours) has elapsed. Proposing a
+    /// new policy overwrites any existing pending proposal.
+    pub fn propose_policy(
+        env: Env,
+        ledgers: u32,
+        deadline: u64,
+        vdf_delay: u32,
+    ) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
@@ -953,6 +1048,7 @@ impl RefundVault {
         let proposal = PolicyProposal {
             window: ledgers,
             deadline,
+            vdf_delay,
             proposed_at_ledger: current_ledger,
         };
 
@@ -1002,6 +1098,9 @@ impl RefundVault {
         env.storage()
             .instance()
             .set(&DataKey::RefundDeadline, &proposal.deadline);
+        env.storage()
+            .instance()
+            .set(&DataKey::VdfDelay, &proposal.vdf_delay);
         env.storage().instance().remove(&DataKey::PendingPolicy);
 
         PolicyExecutedEvent {
@@ -1046,8 +1145,69 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        let mut oracles: Vec<Address> = env
+    /// Returns the persisted storage layout version. Legacy deployments that
+    /// predate this marker are treated as version 1.
+    pub fn get_storage_version(env: Env) -> Result<u32, Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .ok_or(Error::NotInitialized)
+            .or(Ok(INITIAL_STORAGE_VERSION))
+    }
+
+    /// Marks a completed, resumable state migration and records its target
+    /// layout version. This must be called before the WASM upgrade so the
+    /// migration marker survives the code handoff.
+    pub fn migrate_state(env: Env, target_version: u32) -> Result<(), Error> {
+        let admin: Address = env
             .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let current = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(INITIAL_STORAGE_VERSION);
+        if target_version <= current {
+            return Err(Error::InvalidMigrationVersion);
+        }
+
+        // Optional fields introduced by later layouts deliberately use their
+        // existing defaults. Writing the marker last makes the operation
+        // resumable and prevents a partial migration from being reported as
+        // complete.
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &target_version);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Performs the code handoff after `migrate_state` has completed.
+    /// `wasm_hash` must refer to a WASM already uploaded to the network.
+    pub fn upgrade_wasm(env: Env, wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(wasm_hash);
+        Ok(())
+    }
+
+    /// Returns the payment token address, or `NotInitialized` if the vault
+    /// has not been initialized.
+    pub fn get_token(env: Env) -> Result<Address, Error> {
+        env.storage()
             .instance()
             .get(&DataKey::Oracles)
             .unwrap_or_else(|| Vec::new(&env));
@@ -1089,12 +1249,42 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Read-only: the current oracle whitelist, in insertion order.
-    pub fn get_oracles(env: Env) -> Vec<Address> {
+    /// Returns the policy's VDF delay in squarings (read-only). `0` means no
+    /// VDF proof is required to finalize refunds.
+    pub fn get_vdf_delay(env: Env) -> u32 {
         env.storage()
             .instance()
-            .get(&DataKey::Oracles)
-            .unwrap_or_else(|| Vec::new(&env))
+            .get(&DataKey::VdfDelay)
+            .unwrap_or(0)
+    }
+
+    /// Verifies a Wesolowski VDF proof that `output == challenge^(2^delay)
+    /// mod N` for the contract's fixed modulus (issue #138). Read-only and
+    /// unauthenticated, so anyone can check a VDF output — the surface used
+    /// by random-selection / randomness-beacon flows that never touch the
+    /// vault. Returns `Error::InvalidVdfProof` if the proof does not verify
+    /// or the challenge is degenerate.
+    pub fn verify_vdf(
+        env: Env,
+        challenge: BytesN<128>,
+        delay: u32,
+        proof: VdfProof,
+    ) -> Result<(), Error> {
+        vdf::verify_vdf(
+            &env,
+            &challenge.to_array(),
+            delay,
+            &proof.output.to_array(),
+            &proof.proof.to_array(),
+        )
+    }
+
+    // ── Fee configuration ──────────────────────────────────────────────────
+
+    /// Returns the refund fee in basis points (1 bp = 0.01%). `0` means no
+    /// fee is charged. Read-only.
+    pub fn get_fee_bps(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
     /// Aggregate the current value of `feed_id` across the whitelisted
@@ -1656,4 +1846,6 @@ mod reentrancy_tests;
 #[cfg(test)]
 mod test;
 mod token_agnostic_tests;
+#[cfg(test)]
+mod vdf_test;
 mod yield_tests;

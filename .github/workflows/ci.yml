@@ -161,10 +161,11 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
       - name: Wasm build
-        # `testutils` is a host-only test-support crate (it enables
-        # soroban-sdk's `testutils` feature, which the SDK rejects on wasm), so
-        # it is excluded from the artifact build.
-        run: cargo build --workspace --target wasm32v1-none --release --exclude testutils
+        # Build the deployable contract crates only: building the `testutils`
+        # workspace member for the wasm target activates soroban-sdk's
+        # `testutils` feature, which is not supported on wasm and fails with
+        # `compile_error!("'testutils' feature is not supported on 'wasm'")`.
+        run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
 
       - name: Report WASM sizes & enforce size budget
         run: |

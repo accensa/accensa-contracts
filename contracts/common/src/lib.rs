@@ -84,20 +84,20 @@ pub enum Error {
     ProofTooLong = 201,
     /// An anchor was submitted before the minimum interval elapsed.
     AnchorRateLimited = 202,
+    /// The supplied zero-knowledge validity proof is invalid or malformed.
+    InvalidProof = 203,
     /// No pending policy change exists to execute.
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
     TimelockNotExpired = 301,
-    /// No oracle contracts are whitelisted on the vault.
-    NoOraclesConfigured = 302,
-    /// The oracle contract is already on the whitelist.
-    OracleAlreadyAdded = 303,
-    /// The oracle contract is not on the whitelist.
-    OracleNotFound = 304,
-    /// Every whitelisted oracle returned stale data for the requested feed.
-    StaleOracleData = 305,
-    /// No dynamic oracle policy is configured.
-    NoOraclePolicy = 306,
-    /// A refund was rejected because the oracle policy condition was not met.
-    OraclePolicyDenied = 307,
+    /// A refund was claimed against a policy with a VDF delay configured but
+    /// no VDF proof was supplied.
+    VdfProofRequired = 302,
+    /// A supplied VDF proof failed verification (tampered output or witness,
+    /// a premature proof computed for a smaller delay, or a degenerate
+    /// challenge).
+    InvalidVdfProof = 303,
+    /// A VDF proof was supplied for a claim against a policy that has no VDF
+    /// delay configured.
+    VdfNotConfigured = 304,
 }
