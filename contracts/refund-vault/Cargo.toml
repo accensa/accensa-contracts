@@ -1,7 +1,10 @@
 [package]
 name = "refund-vault"
 version = "0.3.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Policy-bounded merchant refund vault for x402 on Stellar"
 
 [lints]
 workspace = true
@@ -13,6 +16,11 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
+# VDF verification (issue #138): big-integer modular exponentiation in pure
+# WASM. Already in the dependency tree transitively (via `elliptic-curve`), so
+# this adds no new crates; `default-features = false` keeps it no_std / no
+# rand. Pure RustCrypto code, no_std, wasm32-compatible.
+crypto-bigint = { version = "0.5.5", default-features = false }
 
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }

@@ -8,8 +8,8 @@
 //! the configured token contract or to a merchant-registered yield strategy
 //! (`docs/AUDIT.md` §5, known issue #7: "the strategy is also a re-entrancy
 //! surface"; I-7 explicitly calls out "the auditor should verify whether the
-//! outbound transfer to a *contract* recipient can re-enter `refund` before
-//! the tombstone exists").
+//! outbound transfer to a *contract* recipient can re-enter a claim before the
+//! cumulative ceiling update lands").
 //!
 //! **Finding pinned by this module:** on Soroban, it cannot. The host itself
 //! refuses to invoke a contract that is already present on the current call
@@ -260,6 +260,7 @@ impl MaliciousToken {
                         &reentry_amount,
                         &0,
                         &reentry_amount,
+                        &None,
                     ))
                 }
                 ReentrySelector::RefundOtherPaymentRef => {
@@ -269,6 +270,7 @@ impl MaliciousToken {
                         &reentry_amount,
                         &0,
                         &reentry_amount,
+                        &None,
                     ))
                 }
                 ReentrySelector::Withdraw => {
@@ -360,7 +362,7 @@ fn test_reentrant_refund_same_payment_ref_is_blocked() {
         &amount,
     );
 
-    client.refund(&payment_ref, &buyer, &amount, &0, &amount);
+    client.refund(&payment_ref, &buyer, &amount, &0, &amount, &None);
 
     // The reentrant call never reached the vault's own code: the Soroban
     // host rejected it outright as a call-stack cycle.
@@ -402,7 +404,7 @@ fn test_reentrant_refund_other_payment_ref_is_blocked() {
         &amount,
     );
 
-    client.refund(&payment_ref, &buyer, &amount, &0, &amount);
+    client.refund(&payment_ref, &buyer, &amount, &0, &amount, &None);
 
     assert_eq!(token_client.last_result(), RESULT_HOST_BLOCKED);
     // The unrelated payment ref was never touched.
@@ -435,7 +437,14 @@ fn test_reentrant_withdraw_during_refund_is_blocked() {
         &amount,
     );
 
-    client.refund(&payment_ref, &Address::generate(&env), &amount, &0, &amount);
+    client.refund(
+        &payment_ref,
+        &Address::generate(&env),
+        &amount,
+        &0,
+        &amount,
+        &None,
+    );
 
     assert_eq!(token_client.last_result(), RESULT_HOST_BLOCKED);
     // Only the legitimate refund left the vault; the reentrant withdraw did not.
@@ -842,7 +851,7 @@ fn test_guard_blocks_refund_while_lock_held() {
     let payment_ref = BytesN::from_array(&env, &[20u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &1_000, &0, &1_000),
+        client.try_refund(&payment_ref, &buyer, &1_000, &0, &1_000, &None),
         Err(Ok(Error::ReentrancyBlocked))
     );
     assert!(client.get_refund(&payment_ref).is_none());
@@ -886,9 +895,9 @@ fn test_lock_is_released_after_successful_call() {
     let ref_b = BytesN::from_array(&env, &[10u8; 32]);
     let buyer = Address::generate(&env);
 
-    client.refund(&ref_a, &buyer, &1_000, &0, &1_000);
+    client.refund(&ref_a, &buyer, &1_000, &0, &1_000, &None);
     // If the lock leaked as "held" from the first call, this would fail with
     // ReentrancyBlocked instead of succeeding.
-    client.refund(&ref_b, &buyer, &2_000, &0, &2_000);
+    client.refund(&ref_b, &buyer, &2_000, &0, &2_000, &None);
     client.withdraw(&500, &merchant);
 }

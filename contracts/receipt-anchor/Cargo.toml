@@ -1,7 +1,10 @@
 [package]
 name = "receipt-anchor"
 version = "0.3.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Merkle batch anchoring for x402 receipts on Stellar"
 
 [lints]
 workspace = true
@@ -13,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
+sha2 = { version = "0.10.9", default-features = false }
 
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
