@@ -1,0 +1,76 @@
+# Vector parity CI for accensa-app (companion to accensa-contracts issue #53)
+#
+# This workflow lives at .github/workflows/vector-parity.yml in accensa-app.
+# It is the mirror image of the `vector-parity` job in
+# accensa-contracts/.github/workflows/ci.yml:
+#
+#   accensa-contracts owns merkle-vectors.json (canonical).
+#   accensa-app vendors a byte-identical copy under packages/sdk/.
+#
+# This job fetches the canonical file from accensa-contracts at a pinned ref,
+# hashes it, and fails the build if it differs from the hash of the vendored
+# copy committed in this repo. Divergence fails a build, it does not warn.
+#
+# To install in accensa-app:
+#   1. Copy merkle-vectors.json from accensa-contracts into packages/sdk/
+#      (byte-for-byte identical) and commit packages/sdk/merkle-vectors.json.sha256
+#      containing `sha256sum packages/sdk/merkle-vectors.json`.
+#   2. Drop this file at .github/workflows/vector-parity.yml.
+#   3. Add a repo variable ACCENSA_CONTRACTS_REF (default below = main) pinned to
+#      the commit/tag you want to track.
+#   4. Open a PR linking back to accensa-contracts issue #53.
+
+name: vector parity (cross-repo)
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Daily, so a stale vendored copy is caught even when nothing changes here.
+    - cron: "17 4 * * *"
+  repository_dispatch:
+    types: [accensa-contracts-vector-update]
+  workflow_dispatch:
+
+concurrency:
+  group: vector-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vector-parity:
+    name: vector parity vs accensa-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if the local vendored copy is missing its hash
+        run: |
+          if [ ! -f packages/sdk/merkle-vectors.json.sha256 ]; then
+            echo "::error::packages/sdk/merkle-vectors.json.sha256 is missing."
+            echo "::error::Commit the hash of your vendored merkle-vectors.json."
+            exit 1
+          fi
+
+      - name: Fetch canonical vector fixture from accensa-contracts (pinned ref)
+        env:
+          ACCENSA_CONTRACTS_REF: ${{ vars.ACCELSA_CONTRACTS_REF || 'main' }}
+        run: |
+          URL="https://raw.githubusercontent.com/accensa/accensa-contracts/${ACCELSA_CONTRACTS_REF}/contracts/receipt-anchor/merkle-vectors.json"
+          echo "Fetching ${URL}"
+          if ! curl -fsSL "$URL" -o /tmp/canonical-merkle-vectors.json; then
+            echo "::error::Could not fetch canonical merkle-vectors.json from accensa-contracts@${ACCENSA_CONTRACTS_REF}."
+            exit 1
+          fi
+          CANONICAL_HASH=$(sha256sum /tmp/canonical-merkle-vectors.json | cut -d' ' -f1)
+          LOCAL_HASH=$(tr -d '[:space:]' < packages/sdk/merkle-vectors.json.sha256)
+          echo "Canonical hash (accensa-contracts@${ACCENSA_CONTRACTS_REF}): ${CANONICAL_HASH}"
+          echo "Local hash (this repo vendored copy):                  ${LOCAL_HASH}"
+          if [ "$CANONICAL_HASH" != "$LOCAL_HASH" ]; then
+            echo "::error::Vendored merkle-vectors.json diverged from accensa-contracts@${ACCENSA_CONTRACTS_REF}."
+            echo "::error::Re-sync packages/sdk/merkle-vectors.json (and its .sha256) from accensa-contracts,"
+            echo "::error::or the cross-implementation proof-of-parity is broken."
+            exit 1
+          fi
+          echo "Vendored vector fixture matches accensa-contracts@${ACCENSA_CONTRACTS_REF}."
