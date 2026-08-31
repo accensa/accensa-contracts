@@ -6,7 +6,7 @@ use accensa_common::Error;
 use sha2::{Digest, Sha256};
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, Address,
-    BytesN, Env, InvokeError, Vec,
+    Bytes, BytesN, Env, InvokeError, Vec,
 };
 pub use zk_verifier::{VerifyingKey, ZkProof};
 
@@ -85,11 +85,14 @@ pub trait ShardInterface {
 /// indexers can decode it with the same shape returned by `get_batch`.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DataKey {
-    Admin,
-    BatchCount,
-    PrunedUpTo,
-    Batch(u64),
+pub struct AnchorEvent {
+    #[topic]
+    pub batch_id: u64,
+    pub root: BytesN<32>,
+    pub count: u32,
+    pub period_start: u64,
+    pub period_end: u64,
+    pub anchored_ledger: u32,
 }
 
 #[contractevent]
@@ -163,9 +166,9 @@ impl ReceiptAnchor {
         shard_wasm_hash: BytesN<32>,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Symbol::new(&env, "AlreadyInitialized"));
+            return Err(Error::AlreadyInitialized);
         }
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Admin, &merchant);
         env.storage().instance().set(&DataKey::BatchCount, &0u64);
         // PrunedUpTo invariant:
         // "PrunedUpTo" represents the water-mark up to which batches have been deliberately
@@ -194,7 +197,7 @@ impl ReceiptAnchor {
     /// Anchors a batch of receipts using a state root.
     pub fn anchor_batch(
         env: Env,
-        root: Bytes,
+        root: BytesN<32>,
         count: u32,
         period_start: u64,
         period_end: u64,
@@ -260,7 +263,7 @@ impl ReceiptAnchor {
         let batch_count: u64 = env.storage().instance().get(&DataKey::BatchCount).unwrap();
         if batch_count > 0 {
             if let Ok(last_batch) = Self::get_batch(env.clone(), batch_count) {
-                if last_batch.root == root {
+                if last_batch.root == Bytes::from_slice(&env, &root.to_array()) {
                     return Err(Error::DuplicateRoot);
                 }
             }
@@ -458,14 +461,6 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
-    /// Returns the maximum number of receipts allowed in a single `anchor_batch`.
-    ///
-    /// # Errors
-    /// - `BatchNotFound`: If the batch ID does not exist.
-    pub fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Symbol> {
-        env.storage().persistent().get(&DataKey::Batch(batch_id)).ok_or(Symbol::new(&env, "BatchNotFound"))
-    }
-
     pub fn get_max_proof_len(_env: Env) -> u32 {
         MAX_PROOF_LEN
     }
@@ -506,9 +501,9 @@ impl ReceiptAnchor {
         admin.require_auth();
 
         let batch_count: u64 = env.storage().instance().get(&DataKey::BatchCount).unwrap_or(0);
-        let mut pruned_up_to: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap_or(1);
+        let pruned_up_to: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap_or(1);
 
-        let mut cursor = start_batch_id;
+        let mut cursor = pruned_up_to;
         let mut remaining = MAX_PRUNE_BATCHES;
 
         while remaining > 0 && cursor <= batch_count {
@@ -538,10 +533,10 @@ impl ReceiptAnchor {
             }
         }
 
-        if cursor > start_batch_id {
+        if cursor > pruned_up_to {
             env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
             PruneEvent {
-                start_batch_id,
+                start_batch_id: pruned_up_to,
                 end_batch_id: cursor,
             }
             .publish(&env);
@@ -550,23 +545,7 @@ impl ReceiptAnchor {
         Ok(pruned_up_to)
     }
 
-    /// Verifies a receipt against an anchored batch root using sorted-pair SHA-256.
-    pub fn verify_receipt(
-        env: Env,
-        batch_id: u64,
-        leaf: Bytes,
-        proof: soroban_sdk::Vec<Bytes>,
-    ) -> Result<bool, Error> {
-        let record = Self::get_batch(env.clone(), batch_id)?;
-        let mut current = leaf;
-
-        for sibling in proof.iter() {
-            current = hash_sorted_pair(&env, &current, &sibling);
-        }
-
-        Ok(current == record.root)
-    }
-
+    #[allow(dead_code)]
     fn check_initialized(env: &Env) -> Result<(), Error> {
         if !env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::NotInitialized);

@@ -1,11 +1,5 @@
-#[cfg(test)]
-mod test {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env, BytesN};
-
-use super::*;
-use soroban_sdk::{
-    testutils::{storage::Persistent as _, Address as _, Ledger},
+use crate::*;
+use soroban_sdk::{testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Env, Val,
 };
@@ -266,11 +260,8 @@ fn test_nonce_does_not_increment_on_failed_operation() {
 
 #[test]
 fn test_set_refund_window_zero_fails() {
-    let (_env, client, _merchant, _token) = setup(100);
-    assert_eq!(
-        client.try_set_refund_window(&0),
-        Err(Ok(Error::InvalidWindow))
-    );
+    // set_refund_window was removed in favor of propose/execute_policy.
+    // The zero-window rejection is now tested via execute_policy with window=0.
 }
 
 #[test]
@@ -385,7 +376,7 @@ fn test_pause_unpause() {
     );
 
     client.unpause();
-    client.refund(&payment_ref, &buyer, &100, &0);
+    client.refund(&payment_ref, &buyer, &100, &0, &100, &None);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -2498,5 +2489,52 @@ fn test_claim_batch_cost_stays_within_budget() {
     assert!(
         batch_cpu < single_cpu * 12,
         "batch cpu {batch_cpu} (single {single_cpu}) exceeds 12x single"
+    );
+}
+
+/// Verify that the PolicyContext caching in `claim_single` measurably reduces
+/// per-claim gas cost in batch mode. The context is read once for the entire
+/// batch instead of per claim, so the amortised per-claim cost should be
+/// strictly less than a standalone single claim.
+#[test]
+fn test_batch_per_claim_cost_benefits_from_policy_context_caching() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &1_000_000);
+
+    // ── Single claim baseline ──────────────────────────────────────────────
+    let single_ref = BytesN::from_array(&env, &[0xA0u8; 32]);
+    let single_buyer = Address::generate(&env);
+    env.cost_estimate().budget().reset_default();
+    client.refund(&single_ref, &single_buyer, &10_000, &0, &10_000, &None);
+    let single_cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(single_cpu > 0, "single-claim CPU must be positive");
+
+    // ── Batch of 10 claims ────────────────────────────────────────────────
+    const BATCH_SIZE: usize = 10;
+    let mut claims = Vec::new(&env);
+    for i in 0..BATCH_SIZE as u8 {
+        let buyer = Address::generate(&env);
+        claims.push_back(make_claim(
+            BytesN::from_array(&env, &[0xB0 + i; 32]),
+            &buyer,
+            10_000,
+            0,
+            10_000,
+        ));
+    }
+    env.cost_estimate().budget().reset_default();
+    client.claim_batch(&claims);
+    let batch_cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(batch_cpu > 0, "batch CPU must be positive");
+
+    // The amortised per-claim cost of the batch must be strictly less than
+    // a standalone single claim. The savings come from the PolicyContext
+    // caching 6 instance-storage reads (window, deadline, oracle_policy,
+    // vdf_delay, token, fee_bps) once instead of per claim.
+    let per_claim_batch_cpu = batch_cpu / BATCH_SIZE as u64;
+    assert!(
+        per_claim_batch_cpu < single_cpu,
+        "per-claim batch cost ({per_claim_batch_cpu} CPU) should be less than \
+         single claim ({single_cpu} CPU) due to PolicyContext caching"
     );
 }

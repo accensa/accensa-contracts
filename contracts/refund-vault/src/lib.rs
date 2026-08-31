@@ -1,5 +1,3 @@
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, token};
-
 use accensa_common::Error;
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
@@ -601,6 +599,56 @@ fn active_fee_recipient(env: &Env) -> Address {
         })
 }
 
+/// Cached policy-level state that is constant for the duration of a
+/// transaction. Read once per entry point (or per batch) to avoid redundant
+/// storage reads inside [`claim_single`].
+struct PolicyContext {
+    refund_window: u32,
+    refund_deadline: u64,
+    oracle_policy: Option<oracle::OraclePolicy>,
+    vdf_delay: u32,
+    token_addr: Address,
+    fee_bps: u32,
+}
+
+/// Read all policy-level instance-storage keys once and return a
+/// [`PolicyContext`]. Call this at the start of each entry point that
+/// processes one or more refund claims so that `claim_single` never re-reads
+/// the same keys.
+fn read_policy_context(env: &Env) -> PolicyContext {
+    PolicyContext {
+        refund_window: env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .unwrap(),
+        refund_deadline: env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundDeadline)
+            .unwrap_or(0),
+        oracle_policy: env
+            .storage()
+            .instance()
+            .get(&DataKey::OraclePolicy),
+        vdf_delay: env
+            .storage()
+            .instance()
+            .get(&DataKey::VdfDelay)
+            .unwrap_or(0),
+        token_addr: env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .unwrap(),
+        fee_bps: env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeBps)
+            .unwrap_or(0),
+    }
+}
+
 /// Shared single-claim logic used by [`RefundVault::refund`],
 /// [`RefundVault::claim_batch`], and [`RefundVault::process_batch`].
 ///
@@ -610,10 +658,13 @@ fn active_fee_recipient(env: &Env) -> Address {
 /// legacy record, window, deadline, ceiling, float), fee split and transfers,
 /// cumulative-record storage and TTL extension, and the [`RefundEvent`].
 ///
+/// `ctx` caches all policy-level state so that batch callers pay for
+/// storage reads once, not per claim.
+///
 /// The float is read from the token contract fresh on **every** call, so a
 /// batch that overdraws the vault on a later claim fails there exactly as a
 /// sequence of single refunds would.
-fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
+fn claim_single(env: &Env, ctx: &PolicyContext, claim: &RefundClaim) -> Result<(), Error> {
     if claim.amount <= 0 {
         return Err(Error::InvalidAmount);
     }
@@ -632,11 +683,8 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         return Err(Error::ExceedsPayment);
     }
 
-    let window: u32 = env
-        .storage()
-        .instance()
-        .get(&DataKey::RefundWindow)
-        .unwrap();
+    // Refund window: use the cached value instead of reading from storage.
+    let window = ctx.refund_window;
     if window > 0 {
         let current_ledger = env.ledger().sequence();
         if current_ledger > claim.paid_at_ledger + window {
@@ -647,12 +695,7 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     // Policy deadline: a wall-clock timestamp configured with the policy.
     // `0` (or unset) means no deadline. Expiry is strictly past the deadline,
     // so a claim landing exactly on the deadline still succeeds.
-    let deadline: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::RefundDeadline)
-        .unwrap_or(0);
-    if deadline > 0 && env.ledger().timestamp() > deadline {
+    if ctx.refund_deadline > 0 && env.ledger().timestamp() > ctx.refund_deadline {
         return Err(Error::RefundExpired);
     }
 
@@ -663,10 +706,8 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     // This runs inside the reentrancy lock acquired by the caller (`refund`,
     // `claim_batch`, `process_batch`), so a whitelisted oracle cannot
     // re-enter the vault from its `get_price` callback.
-    let oracle_policy: Option<oracle::OraclePolicy> =
-        env.storage().instance().get(&DataKey::OraclePolicy);
-    if let Some(policy) = oracle_policy {
-        if !oracle::evaluate_policy(env, &policy)? {
+    if let Some(ref policy) = ctx.oracle_policy {
+        if !oracle::evaluate_policy(env, policy)? {
             return Err(Error::OraclePolicyDenied);
         }
     }
@@ -679,12 +720,7 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     // timestamps or transaction ordering. The challenge is derived from the
     // payment ref (`sha256(payment_ref)`), binding the proof to this payment
     // and preventing replay across payments or across policy changes.
-    let vdf_delay: u32 = env
-        .storage()
-        .instance()
-        .get(&DataKey::VdfDelay)
-        .unwrap_or(0);
-    match (vdf_delay, &claim.vdf_proof) {
+    match (ctx.vdf_delay, &claim.vdf_proof) {
         (0, None) => {}
         (0, Some(_)) => return Err(Error::VdfNotConfigured),
         (_, None) => return Err(Error::VdfProofRequired),
@@ -722,8 +758,8 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         return Err(Error::ExceedsPayment);
     }
 
-    let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-    let token_client = token::Client::new(env, &token_addr);
+    // Token client: use the cached token address instead of reading from storage.
+    let token_client = token::Client::new(env, &ctx.token_addr);
     let balance = token_client.balance(&env.current_contract_address());
     if balance < claim.amount {
         return Err(Error::InsufficientFloat);
@@ -734,8 +770,7 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     // exactly `amount`, so the float check above and the ceiling check against
     // the payment amount are unchanged. The fee rounds *up* (the
     // fractional-token remainder goes to the protocol).
-    let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
-    let fee = refund_fee(claim.amount, fee_bps);
+    let fee = refund_fee(claim.amount, ctx.fee_bps);
     let payout = claim.amount - fee;
 
     let fee_recipient = if fee > 0 {
@@ -811,13 +846,13 @@ impl RefundVault {
     /// Initializes the vault.
     /// # Errors
     /// - `AlreadyInitialized`: If already set.
-    pub fn initialize(env: Env, merchant: Address, token: Address, refund_window: u32) -> Result<(), Symbol> {
-        if env.storage().instance().has(&DataKey::Admin) { return Err(Symbol::new(&env, "AlreadyInitialized")); }
+    pub fn initialize(env: Env, merchant: Address, token: Address, refund_window: u32) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) { return Err(Error::AlreadyInitialized); }
         env.storage().instance().set(&DataKey::Admin, &merchant);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage()
             .instance()
-            .set(&DataKey::RefundWindow, &refund_window_ledgers);
+            .set(&DataKey::RefundWindow, &refund_window);
         env.storage()
             .instance()
             .set(&DataKey::StorageVersion, &INITIAL_STORAGE_VERSION);
@@ -968,7 +1003,8 @@ impl RefundVault {
             payment_amount,
             vdf_proof,
         };
-        claim_single(&env, &claim)?;
+        let ctx = read_policy_context(&env);
+        claim_single(&env, &ctx, &claim)?;
 
         release_reentrancy_lock(&env);
         Ok(())
@@ -1017,8 +1053,9 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        let ctx = read_policy_context(&env);
         for claim in claims.iter() {
-            claim_single(&env, &claim)?;
+            claim_single(&env, &ctx, &claim)?;
         }
         release_reentrancy_lock(&env);
         Ok(())
@@ -1067,6 +1104,8 @@ impl RefundVault {
 
         // The loop below only touches per-payment storage and performs the
         // transfers; each item runs the identical per-claim logic as `refund`.
+        // Policy context is read once before the loop, not per item.
+        let ctx = read_policy_context(&env);
         let mut payment_refs: Vec<BytesN<32>> = Vec::new(&env);
         let mut results = Vec::new(&env);
         for item in refunds.into_iter() {
@@ -1080,7 +1119,7 @@ impl RefundVault {
                 payment_amount: item.payment_amount,
                 vdf_proof: item.vdf_proof,
             };
-            results.push_back(claim_single(&env, &claim).is_ok());
+            results.push_back(claim_single(&env, &ctx, &claim).is_ok());
         }
 
         BatchRefundEvent {
@@ -1134,10 +1173,9 @@ impl RefundVault {
                     let withdraw_amount = core::cmp::min(needed, deployed_principal);
                     if withdraw_amount > 0 {
                         let strategy_client = YieldStrategyClient::new(&env, &strategy_addr);
-                        if let Ok((_p, _y)) = strategy_client.withdraw(&withdraw_amount) {
-                            env.storage().instance().set(&DataKey::DeployedPrincipal, &(deployed_principal - withdraw_amount));
-                            contract_balance = token_client.balance(&env.current_contract_address());
-                        }
+                        let (_p, _y) = strategy_client.withdraw(&withdraw_amount);
+                        env.storage().instance().set(&DataKey::DeployedPrincipal, &(deployed_principal - withdraw_amount));
+                        contract_balance = token_client.balance(&env.current_contract_address());
                     }
                 }
             }
@@ -2125,7 +2163,7 @@ impl RefundVault {
         }
     }
 
-    // ── Existing admin functions ───────────────────────────────────────────
+    // ── Admin & governance functions ───────────────────────────────────────
 
     pub fn pause(env: Env) -> Result<(), Error> {
         let merchant: Address = env
@@ -2148,8 +2186,12 @@ impl RefundVault {
         Ok(())
     }
 
-    pub fn unpause(env: Env) -> Result<(), Symbol> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Symbol::new(&env, "NotInitialized"))?;
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::IsPaused, &false);
 
@@ -2178,11 +2220,6 @@ impl RefundVault {
             .unwrap();
 
         let extend_to = refund_record_ttl_extend_to(&env, window, record.paid_at_ledger);
-        // Threshold == extend_to: a caller invoking this well before expiry
-        // (which is the whole point of a manual top-up) must still see it
-        // take effect. TTL_THRESHOLD (100 ledgers, ~8 minutes) would make
-        // this silently succeed as a no-op unless called in that final
-        // sliver before the entry actually expires.
         env.storage().persistent().extend_ttl(
             &DataKey::RefundV2(payment_ref),
             extend_to,
@@ -2192,149 +2229,62 @@ impl RefundVault {
     }
 
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
         env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
-        env.events().publish(
-            (Symbol::new(&env, "admin_transfer_initiated"), admin, new_admin.clone()),
-            (),
-        );
+
+        AdminTransferInitiatedEvent {
+            from: admin,
+            to: new_admin,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
     pub fn accept_admin(env: Env) -> Result<(), Error> {
-        let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin).ok_or(Error::Unauthorized)?;
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
         pending.require_auth();
 
-        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
 
         env.storage().instance().set(&DataKey::Admin, &pending);
         env.storage().instance().remove(&DataKey::PendingAdmin);
 
-        env.events().publish(
-            (Symbol::new(&env, "admin_transfer_accepted"), old_admin, pending),
-            (),
-        );
+        AdminTransferAcceptedEvent {
+            from: old_admin,
+            to: pending,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
     pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
         if !env.storage().instance().has(&DataKey::PendingAdmin) {
-            return Err(Error::Unauthorized);
+            return Err(Error::NoPendingTransfer);
         }
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        Ok(())
-    }
-
-    pub fn set_yield_strategy(env: Env, strategy: Address) -> Result<(), Error> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::YieldStrategy, &strategy);
-        Ok(())
-    }
-
-    pub fn set_reserve_ratio(env: Env, ratio_bp: u32) -> Result<(), Error> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
-        admin.require_auth();
-        if ratio_bp > BASIS_POINTS_DENOMINATOR {
-            return Err(Error::InvalidRatio);
-        }
-        env.storage().instance().set(&DataKey::ReserveRatio, &ratio_bp);
-        Ok(())
-    }
-
-    pub fn set_max_deploy_ratio(env: Env, ratio_bp: u32) -> Result<(), Error> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
-        admin.require_auth();
-        if ratio_bp > BASIS_POINTS_DENOMINATOR {
-            return Err(Error::InvalidRatio);
-        }
-        env.storage().instance().set(&DataKey::MaxDeployRatio, &ratio_bp);
-        Ok(())
-    }
-
-    pub fn deploy_yield(env: Env, amount: i128) -> Result<(), Error> {
-        Self::check_paused(&env)?;
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
-        admin.require_auth();
-
-        let strategy_addr: Address = env.storage().instance().get(&DataKey::YieldStrategy).ok_or(Error::StrategyNotSet)?;
-        let token_address: Address = env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
-        let token_client = token::Client::new(&env, &token_address);
-
-        let contract_balance = token_client.balance(&env.current_contract_address());
-        let reserve_ratio: u32 = env.storage().instance().get(&DataKey::ReserveRatio).unwrap_or(2_000);
-        let required_reserve = contract_balance * (reserve_ratio as i128) / (BASIS_POINTS_DENOMINATOR as i128);
-
-        if contract_balance - amount < required_reserve {
-            return Err(Error::InsufficientReserve);
-        }
-
-        token_client.transfer(&env.current_contract_address(), &strategy_addr, &amount);
-        let strategy_client = YieldStrategyClient::new(&env, &strategy_addr);
-        strategy_client.deposit(&amount)?;
-
-        let deployed: i128 = env.storage().instance().get(&DataKey::DeployedPrincipal).unwrap_or(0);
-        env.storage().instance().set(&DataKey::DeployedPrincipal, &(deployed + amount));
-
-        env.events().publish(
-            (Symbol::new(&env, "yield_deployed"), strategy_addr),
-            amount,
-        );
-
-        Ok(())
-    }
-
-    pub fn harvest_yield(env: Env) -> Result<i128, Error> {
-        Self::check_paused(&env)?;
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
-        admin.require_auth();
-
-        let strategy_addr: Address = env.storage().instance().get(&DataKey::YieldStrategy).ok_or(Error::StrategyNotSet)?;
-        let strategy_client = YieldStrategyClient::new(&env, &strategy_addr);
-
-        let harvested = strategy_client.harvest()?;
-        if harvested > 0 {
-            let total_harvested: i128 = env.storage().instance().get(&DataKey::HarvestedYield).unwrap_or(0);
-            env.storage().instance().set(&DataKey::HarvestedYield, &(total_harvested + harvested));
-
-            env.events().publish(
-                Symbol::new(&env, "yield_harvested"),
-                harvested,
-            );
-        }
-
-        Ok(harvested)
-    }
-
-    pub fn get_yield_info(env: Env) -> YieldInfo {
-        let deployed_principal: i128 = env.storage().instance().get(&DataKey::DeployedPrincipal).unwrap_or(0);
-        let harvested_yield: i128 = env.storage().instance().get(&DataKey::HarvestedYield).unwrap_or(0);
-        let strategy = env.storage().instance().get(&DataKey::YieldStrategy);
-        let reserve_ratio: u32 = env.storage().instance().get(&DataKey::ReserveRatio).unwrap_or(2_000);
-        let max_deploy_ratio: u32 = env.storage().instance().get(&DataKey::MaxDeployRatio).unwrap_or(8_000);
-
-        YieldInfo {
-            deployed_principal,
-            harvested_yield,
-            strategy,
-            reserve_ratio,
-            max_deploy_ratio,
-        }
-    }
-
-    fn check_paused(env: &Env) -> Result<(), Error> {
-        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
-        if paused {
-            return Err(Error::Paused);
-        }
         Ok(())
     }
 }
