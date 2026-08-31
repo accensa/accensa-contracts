@@ -1331,15 +1331,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "refund-policy-time"
+version = "0.1.0"
+dependencies = [
+ "accensa-common",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "refund-policy-vdf"
+version = "0.1.0"
+dependencies = [
+ "accensa-common",
+ "crypto-bigint",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "refund-vault"
 version = "0.3.0"
 dependencies = [
  "accensa-common",
  "budget-macros",
- "crypto-bigint",
  "multisig-account",
  "proptest",
  "receipt-anchor",
+ "refund-policy-time",
+ "refund-policy-vdf",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "refund-vault-factory"
+version = "0.1.0"
+dependencies = [
+ "accensa-common",
+ "refund-policy-time",
+ "refund-policy-vdf",
+ "refund-vault",
  "soroban-sdk",
 ]
 
