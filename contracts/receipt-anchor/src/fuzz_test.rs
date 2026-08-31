@@ -54,6 +54,42 @@
 
 extern crate std;
 
+//! Property-based fuzz tests for [`ReceiptAnchor::verify_receipt`] — the
+//! function the public verifier depends on and the most security-sensitive
+//! path in this repo.
+//!
+//! This file replaces the previous placeholder "fuzz" test, which asserted
+//! `count > 0` without ever touching the contract, and the empty
+//! `benchmark_gas_and_cpu_instructions` stub. Both carried names that claimed
+//! coverage the repository did not have.
+//!
+//! Every property builds a *real* Merkle tree over randomly generated leaves
+//! using the same sorted-pair SHA-256 construction `verify_receipt` implements
+//! (see [`hash_pair`] and [`build_merkle_tree`]), anchors the resulting root,
+//! and then exercises [`ReceiptAnchor::verify_receipt`]:
+//!
+//! * a valid proof for a randomly chosen leaf verifies as `true` across
+//!   randomised tree sizes (1..=`MAX_BATCH_SIZE` leaves, odd and even);
+//! * a proof with one corrupted sibling is rejected;
+//! * a truncated proof is rejected;
+//! * an empty proof is rejected against any multi-leaf root (it stays valid
+//!   for a single-leaf batch, where the leaf *is* the root);
+//! * a valid proof for a leaf of a different batch is rejected;
+//! * arbitrary caller-supplied proofs — including over-long ones — never
+//!   panic. A panic in `verify_receipt` would be a denial-of-service on the
+//!   public verifier. The proof lengths generated here are bounded so every
+//!   call stays inside the host resource budget; bounding the proof on the
+//!   contract side is tracked separately in accensa/accensa-contracts#96;
+//! * duplicate leaves exercise the equal-hash ordering branch of the
+//!   sorted-pair construction.
+//!
+//! The proptest configuration is pinned — fixed case count and fixed RNG
+//! seed, see [`fuzz_config`] — so the exact input sequence is identical on
+//! every run, including in `CI`. If a property ever fails, proptest prints
+//! the failing input and the same seed reproduces the same sequence locally.
+
+extern crate std;
+
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, EnvTestConfig, Ledger},
@@ -910,9 +946,12 @@ const ANCHOR_BATCH_BASELINE_CPU: u64 = 1_591_284;
 const ANCHOR_BATCH_BASELINE_MEM: u64 = 3_819_993;
 
 /// Cost baselines for `verify_receipt` (4-leaf Merkle proof, including cross-contract shard routing)
-/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()` on 2026-08-26.
-const VERIFY_RECEIPT_BASELINE_CPU: u64 = 569_906;
-const VERIFY_RECEIPT_BASELINE_MEM: u64 = 1_500_000;
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()`.
+/// Re-measured on 2026-08-29: the pure-WASM SHA-256 folding merged in #250 (08-27)
+/// moved hashing out of the host into WASM, which raised the host CPU instruction
+/// count for this path (~569.9k -> ~780.8k) while cutting WASM instruction usage.
+const VERIFY_RECEIPT_BASELINE_CPU: u64 = 780_762;
+const VERIFY_RECEIPT_BASELINE_MEM: u64 = 1_378_946;
 
 #[test]
 fn benchmark_gas_and_cpu_instructions() {

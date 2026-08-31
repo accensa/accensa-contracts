@@ -4,5 +4,8 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

@@ -64,9 +64,9 @@ jobs:
     name: fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e701504024f229986b6bc21544a47a1ec68d0ee5 # stable
         with:
           components: rustfmt
       - name: Run fmt
@@ -76,14 +76,14 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e701504024f229986b6bc21544a47a1ec68d0ee5 # stable
         with:
           components: clippy
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -95,19 +95,19 @@ jobs:
         # `contractimport!` to test the shard factory end-to-end.
         run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   test:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e701504024f229986b6bc21544a47a1ec68d0ee5 # stable
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -119,19 +119,19 @@ jobs:
         # test the shard factory end-to-end.
         run: cargo build -p receipt-shard --target wasm32v1-none --release
       - name: Run Tests
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
   benchmarks:
     name: benchmark-budgets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e701504024f229986b6bc21544a47a1ec68d0ee5 # stable
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -141,14 +141,31 @@ jobs:
       - name: Run Budget Measurement Tests
         # Placeholder for actual budget enforcement (Issue #66).
         # Ensures that the testutils budget harness compiles and works.
-        run: cargo test -p testutils --profile release-with-logs
+        run: cargo test --locked -p testutils --profile release-with-logs
 
-  build-wasm:
-    name: build-wasm
+  budget:
+    name: budget-limits
     runs-on: ubuntu-latest
+    env:
+      # Stated tolerance for committed baselines. A measured value that exceeds
+      # baseline * (1 + tolerance) fails the build. Wasm size: 10%. Budget
+      # assertions (Tier A macros / Tier B --check): 15% (see budget.toml).
+      WASM_SIZE_TOLERANCE: 0.10
+      # Pinned tool versions (Tollcraft). Bump these deliberately when the
+      # upstream tools release and you have re-measured the baselines.
+      SOROBAN_COST_LINTER_TAG: v0.1.1
+      SOROBAN_COST_LINTER_NIGHTLY: nightly-2026-04-16
+      DYLINT_VERSION: 6.0.1
+      # soroban-budget-assert is distributed from git (not crates.io). Pin to
+      # the released tag: upstream `main` is not guaranteed to compile (it can
+      # carry in-progress work, e.g. #592 broke cargo-budget-report's main.rs).
+      SOROBAN_BUDGET_ASSERT_REF: v0.1.0
+      # Funded testnet identity for the Tier B network-simulated report. Empty in
+      # forks / untrusted runs, so the network step is skipped there.
+      STELLAR_TESTNET_SECRET: ${{ secrets.STELLAR_TESTNET_SECRET }}
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Rust
+      - name: Setup Rust (stable + wasm)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
@@ -159,46 +176,233 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+          key: ${{ runner.os }}-cargo-budget-${{ hashFiles('**/Cargo.lock') }}
+
+      # --- Build every contract to WASM (needed by the Tier A macro suite) ---
+      - name: Wasm build
+        # Exclude `testutils`: it is a std crate (no `#![no_std]`) and its
+        # soroban-sdk `testutils` feature is not supported on wasm, so it
+        # cannot compile for wasm32v1-none (same rationale as the build-wasm
+        # job). Only the contract crates are needed for the Tier A macros.
+        run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
+
+      # --- WASM size ceiling (committed baseline + tolerance) ---
+      - name: Enforce WASM size budget
+        run: |
+          TOL=$WASM_SIZE_TOLERANCE
+          FAILED=0
+          PCT=$(awk "BEGIN{printf \"%.0f\", $TOL*100}")
+          echo "### WASM Build Sizes" >> $GITHUB_STEP_SUMMARY
+          echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
+
+          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm"; do
+            name="${pair%%:*}"; wasm="${pair##*:}"
+            SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
+            BUDGET=$(jq -r ".$name" .wasm-budget.json)
+            CEIL=$(awk "BEGIN{printf \"%d\", $BUDGET*(1+$TOL)}")
+            if [ "$SIZE" -gt "$CEIL" ]; then
+              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
+              FAILED=1
+            else
+              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "Error: WASM size budget exceeded beyond the stated tolerance." >&2
+            exit 1
+          fi
+
+      # --- Stage 1: soroban-cost-linter (static analysis, findings surfaced) ---
+      - name: Install soroban-cost-linter (pinned)
+        run: |
+          rustup toolchain install "$SOROBAN_COST_LINTER_NIGHTLY" --component rustc-dev --component llvm-tools-preview
+          cargo install cargo-dylint dylint-link --version "$DYLINT_VERSION" --locked
+          cargo +"$SOROBAN_COST_LINTER_NIGHTLY" install \
+            --git https://github.com/Tollcraft/soroban-cost-linter.git \
+            --tag "$SOROBAN_COST_LINTER_TAG" --locked cargo-cost-lint
+      - name: Run soroban-cost-linter
+        # Surfaces every finding in the job log. The step fails only on
+        # deny-level (error) findings; warn-level findings are reported so the
+        # team can promote them deliberately in budget.toml. Dylint links
+        # against rustc_private, so the linter must run under the pinned nightly.
+        run: |
+          echo "### soroban-cost-linter findings" >> $GITHUB_STEP_SUMMARY
+          cargo +"$SOROBAN_COST_LINTER_NIGHTLY" cost-lint --workspace --format text | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+      # --- Stage 2: soroban-budget-assert Tier A (local, per-PR gate) ---
+      - name: Run Tier A budget assertions
+        # Compiles the contracts for the host and runs the `#[budget_cpu_lt(N)]`
+        # macro tests. These read the prebuilt WASM via `register_contract_wasm`
+        # and fail the PR if any scaling op exceeds its committed threshold.
+        run: cargo test -p receipt-anchor -p refund-vault --features budget-assert
+
+      # --- Stage 2: soroban-budget-assert Tier B (network-verified report) ---
+      - name: Install cargo-budget-report (pinned)
+        run: |
+          cargo install --git https://github.com/Tollcraft/soroban-budget-assert.git \
+            --tag "$SOROBAN_BUDGET_ASSERT_REF" --locked cargo-budget-report
+      - name: Install stellar-cli (Tier B only)
+        # `cargo budget-report` simulates against testnet via the stellar CLI.
+        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
+        run: cargo install --locked stellar-cli
+      - name: Run cargo budget-report (Tier B)
+        # Requires a funded testnet identity; only runs in the repo's own runs
+        # where the secret is set. `cargo budget-report` publishes the
+        # network-simulated CPU/read/write bytes for every configured function;
+        # `cargo budget-report --check` (network gate) is enabled once fixture
+        # state is wired and the committed baselines are confirmed.
+        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
+        run: |
+          echo "$STELLAR_TESTNET_SECRET" | stellar keys add alice --network testnet --secret-key-stdin
+          cargo budget-report --check --json | tee budget-report.json
+          echo "### Tier B budget report" >> $GITHUB_STEP_SUMMARY
+          cat budget-report.json >> $GITHUB_STEP_SUMMARY
+      - name: Upload Tier B report
+        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-report-${{ github.sha }}
+          path: budget-report.json
+
+  build-wasm:
+    name: build-wasm
+    runs-on: ubuntu-latest
+    env:
+      # Same stated tolerance as the budget-limits job so both size gates
+      # pass/fail consistently: measured value may exceed the committed
+      # baseline by up to (1 + tolerance) before the build fails.
+      WASM_SIZE_TOLERANCE: 0.10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
       - name: Wasm build
-        run: cargo build --target wasm32v1-none --release
+        # Build the deployable contract crates only: building the `testutils`
+        # workspace member for the wasm target activates soroban-sdk's
+        # `testutils` feature, which is not supported on wasm and fails with
+        # `compile_error!("'testutils' feature is not supported on 'wasm'")`.
+        run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
 
       - name: Report WASM sizes & enforce size budget
         run: |
-          RECEIPT_SIZE=$(stat -c%s target/wasm32v1-none/release/receipt_anchor.wasm 2>/dev/null || stat -f%z target/wasm32v1-none/release/receipt_anchor.wasm)
-          REFUND_SIZE=$(stat -c%s target/wasm32v1-none/release/refund_vault.wasm 2>/dev/null || stat -f%z target/wasm32v1-none/release/refund_vault.wasm)
-
-          RECEIPT_BUDGET=$(jq -r '.receipt_anchor' .wasm-budget.json)
-          REFUND_BUDGET=$(jq -r '.refund_vault' .wasm-budget.json)
-
-          echo "### WASM Build Sizes" >> $GITHUB_STEP_SUMMARY
-          echo "| Contract | Size (bytes) | Budget (bytes) | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
-
+          TOL=$WASM_SIZE_TOLERANCE
           FAILED=0
-          if [ "$RECEIPT_SIZE" -gt "$RECEIPT_BUDGET" ]; then
-            echo "| \`receipt_anchor.wasm\` | $RECEIPT_SIZE | $RECEIPT_BUDGET | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
-            FAILED=1
-          else
-            echo "| \`receipt_anchor.wasm\` | $RECEIPT_SIZE | $RECEIPT_BUDGET | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
-          fi
+          PCT=$(awk "BEGIN{printf \"%.0f\", $TOL*100}")
+          echo "### WASM Build Sizes" >> $GITHUB_STEP_SUMMARY
+          echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
 
-          if [ "$REFUND_SIZE" -gt "$REFUND_BUDGET" ]; then
-            echo "| \`refund_vault.wasm\` | $REFUND_SIZE | $REFUND_BUDGET | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
-            FAILED=1
-          else
-            echo "| \`refund_vault.wasm\` | $REFUND_SIZE | $REFUND_BUDGET | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
-          fi
+          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm"; do
+            name="${pair%%:*}"; wasm="${pair##*:}"
+            SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
+            BUDGET=$(jq -r ".$name" .wasm-budget.json)
+            CEIL=$(awk "BEGIN{printf \"%d\", $BUDGET*(1+$TOL)}")
+            if [ "$SIZE" -gt "$CEIL" ]; then
+              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
+              FAILED=1
+            else
+              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
 
           if [ "$FAILED" -ne 0 ]; then
-            echo "Error: WASM size budget exceeded."
+            echo "Error: WASM size budget exceeded beyond the stated tolerance." >&2
             exit 1
           fi
 
       - name: Upload WASM Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wasm-artifacts-${{ github.sha }}
           path: |
             target/wasm32v1-none/release/receipt_anchor.wasm
             target/wasm32v1-none/release/refund_vault.wasm
+
+  vector-parity:
+    name: vector parity (cross-repo)
+    runs-on: ubuntu-latest
+    # Keep the two repos' Merkle vectors from silently drifting. Divergence must
+    # fail a build, not produce a warning (issue #53). Triggered on every push
+    # to main, on PRs, on a daily schedule (so a stale SDK copy is caught even
+    # when nothing changes here), and can be fired from accensa-app via
+    # repository_dispatch / workflow_dispatch.
+    concurrency:
+      group: vector-parity-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify local fixture is in sync with its source of truth
+        # Regenerates src/vectors.rs from merkle-vectors.json and fails if it
+        # drifted, and fails if merkle-vectors.json.sha256 is stale. This is the
+        # in-repo half of the parity guarantee.
+        run: |
+          node contracts/receipt-anchor/scripts/build-vectors.mjs --check
+
+      - name: Fetch SDK vector fixture from accensa-app (pinned ref)
+        id: fetch
+        env:
+          ACCENSA_APP_REF: ${{ vars.ACCELSA_APP_REF || 'main' }}
+          # On a PR we have not yet synced accensa-app, so a hash mismatch must
+          # not block the PR itself — it is reported as a warning. On main,
+          # schedule, dispatch and manual runs the same mismatch is a hard
+          # failure, which is the whole point of issue #53.
+          STRICT: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+        run: |
+          URL="https://raw.githubusercontent.com/accensa/accensa-app/${ACCELSA_APP_REF}/packages/sdk/merkle-vectors.json"
+          echo "Fetching ${URL}"
+          if curl -fsSL "$URL" -o /tmp/sdk-merkle-vectors.json; then
+            SDK_HASH=$(sha256sum /tmp/sdk-merkle-vectors.json | cut -d' ' -f1)
+            LOCAL_HASH=$(tr -d '[:space:]' < contracts/receipt-anchor/merkle-vectors.json.sha256)
+            echo "SDK hash (accensa-app@${ACCELSA_APP_REF}):   ${SDK_HASH}"
+            echo "Local hash (this repo):                      ${LOCAL_HASH}"
+            if [ "$SDK_HASH" != "$LOCAL_HASH" ]; then
+              if [ "$STRICT" = "true" ]; then
+                echo "::error::merkle-vectors.json diverged from accensa-app@${ACCELSA_APP_REF}."
+                echo "::error::Bring the two repos in sync: update both copies of merkle-vectors.json"
+                echo "::error::AND both committed .sha256 files, then pin ACCENSA_APP_REF. The"
+                echo "::error::cross-implementation proof-of-parity is broken until you do."
+                exit 1
+              fi
+              echo "::warning::merkle-vectors.json diverged from accensa-app@${ACCELSA_APP_REF}."
+              echo "::warning::This is expected until accensa-app vendors the new canonical vectors"
+              echo "::warning::(see cross-repo/accensa-app/README.md). Once both repos carry the"
+              echo "::warning::same hash this becomes a hard failure instead of a warning."
+            else
+              echo "Vector fixture matches accensa-app@${ACCELSA_APP_REF}."
+            fi
+          else
+            echo "::warning::Could not fetch accensa-app@${ACCELSA_APP_REF} merkle-vectors.json."
+            echo "::warning::This usually means accensa-app has not yet vendored the canonical"
+            echo "::warning::vectors (see docs/CONFORMANCE.md). The divergence guard is active but"
+            echo "::warning::cannot verify until the SDK copy exists. Open the accensa-app PR."
+          fi
+
+  notify-vector-parity:
+    name: notify accensa-app on vector change
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: vector-parity
+    steps:
+      - name: Ping accensa-app to re-check parity
+        # When this repo's vectors change, tell accensa-app's parity job to run
+        # so a stale SDK copy is caught promptly rather than only on its schedule.
+        uses: peter-evans/repository-dispatch@v3
+        continue-on-error: true
+        with:
+          token: ${{ secrets.ACCELSA_APP_PAT }}
+          repository: accensa/accensa-app
+          event-type: accensa-contracts-vector-update
+          client-payload: '{"ref": "${{ github.sha }}"}'

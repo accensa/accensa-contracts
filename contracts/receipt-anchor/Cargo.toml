@@ -9,17 +9,34 @@ description = "Merkle batch anchoring for x402 receipts on Stellar"
 [lints]
 workspace = true
 
-
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[features]
+# Enables the Tier A budget-assertion tests in `src/budget_test.rs`. Off by
+# default so ordinary `cargo test` / `cargo clippy` runs do not require the
+# prebuilt WASM artifacts or pull in the `budget_macros` dev-dependency. The
+# budget CI job enables it explicitly after building the contracts to WASM.
+budget-assert = ["dep:budget_macros"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
+sha2 = { version = "0.10.9", default-features = false }
+# Tollcraft/soroban-budget-assert — Tier A local assertion macros, used only
+# by the `#[cfg(test)]`-gated `budget_test` module. Cargo does not allow
+# optional *dev*-dependencies, so this lives here, optional, gated by the
+# `budget-assert` feature; it never links into a real (non-test) build.
+# Pinned to a stable ref; the macros read `env.cost_estimate().budget()` on
+# the WASM-mode estimate and fail the test if the pinned limit is exceeded.
+# NOTE: pin this to a released tag (e.g. `tag = "v0.1.0"`) once a tag exists;
+# `main` is used here so the dependency always resolves.
+budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git", branch = "main", package = "budget-macros", optional = true }
 
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
+soroban-env-host = "27.0.1"
 soroban-sdk = { workspace = true, features = ["testutils"] }
 # Test-only: lets fuzz_test.rs peek at a shard's own storage (e.g. TTLs) by
 # its DataKey type. Safe as a dev-dependency only — soroban-sdk's contract

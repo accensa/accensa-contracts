@@ -252,12 +252,48 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "DomainSeparator"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bytes": "0ecb188156fe839e84b079ba797da21e155fef714cee6b0da7bfad7be630ea72"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Nonce"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "RefundWindow"
                           }
                         ]
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
