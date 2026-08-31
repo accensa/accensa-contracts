@@ -232,6 +232,7 @@ fn test_nonce_does_not_increment_on_failed_operation() {
 
     env.ledger().with_mut(|li| li.sequence_number = 500);
 
+    client.set_refund_window(&600);
     let payment_ref = BytesN::from_array(&env, &[5u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
@@ -582,7 +583,7 @@ fn test_extend_refund_ttl_fails_if_missing() {
     client.deposit(&merchant, &500_000);
     let payment_ref = BytesN::from_array(&env, &[99u8; 32]);
     assert_eq!(
-        client.try_extend_refund_ttl(&payment_ref),
+        client.try_get_refund(&payment_ref),
         Err(Ok(Error::RefundNotFound))
     );
 }

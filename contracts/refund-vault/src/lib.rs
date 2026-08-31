@@ -1755,11 +1755,21 @@ impl RefundVault {
             fee_bps: bps,
             fee_recipient: active_fee_recipient(&env),
         }
-        .publish(&env);
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
+        let token_client = token::TokenClient::new(&env, &token_address);
+        token_client.transfer(&merchant, &env.current_contract_address(), &amount);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+
+        DepositEvent { from, amount }.publish(&env);
+
         Ok(())
     }
 
@@ -1772,9 +1782,11 @@ impl RefundVault {
         let merchant: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
+            .get(&DataKey::RefundMax)
+            .unwrap_or(0);
+        if max_refund > 0 && amount > max_refund {
+            return Err(Error::AmountExceedsMax);
+        }
 
         env.storage()
             .instance()
@@ -1828,11 +1840,15 @@ impl RefundVault {
             refund_when_below: policy.refund_when_below,
             max_staleness_ledgers: policy.max_staleness_ledgers,
         }
-        .publish(&env);
+
+        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+
+        WithdrawEvent { to: recipient, amount }.publish(&env);
+
         Ok(())
     }
 
@@ -1898,20 +1914,20 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Set the minimum reserve ratio in basis points (1 bp = 0.01%).
-    /// E.g., 2000 = 20% of total vault value must remain as liquid token balance.
-    pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
-        if basis_points > 10_000 {
-            return Err(Error::InvalidRatio);
-        }
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+    }
 
+    pub fn set_refund_window(env: Env, refund_window_ledgers: u32) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
-
         env.storage()
             .persistent()
             .set(&DataKey::ReserveRatio, &basis_points);
@@ -1923,20 +1939,23 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Set the maximum deployment ratio in basis points.
-    /// E.g., 8000 = at most 80% of total vault value can be deployed to yield.
-    pub fn set_max_deploy_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
-        if basis_points > 10_000 {
-            return Err(Error::InvalidRatio);
-        }
+    pub fn get_refund_window(env: Env) -> Result<u32, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .ok_or(Error::NotInitialized)
+    }
 
+    pub fn set_refund_max(env: Env, max_amount: i128) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
-
+        if max_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
         env.storage()
             .persistent()
             .set(&DataKey::MaxDeployRatio, &basis_points);
@@ -1961,16 +1980,11 @@ impl RefundVault {
         if env
             .storage()
             .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+            .get(&DataKey::RefundMax)
+            .unwrap_or(0))
+    }
 
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
@@ -1988,9 +2002,11 @@ impl RefundVault {
         let token_client = token::Client::new(&env, &token_addr);
         let token_balance = token_client.balance(&env.current_contract_address());
 
-        if token_balance < amount {
-            return Err(Error::InsufficientFloat);
+        AdminTransferInitiatedEvent {
+            from: merchant,
+            to: new_admin,
         }
+        .publish(&env);
 
         let deployed: i128 = env
             .storage()
@@ -2008,8 +2024,8 @@ impl RefundVault {
         //  but it belongs to the operator, not the principal pool — subtract it)
         let total_value = token_balance + deployed - harvested;
 
-        // Reserve check: after deployment, liquid tokens must cover the reserve.
-        let reserve_ratio: u32 = env
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending: Address = env
             .storage()
             .persistent()
             .get(&DataKey::ReserveRatio)
@@ -2020,8 +2036,7 @@ impl RefundVault {
             return Err(Error::InsufficientReserve);
         }
 
-        // Max deployment check.
-        let max_deploy_ratio: u32 = env
+        let old_merchant: Address = env
             .storage()
             .persistent()
             .get(&DataKey::MaxDeployRatio)
@@ -2074,11 +2089,12 @@ impl RefundVault {
         {
             return Err(Error::Paused);
         }
+        .publish(&env);
 
-        if principal <= 0 {
-            return Err(Error::InvalidAmount);
-        }
+        Ok(())
+    }
 
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
@@ -2128,8 +2144,8 @@ impl RefundVault {
             yield_amount: yield_returned,
             nonce,
         }
-        .publish(&env);
 
+        env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -2189,6 +2205,7 @@ impl RefundVault {
         }
         .publish(&env);
 
+        env.storage().instance().set(&DataKey::YieldStrategy, &info);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -2229,9 +2246,9 @@ impl RefundVault {
         let merchant: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
+            .get(&DataKey::YieldStrategy)
+            .ok_or(Error::StrategyNotSet)
+    }
 
         env.storage().instance().set(&DataKey::IsPaused, &true);
 
@@ -2242,8 +2259,8 @@ impl RefundVault {
 
         env.storage()
             .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
+            .get::<_, YieldInfo>(&DataKey::YieldStrategy)
+            .and_then(|info| info.strategy)
     }
 
     pub fn unpause(env: Env) -> Result<(), Symbol> {
