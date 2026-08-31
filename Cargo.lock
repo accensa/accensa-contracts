@@ -1297,7 +1297,6 @@ dependencies = [
  "proptest",
  "receipt-shard",
  "sha2",
- "soroban-env-host",
  "soroban-sdk",
 ]
 

@@ -38,6 +38,3 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 receipt-anchor = { path = "../receipt-anchor" }
 refund-policy-time = { path = "../refund-policy-time" }
 refund-policy-vdf = { path = "../refund-policy-vdf" }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-soroban-sdk = { workspace = true, features = ["testutils"] }

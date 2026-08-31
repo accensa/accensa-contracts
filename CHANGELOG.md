@@ -10,9 +10,6 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
-- **Upto settlement authorization support**: implemented the new
-  `upto-authorization` contract for the upto settlement scheme, including the
-  authorization policy flow and tests covering the contract behavior.
 - **`RefundVaultFactory` with constructor-wired vaults** (issue #129): vaults
   are now created by a singleton factory via `deploy_vault(vault_init)` and are
   fully initialized in their constructor — there is no `initialize` window to
