@@ -10,6 +10,7 @@
 //! enforces that writes land inside its own assigned range.
 
 use accensa_common::Error;
+use sha2::{Digest, Sha256};
 use soroban_sdk::{contract, contractimpl, contractmeta, contracttype, Address, BytesN, Env, Vec};
 
 contractmeta!(key = "name", val = "ReceiptShard");
@@ -53,8 +54,6 @@ const TTL_THRESHOLD: u32 = 100;
 /// A batch of N leaves produces a tree of depth ⌈log₂(N)⌉. For
 /// MAX_BATCH_SIZE = 1000 (router constant), that is 10.
 const MAX_PROOF_LEN: u32 = 10;
-
-use sha2::{Digest, Sha256};
 
 #[contract]
 pub struct ReceiptShard;
@@ -140,34 +139,31 @@ impl ReceiptShard {
         if proof.len() > MAX_PROOF_LEN {
             return Err(Error::ProofTooLong);
         }
-        let batch = Self::get_batch(env.clone(), batch_id)?;
-        let mut computed_hash = leaf.to_array();
+        let batch = Self::get_batch(env, batch_id)?;
+        let computed_hash = Self::fold_proof(leaf.to_array(), proof);
 
-        // Use a static buffer on the guest stack to process the Merkle proof
-        // avoiding dynamic host object overhead or heap allocations.
-        let mut proof_buffer = [[0u8; 32]; 128];
-        let len = proof.len() as usize;
-        assert!(len <= 128, "proof length exceeds static buffer limit");
+        Ok(computed_hash == batch.root.to_array())
+    }
 
-        for (i, sibling_bytes) in proof.into_iter().enumerate() {
-            proof_buffer[i] = sibling_bytes.to_array();
-        }
-
-        for sibling in proof_buffer.iter().take(len) {
+    /// Folds a sorted-pair Merkle proof with one allocation-free guest loop.
+    /// Keeping the proof in its Soroban vector avoids copying it into a second
+    /// buffer and avoids a second traversal before hashing.
+    fn fold_proof(mut computed_hash: [u8; 32], proof: Vec<BytesN<32>>) -> [u8; 32] {
+        for sibling_bytes in proof.into_iter() {
+            let sibling = sibling_bytes.to_array();
             let mut combined = [0u8; 64];
-            if computed_hash <= *sibling {
+            if computed_hash <= sibling {
                 combined[..32].copy_from_slice(&computed_hash);
-                combined[32..].copy_from_slice(sibling);
+                combined[32..].copy_from_slice(&sibling);
             } else {
-                combined[..32].copy_from_slice(sibling);
+                combined[..32].copy_from_slice(&sibling);
                 combined[32..].copy_from_slice(&computed_hash);
             }
             let mut hasher = Sha256::new();
             hasher.update(combined);
             computed_hash = hasher.finalize().into();
         }
-
-        Ok(computed_hash == batch.root.to_array())
+        computed_hash
     }
 
     pub fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error> {

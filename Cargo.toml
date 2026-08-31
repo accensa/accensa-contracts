@@ -1,11 +1,16 @@
 [workspace]
 members = [
     "contracts/common",
+    "contracts/governance",
     "contracts/multisig-account",
     "contracts/receipt-anchor",
     "contracts/receipt-shard",
+    "contracts/refund-policy-time",
+    "contracts/refund-policy-vdf",
     "contracts/refund-vault",
+    "contracts/refund-vault-factory",
     "contracts/testutils",
+    "contracts/upto-authorization",
 ]
 # `testutils` is a test-support crate (publish = false) whose only dependency
 # is soroban-sdk with the `testutils` feature enabled — a feature soroban-sdk
@@ -28,7 +33,7 @@ repository = "https://github.com/accensa/accensa-contracts"
 edition = "2021"
 
 [workspace.dependencies]
-soroban-sdk = "27.0.4"
+soroban-sdk = "27.0.6"
 accensa-common = { path = "contracts/common" }
 
 [workspace.lints.rust]
@@ -37,7 +42,8 @@ warnings = "deny"
 [workspace.lints.clippy]
 all = "warn"
 
-
+[profile.dev]
+overflow-checks = true
 
 [profile.release]
 opt-level = "z"

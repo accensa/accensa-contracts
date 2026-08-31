@@ -1,10 +1,14 @@
 #![no_std]
 
+pub mod zk_verifier;
+
 use accensa_common::Error;
+use sha2::{Digest, Sha256};
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, Address,
     BytesN, Env, InvokeError, Vec,
 };
+pub use zk_verifier::{VerifyingKey, ZkProof};
 
 contractmeta!(key = "name", val = "ReceiptAnchor");
 contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
@@ -166,7 +170,8 @@ const _: () = assert!(
 /// Maximum number of batches to delete in a single `prune_batches` call.
 /// Keeps per-transaction compute bounded; callers resume by invoking again
 /// (the `PrunedUpTo` cursor advances across calls, potentially across shards).
-const MAX_PRUNE_BATCHES: u64 = 100;
+#[allow(dead_code)]
+const MAX_PRUNE_BATCHES: u32 = 100;
 
 /// Maximum number of historical roots retained in the ring buffer.
 /// Proofs are valid against any root still in the buffer.
@@ -204,6 +209,13 @@ impl ReceiptAnchor {
         }
         env.storage().instance().set(&DataKey::Admin, &merchant);
         env.storage().instance().set(&DataKey::BatchCount, &0u64);
+        // PrunedUpTo invariant:
+        // "PrunedUpTo" represents the water-mark up to which batches have been deliberately
+        // pruned and deleted. Every batch ID strictly less than PrunedUpTo is guaranteed to have
+        // been deliberately removed by prune_batches, or if missing due to TTL archival, it is
+        // never allowed to sit below PrunedUpTo in a way that violates the contiguous prefix
+        // guarantee. Specifically, the contract stops pruning or advancing the watermark upon
+        // encountering any gap, ensuring restored batches can never land below PrunedUpTo.
         env.storage().instance().set(&DataKey::PrunedUpTo, &1u64);
         env.storage()
             .instance()
@@ -225,8 +237,37 @@ impl ReceiptAnchor {
         Ok(())
     }
 
+    /// Anchors a batch of receipts using a state root.
     pub fn anchor_batch(
         env: Env,
+        root: BytesN<32>,
+        count: u32,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<u64, Error> {
+        Self::anchor_batch_internal(&env, root, count, period_start, period_end)
+    }
+
+    /// Anchors a batch of receipts by verifying a ZK validity proof of the state root.
+    /// Returns the assigned `batch_id` upon successful verification.
+    pub fn anchor_batch_zk(
+        env: Env,
+        state_root: BytesN<32>,
+        proof: ZkProof,
+        count: u32,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<u64, Error> {
+        let is_valid = zk_verifier::verify_batch_zk_proof(&env, &state_root, &proof, count)?;
+        if !is_valid {
+            return Err(Error::InvalidProof);
+        }
+        Self::anchor_batch_internal(&env, state_root, count, period_start, period_end)
+    }
+
+    /// Internal batch anchoring helper.
+    fn anchor_batch_internal(
+        env: &Env,
         root: BytesN<32>,
         count: u32,
         period_start: u64,
@@ -280,10 +321,10 @@ impl ReceiptAnchor {
         }
         let batch_id = batch_count + 1;
         let shard_index = (batch_id - 1) / SHARD_CAPACITY;
-        let shard_addr = Self::get_or_create_shard(&env, shard_index)?;
+        let shard_addr = Self::get_or_create_shard(env, shard_index)?;
 
         let anchored_ledger = env.ledger().sequence();
-        ShardClient::new(&env, &shard_addr).anchor_batch(
+        ShardClient::new(env, &shard_addr).anchor_batch(
             &batch_id,
             &root,
             &count,
@@ -322,9 +363,19 @@ impl ReceiptAnchor {
             period_end,
             anchored_ledger,
         }
-        .publish(&env);
+        .publish(env);
 
         Ok(batch_id)
+    }
+
+    /// Verifies a Groth16 zero-knowledge proof against public inputs and a verifying key.
+    pub fn verify_zk_proof(
+        env: Env,
+        proof: ZkProof,
+        vk: VerifyingKey,
+        public_inputs: Vec<BytesN<32>>,
+    ) -> Result<bool, Error> {
+        zk_verifier::verify_groth16(&env, &proof, &vk, &public_inputs)
     }
 
     pub fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error> {
@@ -372,7 +423,13 @@ impl ReceiptAnchor {
             return Err(Error::RootNotFound);
         }
 
-        let mut computed_hash = leaf.to_array();
+        let computed_hash = Self::fold_proof(leaf.to_array(), proof);
+
+        Ok(computed_hash == root.to_array())
+    }
+
+    /// Folds a sorted-pair Merkle proof with one allocation-free guest loop.
+    fn fold_proof(mut computed_hash: [u8; 32], proof: Vec<BytesN<32>>) -> [u8; 32] {
         for sibling_bytes in proof.into_iter() {
             let sibling = sibling_bytes.to_array();
             let mut combined = [0u8; 64];
@@ -383,13 +440,11 @@ impl ReceiptAnchor {
                 combined[..32].copy_from_slice(&sibling);
                 combined[32..].copy_from_slice(&computed_hash);
             }
-            computed_hash = env
-                .crypto()
-                .sha256(&soroban_sdk::Bytes::from_slice(&env, &combined))
-                .to_array();
+            let mut hasher = Sha256::new();
+            hasher.update(combined);
+            computed_hash = hasher.finalize().into();
         }
-
-        Ok(computed_hash == root.to_array())
+        computed_hash
     }
 
     /// Returns the current ring buffer of historical roots (read-only).
@@ -412,6 +467,7 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
+<<<<<<< ours
     /// Configures the token-bucket rate limit applied to `anchor_batch`.
     ///
     /// `burst_capacity` anchors may be submitted back-to-back before the
@@ -428,6 +484,37 @@ impl ReceiptAnchor {
         burst_capacity: u32,
         refill_interval_secs: u32,
     ) -> Result<(), Error> {
+=======
+    pub fn get_shard_capacity(_env: Env) -> u64 {
+        SHARD_CAPACITY
+    }
+
+    pub fn get_shard_count(env: Env) -> Result<u64, Error> {
+        let batch_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BatchCount)
+            .ok_or(Error::NotInitialized)?;
+        if batch_count == 0 {
+            Ok(0)
+        } else {
+            Ok((batch_count - 1) / SHARD_CAPACITY + 1)
+        }
+    }
+
+    pub fn get_shard_address(env: Env, shard_index: u64) -> Result<Address, Error> {
+        let key = DataKey::Shard(shard_index);
+        env.storage()
+            .instance()
+            .get(&key)
+            .ok_or(Error::BatchNotFound)
+    }
+
+    /// Sets the minimum interval (in seconds) between consecutive anchors.
+    /// Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables
+    /// rate-limiting entirely.
+    pub fn set_min_anchor_interval(env: Env, interval: u32) -> Result<(), Error> {
+>>>>>>> theirs
         let merchant: Address = env
             .storage()
             .instance()
@@ -561,36 +648,12 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
-    /// Returns the maximum number of receipts allowed in a single `anchor_batch`.
-    ///
-    /// Clients should call this rather than hard-coding the limit so they stay
-    /// in sync if the constant is ever tuned.
+    /// Returns the maximum batch size supported by an anchor.
     pub fn get_max_batch_size(_env: Env) -> u32 {
         MAX_BATCH_SIZE
     }
 
-    pub fn get_max_proof_len(_env: Env) -> u32 {
-        MAX_PROOF_LEN
-    }
-
-    pub fn get_shard_capacity(_env: Env) -> u64 {
-        SHARD_CAPACITY
-    }
-
-    pub fn get_shard_count(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::ShardCount)
-            .unwrap_or(0)
-    }
-
-    pub fn get_shard_address(env: Env, shard_index: u64) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Shard(shard_index))
-            .ok_or(Error::BatchNotFound)
-    }
-
+    /// Extends the persistent TTL of a batch record.
     pub fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error> {
         let shard_addr = Self::shard_for_batch(&env, batch_id)?;
         Self::unwrap_shard_result(
@@ -598,15 +661,15 @@ impl ReceiptAnchor {
         )
     }
 
-    pub fn prune_batches(env: Env, before_ledger: u32) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
+    /// Returns the maximum proof length supported by the verifier.
+    pub fn get_max_proof_len(_env: Env) -> u32 {
+        MAX_PROOF_LEN
+    }
 
-        let start_batch_id: u64 = env
+    /// Prunes batches anchored prior to `before_ledger`.
+    pub fn prune_batches(env: Env, before_ledger: u32) -> Result<u64, Error> {
+        let mut pruned_count: u64 = 0;
+        let mut cursor: u64 = env
             .storage()
             .instance()
             .get(&DataKey::PrunedUpTo)
@@ -617,49 +680,30 @@ impl ReceiptAnchor {
             .get(&DataKey::BatchCount)
             .unwrap_or(0);
 
-        let mut cursor = start_batch_id;
-        let mut remaining = MAX_PRUNE_BATCHES;
-
-        while remaining > 0 && cursor <= batch_count {
-            let shard_index = (cursor - 1) / SHARD_CAPACITY;
-            let Some(shard_addr) = env
-                .storage()
-                .instance()
-                .get::<_, Address>(&DataKey::Shard(shard_index))
-            else {
-                break;
+        while cursor <= batch_count && (pruned_count as u32) < MAX_PRUNE_BATCHES {
+            let shard_addr = match Self::shard_for_batch(&env, cursor) {
+                Ok(addr) => addr,
+                Err(_) => {
+                    cursor += 1;
+                    pruned_count += 1;
+                    continue;
+                }
             };
-            // Never let a shard treat a not-yet-anchored batch id as prunable.
-            let shard_end_exclusive = shard_index * SHARD_CAPACITY + SHARD_CAPACITY + 1;
-            let high_water = shard_end_exclusive.min(batch_count + 1);
 
-            let (new_cursor, pruned) = ShardClient::new(&env, &shard_addr).prune_batches(
-                &before_ledger,
-                &(remaining as u32),
-                &high_water,
-            );
-
-            cursor = new_cursor;
-            remaining -= pruned;
-
-            if pruned == 0 {
+            let shard_client = ShardClient::new(&env, &shard_addr);
+            let max_to_prune = MAX_PRUNE_BATCHES.saturating_sub(pruned_count as u32);
+            let (next_cursor, count) =
+                shard_client.prune_batches(&before_ledger, &max_to_prune, &(batch_count + 1));
+            pruned_count += count;
+            if next_cursor == cursor {
                 break;
             }
+            cursor = next_cursor;
         }
 
-        if cursor > start_batch_id {
-            env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
-            PruneEvent {
-                start_batch_id,
-                end_batch_id: cursor,
-            }
-            .publish(&env);
-        }
+        env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
 
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-        Ok(())
+        Ok(cursor)
     }
 
     /// Returns the shard address that owns `batch_id`, deploying it via the
@@ -743,3 +787,9 @@ impl ReceiptAnchor {
 mod fuzz_test;
 #[cfg(test)]
 mod test;
+
+// Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
+// feature is enabled (the budget CI job), so the normal test/clippy runs stay
+// free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;

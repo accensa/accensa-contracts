@@ -115,7 +115,8 @@
                 },
                 {
                   "i128": "50000"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -175,6 +176,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     },
@@ -219,6 +226,12 @@
                           "val": {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "vdf_proof"
+                          },
+                          "val": "void"
                         }
                       ]
                     }
@@ -531,6 +544,30 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "DomainSeparator"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bytes": "0ecb188156fe839e84b079ba797da21e155fef714cee6b0da7bfad7be630ea72"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Nonce"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "3"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "ReentrancyLock"
                           }
                         ]
@@ -549,6 +586,18 @@
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

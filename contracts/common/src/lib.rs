@@ -18,7 +18,7 @@
 
 #![no_std]
 
-use soroban_sdk::contracterror;
+use soroban_sdk::{contractclient, contracterror, contracttype, Address, Bytes, BytesN, Env};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -82,15 +82,160 @@ pub enum Error {
     RootNotFound = 200,
     /// The Merkle proof exceeds the maximum valid length (`MAX_PROOF_LEN`).
     ProofTooLong = 201,
-    /// An anchor was submitted before the rate limit allowed it (the
-    /// identity's token bucket was empty).
+    /// An anchor was submitted before the minimum interval elapsed.
     AnchorRateLimited = 202,
-    /// A rate-limit configuration was rejected: a half-set bucket (one
-    /// parameter zero), a burst larger than the maximum, or a refill interval
-    /// longer than the maximum.
-    InvalidRateLimitConfig = 203,
+    /// The supplied zero-knowledge validity proof is invalid or malformed.
+    InvalidProof = 203,
     /// No pending policy change exists to execute.
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
     TimelockNotExpired = 301,
+    /// A refund was claimed against a policy with a VDF delay configured but
+    /// no VDF proof was supplied.
+    VdfProofRequired = 302,
+    /// A supplied VDF proof failed verification (tampered output or witness,
+    /// a premature proof computed for a smaller delay, or a degenerate
+    /// challenge).
+    InvalidVdfProof = 303,
+    /// A VDF proof was supplied for a claim against a policy that has no VDF
+    /// delay configured.
+    VdfNotConfigured = 304,
+    /// A reveal was attempted without a matching, pending commit
+    /// (commit-reveal, issue #128).
+    NoCommit = 305,
+    /// A commit was submitted for a commitment hash that already has a pending
+    /// commitment (commit-reveal, issue #128).
+    CommitAlreadyExists = 306,
+    /// The plaintext revealed does not hash to the committed value
+    /// (commit-reveal, issue #128).
+    CommitMismatch = 307,
+    /// A reveal was attempted before the minimum commit-reveal ledger delay
+    /// elapsed (commit-reveal, issue #128).
+    CommitDelayNotElapsed = 308,
+    /// A reveal was attempted under a different operation than the one the
+    /// commitment was originally bound to (commit-reveal, issue #128).
+    CommitOperationMismatch = 309,
+    /// No oracle contracts are whitelisted on the vault, so the dynamic
+    /// oracle policy cannot be evaluated (fail closed).
+    NoOraclesConfigured = 310,
+    /// An oracle contract is already on the whitelist.
+    OracleAlreadyAdded = 311,
+    /// The oracle contract is not on the whitelist.
+    OracleNotFound = 312,
+    /// Every whitelisted oracle returned stale data for the requested feed.
+    StaleOracleData = 313,
+    /// No dynamic oracle policy is configured.
+    NoOraclePolicy = 314,
+    /// A refund was rejected because the oracle policy condition was not met.
+    OraclePolicyDenied = 315,
+    /// `migrate_state` was called with a target layout version that is not
+    /// greater than the current storage version (or is otherwise invalid).
+    InvalidMigrationVersion = 316,
+    /// A policy that requires the stateless policy contracts (time/VDF) was
+    /// proposed or executed on a vault that was never wired with the contract
+    /// addresses (issue #129: the factory wires them at construction, or the
+    /// admin sets them via the setters).
+    PolicyContractsNotConfigured = 317,
+    /// A policy contract received a `params` blob that does not decode to the
+    /// policy's schema (`TimePolicyParams` / `VdfPolicyParams`). Indicates a
+    /// vault configured a policy entry against the wrong contract.
+    InvalidPolicyParams = 318,
+}
+
+/// Parameters for the stateless **time** policy contract (issue #129).
+///
+/// Guards refund claims by two independent clocks, evaluated in this order:
+///
+/// - `window`: the refund window measured in ledgers from the payment's
+///   `paid_at_ledger`. `0` disables the window ("no window").
+/// - `deadline`: a wall-clock Unix timestamp after which claims are rejected.
+///   `0` disables the deadline ("never expires"). Expiry is strictly past the
+///   deadline, so a claim landing exactly on the deadline succeeds.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimePolicyParams {
+    pub window: u32,
+    pub deadline: u64,
+}
+
+/// Parameters for the stateless **VDF** policy contract (issue #129).
+///
+/// Requires a valid Wesolowski proof that `delay` sequential squarings have
+/// elapsed on the payment-ref challenge before a claim is honored. `delay`
+/// must be `> 0`; a `0` delay would otherwise be a no-op, and the vault never
+/// emits a VDF entry for a `0` delay.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VdfPolicyParams {
+    pub delay: u32,
+}
+
+/// The claim-derived context a vault passes to a policy contract's
+/// `evaluate` call (issue #129). Carries every claim fact a stateless policy
+/// needs; policies are pure and must not call back into the vault.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyContext {
+    pub payment_ref: BytesN<32>,
+    /// Claimed amount before any configured fee is deducted.
+    pub amount: i128,
+    /// Ledger at which the original payment occurred (window is measured
+    /// from here, never from a partial).
+    pub paid_at_ledger: u32,
+    /// Ledger the claim is being evaluated at.
+    pub current_ledger: u32,
+    /// Wall-clock timestamp the claim is being evaluated at.
+    pub timestamp: u64,
+    /// Wesolowski VDF proof supplied on the claim, if any.
+    pub vdf_proof: Option<BytesN<256>>,
+}
+
+/// Interface implemented by the stateless refund-policy contracts
+/// (issue #129).
+///
+/// `evaluate` runs *inside the vault's reentrancy lock* (the vault's
+/// `refund`/`claim_batch`/`process_batch` entry points hold it for the whole
+/// call), so a policy contract MUST NOT invoke any guarded vault entry point
+/// as a callback — that would be rejected with `ReentrancyBlocked`. Policies
+/// are pure: they read [`PolicyContext`], optionally decode their own
+/// `params`, and return `Err` to reject the claim.
+#[contractclient(name = "RefundPolicyClient")]
+pub trait RefundPolicy {
+    /// Evaluate the policy against a claim. `Ok(())` admits the claim; any
+    /// `Err` rejects it with the mapped [`Error`].
+    fn evaluate(env: Env, params: Bytes, ctx: PolicyContext) -> Result<(), Error>;
+}
+
+/// Construction-time configuration for a `RefundVault` instance (issue #129).
+///
+/// Shared between `RefundVaultFactory::deploy_vault` (which feeds it to the
+/// vault's `__constructor` through `deploy_v2`) and direct (non-factory)
+/// deployments that call `RefundVault::initialize`.
+///
+/// `time_policy` / `vdf_policy` are the addresses of the stateless policy
+/// contracts the vault will delegate gate evaluation to; both are optional
+/// (`None` disables the corresponding gate — an active gate on a vault that
+/// was never wired fails closed with `PolicyContractsNotConfigured`).
+/// `refund_window` / `deadline` / `vdf_delay` seed the vault's read-path
+/// mirrors of the active gates; they are updated by the timelocked
+/// propose/execute flow.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultInit {
+    pub merchant: Address,
+    pub token: Address,
+    /// Stateless time-policy contract address (window + deadline gate).
+    pub time_policy: Option<Address>,
+    /// Stateless VDF-policy contract address (proof gate).
+    pub vdf_policy: Option<Address>,
+    /// Refund fee in basis points deducted from each payout.
+    pub fee_bps: u32,
+    /// Address that receives the fee; `None` falls back to the merchant.
+    pub fee_recipient: Option<Address>,
+    /// Mirror of the active time gate's window (read path).
+    pub refund_window: u32,
+    /// Mirror of the active time gate's deadline (read path).
+    pub deadline: u64,
+    /// Mirror of the active VDF gate's delay (read path).
+    pub vdf_delay: u32,
 }

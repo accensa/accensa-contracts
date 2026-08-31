@@ -1,6 +1,9 @@
 #![cfg(test)]
 
+use accensa_common::VaultInit;
 use receipt_anchor::{ReceiptAnchor, ReceiptAnchorClient};
+use refund_policy_time::TimePolicy;
+use refund_policy_vdf::VdfPolicy;
 use refund_vault::{RefundVault, RefundVaultClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -44,9 +47,8 @@ fn setup<'a>() -> TestEnv<'a> {
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
     anchor.initialize(&merchant, &shard_wasm_hash);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token),));
     let vault = RefundVaultClient::new(&env, &vault_id);
-    vault.initialize(&merchant, &token, &WINDOW);
 
     // Initial sequence number
     env.ledger().with_mut(|li| li.sequence_number = 10);
@@ -57,6 +59,20 @@ fn setup<'a>() -> TestEnv<'a> {
         vault,
         merchant,
         token,
+    }
+}
+
+fn vault_init(env: &Env, merchant: &Address, token: &Address) -> VaultInit {
+    VaultInit {
+        merchant: merchant.clone(),
+        token: token.clone(),
+        time_policy: Some(env.register(TimePolicy, ())),
+        vdf_policy: Some(env.register(VdfPolicy, ())),
+        fee_bps: 0,
+        fee_recipient: None,
+        refund_window: WINDOW,
+        deadline: 0,
+        vdf_delay: 0,
     }
 }
 
@@ -104,7 +120,7 @@ fn readme_claim_refunds_outlive_pruned_batches() {
     // provided it falls within the refund window (paid_at_ledger >= 100 here).
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &150, &100);
+    vault.refund(&payment_ref, &buyer, &100, &150, &100, &None);
 
     let record = vault.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 100);
@@ -135,7 +151,7 @@ fn readme_claim_payment_ref_is_receipt_leaf() {
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 
     // Both contracts agree: verify_receipt accepts the leaf and get_refund
     // returns a record keyed by the same bytes.
@@ -168,7 +184,7 @@ fn test_happy_path_and_payment_ref_correspondence() {
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 
     assert!(anchor.verify_receipt(&1, &leaf, &proof));
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
@@ -196,7 +212,7 @@ fn test_refund_of_payment_in_pruned_batch() {
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &150, &100);
+    vault.refund(&payment_ref, &buyer, &100, &150, &100, &None);
 
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }
@@ -222,11 +238,11 @@ fn test_full_refund_then_exceed_payment() {
     let buyer = Address::generate(&env);
 
     // First refund takes a partial; a second past the ceiling is rejected.
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 
     // Over the ceiling -> Error(Contract, #19) ExceedsPayment.
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 }
 
 #[test]
@@ -244,7 +260,7 @@ fn test_pause_interaction() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
     assert!(vault
-        .try_refund(&payment_ref, &buyer, &100, &0, &100)
+        .try_refund(&payment_ref, &buyer, &100, &0, &100, &None)
         .is_err());
 
     let root = payment_ref.clone();
@@ -271,7 +287,7 @@ fn test_ttl_archival_across_both() {
     vault.deposit(&merchant, &500_000);
 
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
 
     anchor.extend_batch_ttl(&1);
     vault.extend_refund_ttl(&payment_ref);

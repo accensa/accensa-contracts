@@ -1,9 +1,9 @@
 # ADR 002: The `upto` Settlement Scheme on Stellar
 
-> **Status: DRAFT — design exploration, not an accepted decision.**
-> Nothing here has been validated against the upstream `upto` specification, against a
-> running contract, or against Soroban's authorization semantics in practice. §6 lists
-> what must be confirmed before any of this is proposed as a network spec. Do not cite
+> **Status: DRAFT — §6.1 resolved; remaining open questions pending.**
+> §6.1 answers the upstream-specification research question (issue #61). The remaining
+> open questions (§6.2–6.6) require Soroban-specific implementation work, not upstream
+> research. The design in §4 is **not excluded** by the upstream `upto` spec. Do not cite
 > this document as a design that works; cite it as the design being investigated.
 >
 > **2026-08-26 update:** the construction below has been drafted into a Stellar scheme
@@ -178,9 +178,10 @@ ADR.**
 4. **Sequence-number contention.** Agent traffic is bursty and the facilitator submits
    every settlement. Channel accounts are the standard answer; that needs designing, not
    naming.
-5. **Refund interaction.** `RefundVault` in this repo keys refunds on a payment
+5. **[RESOLVED] Refund interaction.** `RefundVault` in this repo keys refunds on a payment
    reference. If an `upto` payment settles for less than its cap, what is the refundable
    amount — and does anything need to change here?
+   - **Resolution:** `RefundVault` enforces refund ceilings natively on-chain for metered `upto` payments. It executes a cross-contract read against the configured `SettlementContract` to verify the actual settled amount and ledger, rejecting unsettled or expired authorizations. The vault operates entirely on this verified on-chain data, completely ignoring any ceiling supplied by the caller, and correctly tracks partial refunds up to that ceiling.
 6. **Does the facilitator need `authorize` at all**, or can the buyer call it directly?
    Fee sponsorship (`extra.areFeesSponsored`) suggests the facilitator submits, but that
    should follow from the spec rather than convenience.

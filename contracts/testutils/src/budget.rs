@@ -1,4 +1,7 @@
-use soroban_sdk::Env;
+#![cfg(not(target_arch = "wasm32"))]
+
+#[allow(unused_imports)]
+use soroban_sdk::{testutils::*, Env};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BudgetMetrics {

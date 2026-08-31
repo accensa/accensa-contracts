@@ -1,0 +1,19 @@
+[package]
+name = "upto-authorization"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

@@ -97,6 +97,9 @@
                 },
                 {
                   "u64": "0"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -228,6 +231,30 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "DomainSeparator"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bytes": "0ecb188156fe839e84b079ba797da21e155fef714cee6b0da7bfad7be630ea72"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Nonce"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "PendingPolicy"
                           }
                         ]
@@ -245,6 +272,14 @@
                           {
                             "key": {
                               "symbol": "proposed_at_ledger"
+                            },
+                            "val": {
+                              "u32": 0
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "vdf_delay"
                             },
                             "val": {
                               "u32": 0
@@ -271,6 +306,18 @@
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

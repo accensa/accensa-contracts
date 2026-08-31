@@ -106,6 +106,9 @@
                 },
                 {
                   "u64": "1700000000"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -294,6 +297,30 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "DomainSeparator"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bytes": "0ecb188156fe839e84b079ba797da21e155fef714cee6b0da7bfad7be630ea72"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Nonce"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "1"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "ReentrancyLock"
                           }
                         ]
@@ -330,12 +357,36 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Token"
                           }
                         ]
                       },
                       "val": {
                         "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "VdfDelay"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     }
                   ]
