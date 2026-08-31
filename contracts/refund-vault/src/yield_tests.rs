@@ -8,6 +8,7 @@ use soroban_sdk::{
     Address, BytesN, Env,
 };
 
+use crate::test_helpers::vault_init;
 use crate::{DataKey, Error, RefundVault, RefundVaultClient, TTL_EXTEND};
 
 // ── Mock yield strategy contract ───────────────────────────────────────────
@@ -202,9 +203,8 @@ fn setup_with_strategy(
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 17_280),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &17_280);
 
     let strategy_id = env.register(MockYieldStrategy, ());
     let strategy_addr = strategy_id.clone();
@@ -240,20 +240,6 @@ fn test_set_yield_strategy() {
     assert_eq!(info.max_deploy_ratio, 8000);
     assert_eq!(info.deployed_principal, 0);
     assert_eq!(info.harvested_yield, 0);
-}
-
-#[test]
-fn test_set_yield_strategy_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let vault_id = env.register(RefundVault, ());
-    let vault_client = RefundVaultClient::new(&env, &vault_id);
-    let addr = Address::generate(&env);
-
-    assert_eq!(
-        vault_client.try_set_yield_strategy(&addr),
-        Err(Ok(Error::NotInitialized))
-    );
 }
 
 #[test]
@@ -312,9 +298,8 @@ fn test_deploy_without_strategy_fails() {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &100);
     vault_client.deposit(&merchant, &500_000);
 
     assert_eq!(
@@ -464,9 +449,8 @@ fn test_withdraw_without_strategy_fails() {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &100);
 
     assert_eq!(
         vault_client.try_withdraw_from_yield(&100),

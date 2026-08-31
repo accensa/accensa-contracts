@@ -116,7 +116,7 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 
 | Function | Purpose |
 |---|---|
-| `initialize(merchant, token, refund_window_ledgers)` | Sets admin, settlement token, and refund window. |
+| `__constructor(VaultInit)` / `initialize(VaultInit)` | Constructor-wired initialization: sets admin (merchant), settlement token, policy addresses, fee, refund window, deadline, and VDF delay in one call. There is no post-deployment `initialize` window. |
 | `deposit(from, amount)` | Merchant tops up float. |
 | `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount, vdf_proof)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. A configured fee (if any) is deducted before the payout. `vdf_proof` is `Option<BytesN<256>>` — the 128-byte output `x^(2^T) mod N` concatenated with the 128-byte Wesolowski witness — required only when the policy carries a VDF delay (see below). |
 | `claim_batch(claims)` | Refunds multiple claims in one transaction (`Vec<RefundClaim>`, one struct per `refund` call). Atomic: one failing claim reverts the whole batch. One merchant signature, one reentrancy lock, and a `RefundEvent` per claim. Per-element float checks mean it can never overdraw the vault. |
@@ -134,6 +134,9 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 | `get_fee_bps()` | Returns the configured fee rate in basis points (read-only). |
 | `get_fee_recipient()` | Returns the configured fee recipient, if any (read-only; falls back to the merchant at claim time). |
 | `get_refund(payment_ref) -> Option<RefundRecord>` | Looks up a refund. |
+| `set_time_policy_contract(address)` | Wires (or clears) the stateless time-policy contract the vault delegates its window/deadline gate to. Merchant auth. |
+| `set_vdf_policy_contract(address)` | Wires (or clears) the stateless VDF-policy contract the vault delegates its proof gate to. Merchant auth. |
+| `get_time_policy_contract() / get_vdf_policy_contract() -> Option<Address>` | Returns the delegated policy contract addresses, if any. A `None` on an active gate means claims fail closed with `PolicyContractsNotConfigured`. |
 | `add_oracle(oracle)` | Whitelists an oracle contract implementing the standard `Oracle` interface (`get_price` + `get_last_update_ledger`); merchant auth required. |
 | `remove_oracle(oracle)` | Removes an oracle from the whitelist; merchant auth required. |
 | `get_oracles() -> Vec<Address>` | Returns the oracle whitelist, in insertion order (read-only). |
@@ -244,6 +247,51 @@ rejected by the condition returns `OraclePolicyDenied`. The gate applies to
 both `refund` and every item of `process_batch`. See
 [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#6-the-oracle-aggregator-optional)
 for the trust model.
+
+### `RefundVaultFactory`
+
+Deploys constructor-wired `RefundVault` instances for many merchants off a
+single factory. The factory owns the inputs a merchant must not pick —
+the vault `wasm_hash` and the addresses of the stateless policy contracts —
+and binds each deployment to the merchant via `require_auth`, so a merchant
+cannot grief another's deterministic salt family.
+
+| Function | Purpose |
+|---|---|
+| `deploy_vault(VaultInit)` -> Address | Deploys a vault configured by the init struct. Requires the merchant's auth. Returns the vault address deterministically (salt = `sha256(merchant ‖ counter)`). |
+| `__constructor(admin, vault_wasm_hash, time_policy, vdf_policy)` | Sets the factory admin, the vault wasm hash the factory may deploy, and the default policy addresses. |
+| `set_vault_wasm(hash)` | Swaps the vault `wasm_hash` used for future deployments (admin only). |
+| `set_time_policy_contract(address)` / `set_vdf_policy_contract(address)` | Rotates the default policy addresses future vaults fall back to (admin only). |
+| `get_vaults() / get_next_salt()` | Operator inspection: deployed vaults and the per-merchant salt counter. |
+
+Policy resolution: a policy set on the merchant's `VaultInit` wins; `None`
+falls back to the factory's global policy address. A vault deployed with a
+`None` policy on an active gate is nevertheless created and refuses that gate
+at claim time with `PolicyContractsNotConfigured` (317) — the factory
+operator's job is to never let that happen. See the
+[Mainnet Deployment Guide](docs/MAINNET_DEPLOYMENT.md) for the factory
+deployment and configuration steps.
+
+### `RefundPolicy` (time and VDF)
+
+Stateless policy contracts that evaluate a single claim and return `Ok(())` or
+an error — kept outside the vault so per-vault storage and upgrade surface stay
+small, and so operators can adjust claim gating for every vault at once by
+repointing the factory default.
+
+- **`TimePolicy`** (`contracts/refund-policy-time`): rejects a claim outside
+  the configured refund window or past the configured wall-clock deadline.
+- **`VdfPolicy`** (`contracts/refund-policy-vdf`): requires a valid Wesolowski
+  VDF proof bound to the payment (`challenge = sha256(payment_ref)`), enforcing
+  a *computational* delay a validator cannot shorten.
+
+Both implement the same minimal interface an arbitrary custom policy can
+implement: `evaluate(params: Bytes, ctx: PolicyContext) -> Result<(), Error>`.
+
+> **Storage note:** neither the vault nor the factory ever persists an
+> `Option::None` (a `Void` value). A cleared key is *absent* from the ledger; a
+> `Void` is not legal contract-storage data and broke reads in the wasm
+> constructor path in earlier builds.
 
 ## Error Codes
 

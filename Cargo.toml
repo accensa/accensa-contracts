@@ -5,7 +5,10 @@ members = [
     "contracts/multisig-account",
     "contracts/receipt-anchor",
     "contracts/receipt-shard",
+    "contracts/refund-policy-time",
+    "contracts/refund-policy-vdf",
     "contracts/refund-vault",
+    "contracts/refund-vault-factory",
     "contracts/testutils",
 ]
 resolver = "2"

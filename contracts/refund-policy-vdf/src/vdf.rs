@@ -56,7 +56,7 @@ use crypto_bigint::{
     modular::runtime_mod::{DynResidue, DynResidueParams},
     Encoding, NonZero, U1024, U128,
 };
-use soroban_sdk::{contracttype, Bytes, BytesN, Env};
+use soroban_sdk::{Bytes, Env};
 
 /// Fixed 1024-bit RSA modulus for the delay group.
 ///
@@ -75,18 +75,12 @@ pub const MODULUS: [u8; 128] = [
     0xe7, 0x48, 0x6d, 0x57, 0x9f, 0x79, 0xc0, 0xfa, 0x1a, 0xcd, 0x56, 0xdd, 0x2a, 0x09, 0xc7, 0xf5,
 ];
 
-/// A Wesolowski VDF proof: the claimed output `y = x^(2^T) mod N` and the
-/// witness `pi = x^(floor(2^T / l)) mod N` for the transcript-derived prime
-/// `l`. Both are 1024-bit values (the modulus width), big-endian.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VdfProof {
-    /// The claimed VDF output, `x^(2^T) mod N`.
-    pub output: BytesN<128>,
-    /// The Wesolowski witness, `x^(floor(2^T / l)) mod N`.
-    pub proof: BytesN<128>,
-}
-
+/// A Wesolowski VDF proof is the pair `(y, pi)`: the claimed output
+/// `y = x^(2^T) mod N` and the witness `pi = x^(floor(2^T / l)) mod N` for the
+/// transcript-derived prime `l`. Both are 1024-bit values (the modulus
+/// width), big-endian. The policy contract receives them packed into the
+/// claim's `vdf_proof` blob: `output || proof`.
+///
 /// Deterministic Miller-Rabin witness bases for 128-bit candidates.
 ///
 /// There is no *proven* small fixed set for all of `2^128`, but the first
@@ -121,7 +115,19 @@ pub(crate) fn verify_vdf(
     if x <= U1024::ONE || x >= n.wrapping_sub(&U1024::ONE) {
         return Err(Error::InvalidVdfProof);
     }
+    // Reject the trivial-output forgery too: `(y, pi) = (0, 0)` makes
+    // `pi^l * x^r = 0^l * x^r = 0 = y` hold for *any* non-degenerate x, so a
+    // zero output with a zero witness passes the arithmetic as-is. A genuine
+    // 1024-bit exponentiation is never 0 or 1 mod N (astronomically unlikely
+    // at worst), so excluding y ∈ {0, 1, N-1} only removes forgeries. Note
+    // `pi` is *not* range-checked: for small delays the floor exponent is 0
+    // and an honest witness is pi = 1, which the primality equation still
+    // binds (y == x^r when pi = 1); a zero pi can only satisfy the equation
+    // at y ≡ 0, which the y check already rejects.
     let y = U1024::from_be_slice(output).rem(&NonZero::new(n).unwrap());
+    if y <= U1024::ONE || y >= n.wrapping_sub(&U1024::ONE) {
+        return Err(Error::InvalidVdfProof);
+    }
     let pi = U1024::from_be_slice(proof).rem(&NonZero::new(n).unwrap());
 
     // Challenge prime bound to the transcript (x, y, T), as passed in.

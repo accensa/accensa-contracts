@@ -196,7 +196,7 @@ jobs:
           echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
 
-          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm"; do
+          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm" "refund_policy_time:refund_policy_time.wasm" "refund_policy_vdf:refund_policy_vdf.wasm" "refund_vault_factory:refund_vault_factory.wasm"; do
             name="${pair%%:*}"; wasm="${pair##*:}"
             SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
             BUDGET=$(jq -r ".$name" .wasm-budget.json)
@@ -304,7 +304,7 @@ jobs:
           echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
 
-          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm"; do
+          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm" "refund_policy_time:refund_policy_time.wasm" "refund_policy_vdf:refund_policy_vdf.wasm" "refund_vault_factory:refund_vault_factory.wasm"; do
             name="${pair%%:*}"; wasm="${pair##*:}"
             SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
             BUDGET=$(jq -r ".$name" .wasm-budget.json)

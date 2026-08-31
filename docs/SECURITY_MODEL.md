@@ -189,6 +189,31 @@ window-based refunds.
   WASM). Treat the shipped modulus as a testnet-grade placeholder, not a
   mainnet parameter.
 
+### Factory-Deployed Vaults and Stateless Policies (issue #129)
+- **Threat:** a vault deployed before its admin/token/policy are set can be
+  front-run — the attacker calls `initialize` first and locks the victim's
+  funds into a configuration they chose; alternatively, delegating claim
+  gating to shared state contracts lets one tenant's actions affect another.
+- **Mitigation:** factory deployments are constructor-wired — `VaultInit`
+  drives a `__constructor`, so there is no `initialize` window at all. The
+  factory authorizes the merchant before deploying (griefing on a
+  deterministic salt family is impossible) and owns the vault `wasm_hash` and
+  the default policy addresses. Claim gating is delegated to **stateless**
+  policy contracts (`TimePolicy`, `VdfPolicy`, or any contract implementing
+  `evaluate(params, ctx)`); a vault's gate outcome depends only on that
+  contract, never on other tenants' storage. A merchant-supplied policy
+  address wins over the factory default, so factory admin rotation of defaults
+  never silently repoints a vault that chose its own whitelisted policy.
+- **Fail-closed by default:** a vault with a `None` policy on an active gate
+  refuses that gate at claim time (`PolicyContractsNotConfigured`, 317) rather
+  than accepting an unvetted claim. Operators should treat an unconfigured
+  factory default as a bug and configure both policies at deployment.
+- **Operational note — no `Void` in storage:** `Option::None` is never
+  persisted; a cleared policy key is *absent* from the ledger. `Void` is not a
+  legal Soroban contract-data value, and earlier builds that stored it broke
+  in the wasm constructor/read paths (`ConversionError` aborts and
+  `Error(Context, InvalidAction)`).
+
 ### Float Draining (Negative/Zero Amounts)
 - **Threat:** An attacker tries to refund a negative amount to cause an underflow or steal funds.
 - **Mitigation:** Explicit validation ensures that the `amount` is strictly greater than zero (`InvalidAmount` error) before executing token transfers, preventing unintended arithmetic behaviors or logical exploits.
