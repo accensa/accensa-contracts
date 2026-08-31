@@ -131,4 +131,25 @@ pub enum Error {
     /// `migrate_state` was called with a target layout version that is not
     /// greater than the current storage version (or is otherwise invalid).
     InvalidMigrationVersion = 316,
+
+    // ── State channel errors (issue #134) ─────────────────────────────
+    /// The channel does not exist.
+    ChannelNotFound = 400,
+    /// The channel is not in the expected state for this operation.
+    ChannelNotOpen = 401,
+    /// The channel is already open or has already been finalized.
+    ChannelAlreadyClosed = 402,
+    /// The submitted state has a nonce less than or equal to the current one.
+    StaleState = 403,
+    /// The signature does not match the sender's public key.
+    InvalidSignature = 404,
+    /// The dispute challenge period has not yet expired.
+    ChallengeActive = 405,
+    /// The dispute challenge period has expired; funds can no longer be claimed
+    /// via dispute.
+    ChallengeExpired = 406,
+    /// The channel's escrowed balance is insufficient.
+    InsufficientChannelBalance = 407,
+    /// The timeout has already passed; the channel is expired.
+    ChannelExpired = 408,
 }

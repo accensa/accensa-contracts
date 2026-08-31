@@ -6,6 +6,7 @@ members = [
     "contracts/receipt-anchor",
     "contracts/receipt-shard",
     "contracts/refund-vault",
+    "contracts/state-channel",
     "contracts/testutils",
 ]
 resolver = "2"
