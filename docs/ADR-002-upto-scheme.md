@@ -178,9 +178,10 @@ ADR.**
 4. **Sequence-number contention.** Agent traffic is bursty and the facilitator submits
    every settlement. Channel accounts are the standard answer; that needs designing, not
    naming.
-5. **Refund interaction.** `RefundVault` in this repo keys refunds on a payment
+5. **[RESOLVED] Refund interaction.** `RefundVault` in this repo keys refunds on a payment
    reference. If an `upto` payment settles for less than its cap, what is the refundable
    amount — and does anything need to change here?
+   - **Resolution:** `RefundVault` enforces refund ceilings natively on-chain for metered `upto` payments. It executes a cross-contract read against the configured `SettlementContract` to verify the actual settled amount and ledger, rejecting unsettled or expired authorizations. The vault operates entirely on this verified on-chain data, completely ignoring any ceiling supplied by the caller, and correctly tracks partial refunds up to that ceiling.
 6. **Does the facilitator need `authorize` at all**, or can the buyer call it directly?
    Fee sponsorship (`extra.areFeesSponsored`) suggests the facilitator submits, but that
    should follow from the spec rather than convenience.

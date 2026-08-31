@@ -1331,15 +1331,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "refund-policy-time"
+version = "0.1.0"
+dependencies = [
+ "accensa-common",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "refund-policy-vdf"
+version = "0.1.0"
+dependencies = [
+ "accensa-common",
+ "crypto-bigint",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "refund-vault"
 version = "0.3.0"
 dependencies = [
  "accensa-common",
  "budget-macros",
- "crypto-bigint",
  "multisig-account",
  "proptest",
  "receipt-anchor",
+ "refund-policy-time",
+ "refund-policy-vdf",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "refund-vault-factory"
+version = "0.1.0"
+dependencies = [
+ "accensa-common",
+ "refund-policy-time",
+ "refund-policy-vdf",
+ "refund-vault",
  "soroban-sdk",
 ]
 
@@ -1984,6 +2013,14 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "upto-authorization"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "soroban-sdk",
+]
 
 [[package]]
 name = "version_check"

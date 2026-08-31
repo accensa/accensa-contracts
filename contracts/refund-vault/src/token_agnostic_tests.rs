@@ -25,6 +25,7 @@ use soroban_sdk::{
     BytesN, Env,
 };
 
+use crate::test_helpers::vault_init;
 use crate::{Error, RefundVault, RefundVaultClient};
 
 const FLOAT: i128 = 1_000_000;
@@ -136,9 +137,8 @@ fn setup_with_token_and_float(decimals: u32, float: i128) -> VaultWithToken {
     MockSep41TokenClient::new(&env, &token_id).initialize(&token_admin, &decimals);
     MockSep41TokenClient::new(&env, &token_id).mint(&merchant, &float);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let client = RefundVaultClient::new(&env, &vault_id);
-    client.initialize(&merchant, &token.clone(), &100);
 
     let token_client = TokenClient::new(&env, &token);
     VaultWithToken {

@@ -10,6 +10,7 @@
 //! mirroring what wallet tooling produces for a contract account with
 //! delegated signers.
 
+use accensa_common::VaultInit;
 use multisig_account::testutils::make_auth_entry_no_args;
 use multisig_account::{MultisigAccount, MultisigAccountClient};
 use refund_vault::{RefundVault, RefundVaultClient};
@@ -29,10 +30,25 @@ fn setup() -> (Env, Address, Address, Address, Address) {
     let multisig_id = env.register(MultisigAccount, (vec![&env, s1.clone(), s2.clone()], 2u32));
     let _ = MultisigAccountClient::new(&env, &multisig_id);
 
-    let vault_id = env.register(RefundVault, ());
-    let vault = RefundVaultClient::new(&env, &vault_id);
-    // `initialize` is not auth-gated, so it needs no auth entries.
-    vault.initialize(&multisig_id, &Address::generate(&env), &100);
+    let vault_id = env.register(
+        RefundVault,
+        ({
+            // `initialize` is not auth-gated, so no auth entries are needed. No
+            // policy contracts are wired: the calls these tests exercise (`pause`)
+            // never touch the refund policy path.
+            VaultInit {
+                merchant: multisig_id.clone(),
+                token: Address::generate(&env),
+                time_policy: None,
+                vdf_policy: None,
+                fee_bps: 0,
+                fee_recipient: None,
+                refund_window: 100,
+                deadline: 0,
+                vdf_delay: 0,
+            }
+        },),
+    );
 
     (env, vault_id, multisig_id, s1, s2)
 }

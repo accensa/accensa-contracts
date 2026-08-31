@@ -54,41 +54,39 @@
 
 extern crate std;
 
-//! Property-based fuzz tests for [`ReceiptAnchor::verify_receipt`] — the
-//! function the public verifier depends on and the most security-sensitive
-//! path in this repo.
-//!
-//! This file replaces the previous placeholder "fuzz" test, which asserted
-//! `count > 0` without ever touching the contract, and the empty
-//! `benchmark_gas_and_cpu_instructions` stub. Both carried names that claimed
-//! coverage the repository did not have.
-//!
-//! Every property builds a *real* Merkle tree over randomly generated leaves
-//! using the same sorted-pair SHA-256 construction `verify_receipt` implements
-//! (see [`hash_pair`] and [`build_merkle_tree`]), anchors the resulting root,
-//! and then exercises [`ReceiptAnchor::verify_receipt`]:
-//!
-//! * a valid proof for a randomly chosen leaf verifies as `true` across
-//!   randomised tree sizes (1..=`MAX_BATCH_SIZE` leaves, odd and even);
-//! * a proof with one corrupted sibling is rejected;
-//! * a truncated proof is rejected;
-//! * an empty proof is rejected against any multi-leaf root (it stays valid
-//!   for a single-leaf batch, where the leaf *is* the root);
-//! * a valid proof for a leaf of a different batch is rejected;
-//! * arbitrary caller-supplied proofs — including over-long ones — never
-//!   panic. A panic in `verify_receipt` would be a denial-of-service on the
-//!   public verifier. The proof lengths generated here are bounded so every
-//!   call stays inside the host resource budget; bounding the proof on the
-//!   contract side is tracked separately in accensa/accensa-contracts#96;
-//! * duplicate leaves exercise the equal-hash ordering branch of the
-//!   sorted-pair construction.
-//!
-//! The proptest configuration is pinned — fixed case count and fixed RNG
-//! seed, see [`fuzz_config`] — so the exact input sequence is identical on
-//! every run, including in `CI`. If a property ever fails, proptest prints
-//! the failing input and the same seed reproduces the same sequence locally.
-
-extern crate std;
+// Property-based fuzz tests for [`ReceiptAnchor::verify_receipt`] — the
+// function the public verifier depends on and the most security-sensitive
+// path in this repo.
+//
+// This file replaces the previous placeholder "fuzz" test, which asserted
+// `count > 0` without ever touching the contract, and the empty
+// `benchmark_gas_and_cpu_instructions` stub. Both carried names that claimed
+// coverage the repository did not have.
+//
+// Every property builds a *real* Merkle tree over randomly generated leaves
+// using the same sorted-pair SHA-256 construction `verify_receipt` implements
+// (see [`hash_pair`] and [`build_merkle_tree`]), anchors the resulting root,
+// and then exercises [`ReceiptAnchor::verify_receipt`]:
+//
+// * a valid proof for a randomly chosen leaf verifies as `true` across
+//   randomised tree sizes (1..=`MAX_BATCH_SIZE` leaves, odd and even);
+// * a proof with one corrupted sibling is rejected;
+// * a truncated proof is rejected;
+// * an empty proof is rejected against any multi-leaf root (it stays valid
+//   for a single-leaf batch, where the leaf *is* the root);
+// * a valid proof for a leaf of a different batch is rejected;
+// * arbitrary caller-supplied proofs — including over-long ones — never
+//   panic. A panic in `verify_receipt` would be a denial-of-service on the
+//   public verifier. The proof lengths generated here are bounded so every
+//   call stays inside the host resource budget; bounding the proof on the
+//   contract side is tracked separately in accensa/accensa-contracts#96;
+// * duplicate leaves exercise the equal-hash ordering branch of the
+//   sorted-pair construction.
+//
+// The proptest configuration is pinned — fixed case count and fixed RNG
+// seed, see [`fuzz_config`] — so the exact input sequence is identical on
+// every run, including in `CI`. If a property ever fails, proptest prints
+// the failing input and the same seed reproduces the same sequence locally.
 
 use proptest::prelude::*;
 use soroban_sdk::{
@@ -282,7 +280,8 @@ impl Model {
     /// cap and the skip-missing behaviour.
     fn prune(&mut self, before_ledger: u32) {
         let mut pruned_count: u64 = 0;
-        while self.pruned_up_to <= self.anchors && pruned_count < super::MAX_PRUNE_BATCHES {
+        while self.pruned_up_to <= self.anchors && pruned_count < (super::MAX_PRUNE_BATCHES as u64)
+        {
             let anchored = self.batch(self.pruned_up_to).map(|b| b.anchored_ledger);
             match anchored {
                 Some(ledger) if ledger < before_ledger => {
