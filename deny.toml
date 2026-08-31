@@ -1,0 +1,18 @@
+[advisories]
+version = 1
+severity = "warn"
+
+[licenses]
+version = 1
+unwrap = true
+allow = [
+    "MIT",
+    "Apache-2.0",
+]
+
+[bans]
+version = 1
+multiple-versions = "warn"
+
+[sources]
+version = 1

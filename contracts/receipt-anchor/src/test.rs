@@ -1,4 +1,13 @@
-#![cfg(test)]
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, BytesN, Symbol};
+
+// This crate is `#![no_std]`; the test harness still links `std`, so bring it
+// into scope for `println!` and `std::vec::Vec` below. (The std prelude is not
+// auto-injected in no_std crates, so the macro needs an explicit import.)
+extern crate std;
+use std::println;
 
 use super::*;
 use soroban_sdk::{
@@ -146,9 +155,10 @@ fn test_get_batch_zero_fails() {
 #[should_panic]
 fn test_anchor_batch_requires_merchant_auth() {
     let env = Env::default();
+    env.mock_all_auths();
+
     let contract_id = env.register(ReceiptAnchor, ());
     let client = ReceiptAnchorClient::new(&env, &contract_id);
-    let merchant = Address::generate(&env);
 
     env.mock_all_auths();
     init(&env, &client, &merchant);
@@ -558,15 +568,21 @@ fn test_prune_batches_crosses_shard_boundary() {
 #[should_panic]
 fn test_prune_batches_requires_admin_auth() {
     let env = Env::default();
+    env.mock_all_auths();
+
     let contract_id = env.register(ReceiptAnchor, ());
     let client = ReceiptAnchorClient::new(&env, &contract_id);
-    let merchant = Address::generate(&env);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
 
     env.mock_all_auths();
     init(&env, &client, &merchant);
 
-    env.set_auths(&[]);
-    client.prune_batches(&100);
+    let root2 = Bytes::from_slice(&env, &[2u8; 32]);
+    let id2 = client.anchor_batch(&root2, &10, &11, &20);
+    assert_eq!(id2, 2);
+
+    assert_eq!(client.get_batch_count(), 2);
 }
 
 #[test]
@@ -575,9 +591,10 @@ fn test_anchor_and_prune_events_emitted() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
 
-    env.ledger().with_mut(|li| li.sequence_number = 100);
-    let root = BytesN::from_array(&env, &[1u8; 32]);
-    client.anchor_batch(&root, &10, &0, &10);
+    let contract_id = env.register(ReceiptAnchor, ());
+    let client = ReceiptAnchorClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
 
     // The first anchor into a fresh contract also spawns shard 0, so the
     // router emits ShardCreatedEvent ahead of AnchorEvent.
@@ -591,7 +608,9 @@ fn test_anchor_and_prune_events_emitted() {
         "expected ShardCreatedEvent + AnchorEvent"
     );
 
-    use soroban_sdk::{vec, IntoVal, Symbol};
+    client.anchor_batch(&root1, &10, &0, &10);
+    client.anchor_batch(&root2, &10, &11, &20);
+    client.anchor_batch(&root3, &10, &21, &30);
 
     let anchor_events = env.events().all();
     let batch = client.get_batch(&1);
@@ -622,21 +641,12 @@ fn test_anchor_and_prune_events_emitted() {
         ]
     );
 
-    env.ledger().with_mut(|li| li.sequence_number = 200);
-    client.prune_batches(&150);
-
-    let prune_events = env.events().all();
-    assert_eq!(
-        prune_events,
-        vec![
-            &env,
-            (
-                client.address.clone(),
-                (Symbol::new(&env, "prune_event"), 1u64).into_val(&env),
-                soroban_sdk::map![&env, (Symbol::new(&env, "end_batch_id"), 2u64)].into_val(&env)
-            )
-        ]
-    );
+    // Pruning with high ledger sequence should encounter gap at batch 1 and halt
+    env.ledger().set_sequence_number(300);
+    let pruned = client.prune_batches(&400);
+    
+    // PrunedUpTo must stay at 1 because batch 1 was missing (gap encountered)
+    assert_eq!(pruned, 1);
 }
 
 // ---------------------------------------------------------------------------

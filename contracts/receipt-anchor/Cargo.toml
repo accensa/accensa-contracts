@@ -9,7 +9,6 @@ description = "Merkle batch anchoring for x402 receipts on Stellar"
 [lints]
 workspace = true
 
-
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -37,6 +36,7 @@ budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git"
 [dev-dependencies]
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
+soroban-env-host = "27.0.1"
 soroban-sdk = { workspace = true, features = ["testutils"] }
 # Test-only: lets fuzz_test.rs peek at a shard's own storage (e.g. TTLs) by
 # its DataKey type. Safe as a dev-dependency only — soroban-sdk's contract

@@ -9,7 +9,6 @@ description = "Policy-bounded merchant refund vault for x402 on Stellar"
 [lints]
 workspace = true
 
-
 [lib]
 crate-type = ["cdylib", "rlib"]
 
