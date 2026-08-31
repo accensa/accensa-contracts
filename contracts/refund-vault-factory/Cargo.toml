@@ -1,0 +1,25 @@
+[package]
+name = "refund-vault-factory"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deploys lightweight RefundVault instances (issue #129)"
+
+[lints]
+workspace = true
+
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+accensa-common = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+accensa-common = { workspace = true }
+refund-vault = { path = "../refund-vault" }
+refund-policy-time = { path = "../refund-policy-time" }
+refund-policy-vdf = { path = "../refund-policy-vdf" }

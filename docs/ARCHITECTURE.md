@@ -85,18 +85,18 @@ sequenceDiagram
 
     Note over RV: Merchant pre-funded:<br/>deposit(from, amount)
 
-    Agent->>RV: refund(payment_ref, recipient, amount, paid_at_ledger)
+    Agent->>RV: refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount)
 
     alt Valid refund
-        RV->>RV: Check not AlreadyRefunded
-        RV->>RV: Check within refund window
+        RV->>RV: Check cumulative + amount ≤ payment ceiling
+        RV->>RV: Check within refund window and deadline
         RV->>RV: Check amount ≤ float
         RV->>SAC: Transfer tokens to recipient
         RV-->>Agent: Refund confirmed
-        Note over RV: Emits RefundEvent<br/>(payment_ref, amount, recipient, ledger)
-        Note over RV: payment_ref marked as refunded<br/>(persistent storage, prevents replay)
+        Note over RV: Emits RefundEvent<br/>(payment_ref, amount, fee, cumulative_refunded, recipient, ledger)
+        Note over RV: Cumulative total updated in RefundV2 record<br/>(persistent storage, prevents replay)
     else Rejected
-        RV-->>Agent: AlreadyRefunded / WindowExpired / InsufficientFloat
+        RV-->>Agent: ExceedsPayment / WindowExpired / InsufficientFloat
     end
 ```
 
