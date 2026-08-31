@@ -395,12 +395,52 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "LastAnchorTime"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "MinAnchorInterval"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "PrunedUpTo"
                           }
                         ]
                       },
                       "val": {
                         "u64": "1"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "RootBuffer"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "bytes": "0707070707070707070707070707070707070707070707070707070707070707"
+                          }
+                        ]
                       }
                     }
                   ]

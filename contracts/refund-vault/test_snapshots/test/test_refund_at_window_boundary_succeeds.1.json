@@ -112,7 +112,11 @@
                 },
                 {
                   "u32": 100
-                }
+                },
+                {
+                  "i128": "100"
+                },
+                "void"
               ]
             }
           },
@@ -243,7 +247,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Refund"
+                    "symbol": "RefundV2"
                   },
                   {
                     "bytes": "0202020202020202020202020202020202020202020202020202020202020202"
@@ -255,7 +259,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "amount"
+                      "symbol": "amount_refunded"
                     },
                     "val": {
                       "i128": "100"
@@ -267,6 +271,22 @@
                     },
                     "val": {
                       "u32": 200
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paid_at_ledger"
+                    },
+                    "val": {
+                      "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "payment_amount"
+                    },
+                    "val": {
+                      "i128": "100"
                     }
                   },
                   {
@@ -283,7 +303,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4295
+        "live_until": 518600
       },
       {
         "entry": {
@@ -316,12 +336,36 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "ReentrancyLock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "RefundWindow"
                           }
                         ]
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StorageVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
