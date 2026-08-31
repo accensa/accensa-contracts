@@ -4,6 +4,7 @@ mod test {
     use soroban_sdk::{testutils::Address as _, Address, Env, BytesN};
 
 use super::*;
+use crate::test_helpers::vault_init;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
@@ -22,9 +23,8 @@ fn setup(window: u32) -> (Env, RefundVaultClient<'static>, Address, Address) {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let contract_id = env.register(RefundVault, ());
+    let contract_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, window),));
     let client = RefundVaultClient::new(&env, &contract_id);
-    client.initialize(&merchant, &token, &window);
 
     (env, client, merchant, token)
 }
@@ -39,13 +39,11 @@ fn test_domain_separator_differs_per_instance() {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let id_a = env.register(RefundVault, ());
+    let id_a = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let client_a = RefundVaultClient::new(&env, &id_a);
-    client_a.initialize(&merchant, &token, &100);
 
-    let id_b = env.register(RefundVault, ());
+    let id_b = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let client_b = RefundVaultClient::new(&env, &id_b);
-    client_b.initialize(&merchant, &token, &100);
 
     assert_ne!(
         client_a.get_domain_separator(),
@@ -906,33 +904,6 @@ fn test_old_admin_cannot_act_after_transfer() {
 }
 
 #[test]
-fn test_transfer_admin_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-    let addr = Address::generate(&env);
-
-    assert_eq!(
-        client.try_transfer_admin(&addr),
-        Err(Ok(Error::NotInitialized))
-    );
-}
-
-#[test]
-fn test_cancel_admin_transfer_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-
-    assert_eq!(
-        client.try_cancel_admin_transfer(),
-        Err(Ok(Error::NotInitialized))
-    );
-}
-
-#[test]
 #[should_panic]
 fn test_transfer_admin_requires_auth() {
     let (env, client, _merchant, _token) = setup(100);
@@ -1204,29 +1175,6 @@ fn test_execute_policy_applies_new_window() {
     // Now the refund succeeds: current ~17_580, paid_at 1, window 20_000.
     client.refund(&payment_ref, &buyer, &100, &1, &100, &None);
     assert!(client.get_refund(&payment_ref).is_some());
-}
-
-#[test]
-fn test_propose_policy_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-
-    assert_eq!(
-        client.try_propose_policy(&100, &0, &0),
-        Err(Ok(Error::NotInitialized))
-    );
-}
-
-#[test]
-fn test_execute_policy_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-
-    assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
 }
 
 #[test]
@@ -1737,20 +1685,6 @@ fn test_set_fee_config_requires_admin_auth() {
     assert!(client
         .try_set_fee_recipient(&Address::generate(&env))
         .is_err());
-}
-
-#[test]
-fn test_fee_config_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-
-    assert_eq!(client.try_set_fee_bps(&100), Err(Ok(Error::NotInitialized)));
-    assert_eq!(
-        client.try_set_fee_recipient(&Address::generate(&env)),
-        Err(Ok(Error::NotInitialized))
-    );
 }
 
 #[test]

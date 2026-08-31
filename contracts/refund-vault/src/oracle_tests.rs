@@ -15,6 +15,7 @@ use soroban_sdk::{
     vec, Address, BytesN, Env, IntoVal, Map, Symbol, Val, Vec,
 };
 
+use crate::test_helpers::vault_init;
 use crate::{oracle::OraclePolicy, Error, RefundParam, RefundVault, RefundVaultClient};
 
 // ── Mock oracle contract ───────────────────────────────────────────────────
@@ -97,9 +98,8 @@ fn setup() -> (Env, RefundVaultClient<'static>, Address, Address) {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 17_280),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &17_280);
 
     (env, vault_client, merchant, token)
 }
@@ -133,20 +133,6 @@ fn test_add_oracle_whitelists_and_reads() {
     assert_eq!(
         vault_client.try_add_oracle(&oracle),
         Err(Ok(Error::OracleAlreadyAdded))
-    );
-}
-
-#[test]
-fn test_add_oracle_uninitialized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let vault_id = env.register(RefundVault, ());
-    let vault_client = RefundVaultClient::new(&env, &vault_id);
-    let oracle = Address::generate(&env);
-
-    assert_eq!(
-        vault_client.try_add_oracle(&oracle),
-        Err(Ok(Error::NotInitialized))
     );
 }
 

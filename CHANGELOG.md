@@ -10,6 +10,34 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 
+- **`RefundVaultFactory` with constructor-wired vaults** (issue #129): vaults
+  are now created by a singleton factory via `deploy_vault(vault_init)` and are
+  fully initialized in their constructor — there is no `initialize` window to
+  front-run. The factory owns the deployment inputs a merchant must not be able
+  to pick (`vault_wasm_hash`, and the stateless time/VDF policy contract
+  addresses), derives a deterministic salt per merchant, and authorizes the
+  merchant so griefing on someone else's salt family is impossible. Policy
+  resolution: a policy set on the merchant's `VaultInit` wins; `None` falls
+  back to the factory's global policy addresses. A vault deployed with a `None`
+  policy on an active gate is still deployable but refuses the gate at claim
+  time with `PolicyContractsNotConfigured` (317). The time and VDF gates are
+  delegated to new stateless `TimePolicy` and `VdfPolicy` contracts
+  (`contracts/refund-policy-time`, `contracts/refund-policy-vdf`) that
+  evaluate a claim's window/deadline and Wesolowski proof respectively, keeping
+  per-vault storage and upgrade surface small. Direct (non-factory)
+  deployments of `RefundVault` remain supported.
+
+- **Never persist `Option::None` (a `Void` value) in contract storage**: the
+  vault and factory formerly stored their `Option<Address>` policy fields
+  verbatim, so a cleared policy left a `Void` in the ledger, which the host
+  rejects/breaks on in several read paths (observed as `Error(Context,
+  InvalidAction)` and abort traps in the wasm constructor path). Policy fields
+  are now written only when `Some`, and setters `remove()` the key on `None`.
+  Absent key ⇔ unconfigured, which is the correct on-chain semantic anyway
+  (`Void` is not a legal contract-data value).
+
+### Changed
+
 - **`Governance` contract**: a proposal-based, weighted-vote governance wrapper
   that closes the single-admin-key SPOF on `ReceiptAnchor`'s merchant role. A
   fixed set of members (each with a weight, set at construction) can `propose`

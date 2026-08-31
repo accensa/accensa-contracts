@@ -123,8 +123,47 @@ Soroban persistent storage incurs rent.  See the
 
 ## Deployment Commands
 
-The following commands assume all pre-deployment checklist items above are
-complete.
+### 0. Deploying the `RefundVaultFactory` (issue #129)
+
+Factory deployments are constructor-wired: they create the stateless policy
+contracts, the factory, and then per-merchant vaults. Deploy the three wasm
+artifacts in order and wire the factory defaults to the freshly deployed
+policies so no vault is ever created with an unconfigured gate:
+
+```bash
+NET=pubnet; ID=<identity>
+
+TIME_ID=$(stellar contract deploy \
+  --wasm target/wasm32v1-none/release/refund_policy_time.wasm \
+  --source "$ID" --network "$NET" | tail -n 1)
+VDF_ID=$(stellar contract deploy \
+  --wasm target/wasm32v1-none/release/refund_policy_vdf.wasm \
+  --source "$ID" --network "$NET" | tail -n 1)
+
+FACTORY_ID=$(stellar contract deploy \
+  --wasm target/wasm32v1-none/release/refund_vault_factory.wasm \
+  --source "$ID" --network "$NET" | tail -n 1)
+
+stellar contract invoke --id "$FACTORY_ID" --source "$ID" --network "$NET" \
+  -- __constructor \
+  --admin "$ID" \
+  --vault_wasm_hash "$(stellar contract hash --wasm target/wasm32v1-none/release/refund_vault.wasm)" \
+  --time_policy "$TIME_ID" \
+  --vdf_policy "$VDF_ID"
+```
+
+Vaults are then created per merchant (merchant must sign):
+
+```bash
+stellar contract invoke --id "$FACTORY_ID" --source <merchant> --network "$NET" \
+  -- deploy_vault \
+  --init '{"merchant":"<merchant>","token":"<sac>","time_policy":"<time>","vdf_policy":"<vdf>","fee_bps":0,"fee_recipient":null,"refund_window":100,"deadline":0,"vdf_delay":0}'
+```
+
+Record `FACTORY_ID`, `TIME_ID`, `VDF_ID` alongside the other IDs in
+`deployments/pubnet.env`. A `None`/null policy on an active gate deploys but
+fails claims closed (`PolicyContractsNotConfigured`, 317) — configure both
+factory defaults before taking merchant deployments.
 
 ### 1. Verify the deployment target
 

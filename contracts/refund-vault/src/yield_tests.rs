@@ -8,6 +8,7 @@ use soroban_sdk::{
     Address, BytesN, Env,
 };
 
+use crate::test_helpers::vault_init;
 use crate::{DataKey, Error, RefundVault, RefundVaultClient, TTL_EXTEND};
 
 // ── Mock yield strategy contract ───────────────────────────────────────────
@@ -202,9 +203,8 @@ fn setup_with_strategy(
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 17_280),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &17_280);
 
     let strategy_id = env.register(MockYieldStrategy, ());
     let strategy_addr = strategy_id.clone();
@@ -313,9 +313,8 @@ fn test_deploy_without_strategy_fails() {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &100);
     vault_client.deposit(&merchant, &500_000);
 
     assert_eq!(
@@ -465,9 +464,8 @@ fn test_withdraw_without_strategy_fails() {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &100);
 
     assert_eq!(
         vault_client.try_withdraw_from_yield(&100),

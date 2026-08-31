@@ -66,6 +66,7 @@ use std::{
     string::{String, ToString},
 };
 
+use crate::test_helpers::vault_init;
 use crate::{DataKey, Error, RefundVault, RefundVaultClient};
 
 /// Total tokens minted to the merchant at setup.
@@ -113,9 +114,8 @@ fn setup(window: u32) -> (Env, RefundVaultClient<'static>, Address, Address) {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let contract_id = env.register(RefundVault, ());
+    let contract_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, window),));
     let client = RefundVaultClient::new(&env, &contract_id);
-    client.initialize(&merchant, &token, &window);
 
     (env, client, merchant, token)
 }
@@ -222,8 +222,8 @@ const HEADROOM_PERCENT: u64 = 15;
 /// oracle-policy and commit-reveal additions grew the `refund` path (see
 /// `docs/RELEASING.md` re-baselining procedure; measured with the oracle
 /// policy *unset* but after the commit-reveal lookup hooked into `claim_single`).
-const REFUND_BASELINE_CPU: u64 = 532_622;
-const REFUND_BASELINE_MEM: u64 = 163_557;
+const REFUND_BASELINE_CPU: u64 = 704_621;
+const REFUND_BASELINE_MEM: u64 = 197_217;
 
 #[test]
 fn test_refund_resource_cost_budget() {
