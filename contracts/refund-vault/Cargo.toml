@@ -1,19 +1,40 @@
 [package]
 name = "refund-vault"
-version = "0.2.0"
-edition = "2021"
+version = "0.3.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Policy-bounded merchant refund vault for x402 on Stellar"
 
 [lints]
 workspace = true
 
-
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Enables the Tier A budget-assertion tests in `src/budget_test.rs`. Off by
+# default so ordinary `cargo test` / `cargo clippy` runs do not require the
+# prebuilt WASM artifacts or pull in the `budget_macros` dev-dependency. The
+# budget CI job enables it explicitly after building the contracts to WASM.
+budget-assert = ["dep:budget_macros"]
+
 [dependencies]
 soroban-sdk = { workspace = true }
+accensa-common = { workspace = true }
+# Tollcraft/soroban-budget-assert — Tier A local assertion macros, used only
+# by the `#[cfg(test)]`-gated budget-assertion module. Cargo does not allow
+# optional *dev*-dependencies, so this lives here, optional, gated by the
+# `budget-assert` feature; it never links into a real (non-test) build.
+# Pinned to the url+rev resolved in Cargo.lock; the macros read
+# `env.cost_estimate().budget()` on the WASM-mode estimate and fail the test
+# if the pinned limit is exceeded.
+budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git", branch = "main", package = "budget-macros", optional = true }
 
 [dev-dependencies]
+multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
 soroban-sdk = { workspace = true, features = ["testutils"] }
 receipt-anchor = { path = "../receipt-anchor" }
+refund-policy-time = { path = "../refund-policy-time" }
+refund-policy-vdf = { path = "../refund-policy-vdf" }
