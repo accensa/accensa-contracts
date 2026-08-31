@@ -8,6 +8,10 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI and Toolchain Configuration**: updated `.github/workflows/ci.yml` to use stable `dtolnay/rust-toolchain` action references and synchronized `Cargo.lock` with dependency changes.
+
 ### Added
 
 - **`Governance` contract**: a proposal-based, weighted-vote governance wrapper
