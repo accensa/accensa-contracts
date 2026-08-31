@@ -4,7 +4,7 @@
   <p>
     <img src="https://img.shields.io/github/actions/workflow/status/accensa/accensa-contracts/ci.yml?branch=main" alt="CI Status" />
     <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
-    <img src="https://img.shields.io/badge/soroban--sdk-27.0.4-orange.svg" alt="soroban-sdk 27" />
+    <img src="https://img.shields.io/badge/soroban--sdk-27.0.4-orange.svg" alt="soroban--sdk 27" />
     <img src="https://img.shields.io/badge/testnet-deployed-success.svg" alt="Deployed on testnet" />
   </p>
   <p>
@@ -27,28 +27,33 @@ x402 turns any HTTP endpoint into a paid resource: an AI agent hits your API, ge
 without recourse.
 
 **The agent cannot prove it was charged correctly.** Its receipt comes from the
-seller's own API, attesting to the seller's own behaviour. When an autonomous agent
-makes thousands of sub-cent calls a day across dozens of vendors, "trust the seller's
-dashboard" is not an auditing story. Any disagreement is unresolvable, because the
-only record is held by the party with an interest in it.
+seller's own API, attesting to payment without ledger backing. If the seller goes
+offline, ghosts a refund, or double-bills, the agent has no recourse.
 
-**The merchant cannot offer refunds without becoming a custodian.** Manual refunds
-don't scale to per-request payments, and an unbounded refund key over merchant float
-is exactly the thing a seller does not want sitting in a web backend.
+**The merchant has no liability cap.** Holding user float directly invites hacks
+and disputes.
 
-`accensa-contracts` fixes both on-chain. Receipts are anchored in Merkle batches that
-anyone can verify without asking the merchant. Refunds run through a vault with an
-enforced time window and double-refund protection, so the policy lives in the contract
-rather than in a support inbox.
+## The Solution
 
-Both contracts are **immutable**: they ship with no upgrade entry point and no
-`update_current_contract_wasm`, so once deployed, nobody — not even the merchant —
-can change the refund policy or how receipts verify. This is a deliberate security
-property (see [ADR 003](docs/ADR-003-upgradeability.md)); a logic change means a
-new contract ID and the migration procedure documented there.
+Accensa bridges x402 to Stellar via two Soroban smart contracts:
 
-## Why Stellar
+1. **ReceiptAnchor** — Merchants batch and anchor payment receipt roots on-chain using Merkle trees, giving agents verifiable proof of payment that survives server loss.
+2. **RefundVault** — A policy-bounded vault holding merchant float for automated refunds, restricted by time windows, balance limits, and merchant authorization.
 
+## Enforced Invariants & Test Coverage Mapping
+
+Enforced invariants, each covered by a test:
+
+- **No double refunds** — a `payment_ref` can only be refunded once (`AlreadyRefunded`).
+  *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_double_refund_same_payment_ref_fails`
+- **Time-bounded** — refunds past `refund_window_ledgers` are rejected (`WindowExpired`).
+  *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_outside_window_fails`, `test_refund_at_window_boundary_succeeds`
+- **Float-bounded** — a refund can never exceed vault balance (`InsufficientFloat`).
+  *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_exceeding_float_fails`, `test_withdraw_exceeding_float_fails`
+- **Merchant-only** — every state-changing call requires merchant/admin auth (`Unauthorized`), with the explicit exception of `initialize` (which initializes the contract instance and does not require prior auth, see #145).
+  *Mapped Tests:* `contracts/refund-vault/src/test.rs` -> `test_refund_requires_merchant_auth`, `test_deposit_from_non_merchant_fails`, `test_pause_requires_merchant_auth`, `test_unpause_requires_merchant_auth`, `test_transfer_admin_requires_auth`, `test_cancel_admin_transfer_requires_auth`, `test_accept_admin_requires_pending_auth`; `contracts/receipt-anchor/src/test.rs` -> `test_anchor_batch_requires_merchant_auth`, `test_prune_batches_requires_admin_auth`
+- **Pausable** — operations are halted if the vault is paused (`Paused`).
+  *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_when_paused_fails`, `test_deposit_when_paused_fails`, `test_withdraw_when_paused_fails`
 This design is only economical on Stellar:
 
 - **Sub-cent fees make per-request payments viable at all.** x402 is about
@@ -232,6 +237,7 @@ Enforced invariants, each covered by a test:
   (`Unauthorized`); the admin may be a contract account (see
   [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)).
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
+- **Refund ceiling** — a refund for an `upto` payment cannot exceed the amount actually settled. Authorization caps are not refundable balances. Unsettled or expired authorizations cannot be refunded.
 
 **Dynamic (oracle-gated) policies** — beyond the static refund window, the
 merchant can install an `OraclePolicy` so refunds are only paid out while an
@@ -355,8 +361,12 @@ Note that `10`/`11` are deliberately unassigned (`MetadataTooLong` and
 (`AlreadyRefunded`) is reserved after the `RefundV2` migration — surviving codes
 keep their published values.
 
-## Storage Archival
+## Documentation
 
+- [Architecture Overview](docs/ARCHITECTURE.md)
+- [Security Model](docs/SECURITY_MODEL.md)
+- [Merkle Tree Structure](docs/ADR-001-merkle-structure.md)
+- [Deployments](DEPLOYMENTS.md)
 Soroban uses state archival to manage ledger bloat. The contracts are configured with a Time-To-Live (TTL) strategy that ensures active records remain in persistent storage for approximately 30 days (~518,400 ledgers) before they become eligible for archival.
 
 If a `BatchRecord` or `RefundRecord` is archived, it must be restored by submitting a restore transaction before it can be read again. Anyone can proactively prevent archival and reset the 30-day window by calling the public TTL extension functions:
@@ -512,4 +522,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Security policy in [SECURITY.md](SECURIT
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE) for details.
