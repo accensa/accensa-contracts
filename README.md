@@ -232,6 +232,7 @@ Enforced invariants, each covered by a test:
   (`Unauthorized`); the admin may be a contract account (see
   [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)).
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
+- **Refund ceiling** — a refund for an `upto` payment cannot exceed the amount actually settled. Authorization caps are not refundable balances. Unsettled or expired authorizations cannot be refunded.
 
 **Dynamic (oracle-gated) policies** — beyond the static refund window, the
 merchant can install an `OraclePolicy` so refunds are only paid out while an
