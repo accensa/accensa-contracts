@@ -263,7 +263,7 @@ fn test_set_yield_strategy_requires_auth() {
     let new_strategy = Address::generate(&env);
 
     env.set_auths(&[]);
-    assert!(vault_client.try_set_yield_strategy(&new_strategy).is_err());
+    vault_client.set_yield_strategy(&new_strategy);
 }
 
 #[test]

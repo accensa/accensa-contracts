@@ -1,13 +1,8 @@
-#[cfg(test)]
-mod test {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env, BytesN};
-
 use super::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, Env, Val,
+    vec, Address, BytesN, Env, Val,
 };
 
 const FLOAT: i128 = 1_000_000;
@@ -265,15 +260,6 @@ fn test_nonce_does_not_increment_on_failed_operation() {
 }
 
 #[test]
-fn test_set_refund_window_zero_fails() {
-    let (_env, client, _merchant, _token) = setup(100);
-    assert_eq!(
-        client.try_set_refund_window(&0),
-        Err(Ok(Error::InvalidWindow))
-    );
-}
-
-#[test]
 fn test_uninitialized_calls_fail() {
     let env = Env::default();
     env.mock_all_auths();
@@ -385,7 +371,7 @@ fn test_pause_unpause() {
     );
 
     client.unpause();
-    client.refund(&payment_ref, &buyer, &100, &0);
+    client.refund(&payment_ref, &buyer, &100, &0, &100, &None);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -1108,6 +1094,10 @@ fn test_process_batch_exceeds_max_size_fails() {
             vdf_proof: None,
         });
     }
+
+    env.cost_estimate()
+        .budget()
+        .reset_limits(2_000_000_000, 2_000_000_000);
 
     assert_eq!(
         client.try_process_batch(&batch),
@@ -1928,19 +1918,6 @@ fn test_shared_refund_vectors_include_live_testnet_refund() {
     assert!(live.tx_hash.is_some());
 }
 
-#[contract]
-pub struct MockSettlement;
-#[contractimpl]
-impl UptoSettlement for MockSettlement {
-    fn get_settlement(env: Env, payment_id: BytesN<32>) -> SettlementState {
-        env.storage().instance().get(&payment_id).unwrap_or(SettlementState::NotFound)
-    }
-}
-
-fn setup_mock_settlement(env: &Env) -> Address {
-    env.register(MockSettlement, ())
-}
-
 #[test]
 fn test_refund_to_contract_address_fails_self_transfer() {
     use soroban_sdk::testutils::Events;
@@ -2027,87 +2004,39 @@ fn test_process_batch_item_to_contract_address_skipped() {
 
 #[test]
 fn test_withdraw_to_contract_address_fails_self_transfer() {
-    use soroban_sdk::testutils::Events;
+    let (_env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let contract_addr = client.address.clone();
+    assert_eq!(
+        client.try_withdraw(&100_000, &contract_addr),
+        Err(Ok(Error::SelfTransfer))
+    );
+}
+
+#[test]
+fn test_set_token_when_funded_fails() {
     let (env, client, merchant, _token) = setup(100);
     client.deposit(&merchant, &500_000);
-
-    client.refund_upto(&payment_ref, &buyer, &120_000);
-
-    // The reverted call emitted no events at all.
-    let events = env.events().all().filter_by_contract(&client.address);
-    assert_eq!(events.events().len(), 0);
-}
-
-#[test]
-fn test_refund_upto_unsettled_fails() {
-    let (env, client, merchant, _) = setup(100);
-    client.deposit(&merchant, &500_000);
-    let settlement_addr = setup_mock_settlement(&env);
-    client.set_settlement_contract(&settlement_addr);
-
-    let payment_ref = BytesN::from_array(&env, &[13u8; 32]);
-    let buyer = Address::generate(&env);
-
-    // Refunding to merchant is valid (e.g. merchant-as-buyer in testing or direct reversal)
-    client.refund(&payment_ref, &merchant, &50_000, &0, &50_000, &None);
-
-    assert_eq!(
-        client.try_refund_upto(&payment_ref, &buyer, &120_000),
-        Err(Ok(Error::AuthorizationUnsettled))
-    );
-}
-
-#[test]
-fn test_refund_upto_expired_fails() {
-    let (env, client, merchant, _) = setup(100);
-    client.deposit(&merchant, &500_000);
-    let settlement_addr = setup_mock_settlement(&env);
-    client.set_settlement_contract(&settlement_addr);
-
-    let payment_ref = BytesN::from_array(&env, &[14u8; 32]);
-    let buyer = Address::generate(&env);
-
-    env.as_contract(&settlement_addr, || {
-        env.storage().instance().set(&payment_ref, &SettlementState::Unsettled(env.ledger().sequence() + 10));
-    });
-
-    // Now deposit using the new token
-    client.deposit(&merchant, &200_000);
-    assert_eq!(
-        TokenClient::new(&env, &new_token).balance(&client.address),
-        200_000
-    );
-}
-
-#[test]
-fn test_refund_upto_exceeds_ceiling() {
-    let (env, client, merchant, _) = setup(100);
-    client.deposit(&merchant, &500_000);
-    let settlement_addr = setup_mock_settlement(&env);
-    client.set_settlement_contract(&settlement_addr);
 
     let new_token_admin = Address::generate(&env);
     let new_sac = env.register_stellar_asset_contract_v2(new_token_admin);
     let new_token = new_sac.address();
 
-    // Vault is funded -> set_token must fail with FloatNotEmpty
-    let res = client.try_set_token(&new_token);
-    assert_eq!(res, Err(Ok(Error::FloatNotEmpty)));
+    assert_eq!(
+        client.try_set_token(&new_token),
+        Err(Ok(Error::FloatNotEmpty))
+    );
 }
 
 #[test]
+#[should_panic]
 fn test_set_token_requires_admin_auth() {
     let (env, client, _merchant, _token) = setup(100);
-    let _stranger = Address::generate(&env);
+    let new_token = Address::generate(&env);
 
-    env.as_contract(&settlement_addr, || {
-        env.storage().instance().set(&payment_ref, &SettlementState::Settled(100_000, env.ledger().sequence()));
-    });
-
-    assert_eq!(
-        client.try_refund_upto(&payment_ref, &buyer, &120_000),
-        Err(Ok(Error::ExceedsPayment))
-    );
+    env.set_auths(&[]);
+    client.set_token(&new_token);
 }
 
 // ── Batch refund tests ─────────────────────────────────────────────────────

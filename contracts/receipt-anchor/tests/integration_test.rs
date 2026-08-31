@@ -9,7 +9,12 @@ use soroban_sdk::{
 struct TestEnv<'a> {
     env: Env,
     anchor: ReceiptAnchorClient<'a>,
+    #[allow(dead_code)]
     merchant: Address,
+}
+
+mod shard_wasm {
+    soroban_sdk::contractimport!(file = "../../target/wasm32v1-none/release/receipt_shard.wasm");
 }
 
 fn setup<'a>() -> TestEnv<'a> {
@@ -19,7 +24,8 @@ fn setup<'a>() -> TestEnv<'a> {
     let merchant = Address::generate(&env);
     let anchor_id = env.register(ReceiptAnchor, ());
     let anchor = ReceiptAnchorClient::new(&env, &anchor_id);
-    anchor.initialize(&merchant);
+    let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
+    anchor.initialize(&merchant, &shard_wasm_hash);
 
     TestEnv {
         env,
@@ -46,7 +52,11 @@ fn hash_pair(env: &Env, a: &BytesN<32>, b: &BytesN<32>) -> BytesN<32> {
 
 #[test]
 fn test_integration_initialize_anchor_and_read_back() {
-    let TestEnv { env, anchor, merchant: _ } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        merchant: _,
+    } = setup();
 
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
     let sibling = BytesN::from_array(&env, &[2u8; 32]);
@@ -68,7 +78,11 @@ fn test_integration_initialize_anchor_and_read_back() {
 
 #[test]
 fn test_integration_multiple_batches_and_count() {
-    let TestEnv { env, anchor, merchant: _ } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        merchant: _,
+    } = setup();
 
     assert_eq!(anchor.get_batch_count(), 0);
 
@@ -90,13 +104,21 @@ fn test_integration_multiple_batches_and_count() {
 #[test]
 #[should_panic]
 fn test_integration_batch_not_found() {
-    let TestEnv { env: _, anchor, merchant: _ } = setup();
+    let TestEnv {
+        env: _,
+        anchor,
+        merchant: _,
+    } = setup();
     let _ = anchor.get_batch(&999);
 }
 
 #[test]
 fn test_integration_verify_receipt_against_external_root() {
-    let TestEnv { env, anchor, merchant: _ } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        merchant: _,
+    } = setup();
 
     // Construct a 4-leaf Merkle tree independently in the test
     let l1 = BytesN::from_array(&env, &[1u8; 32]);
@@ -111,7 +133,7 @@ fn test_integration_verify_receipt_against_external_root() {
     anchor.anchor_batch(&root, &4, &0, &100);
 
     // Verify l1 using proof [l2, h34]
-    let proof_l1 = vec![&env, l2, h34.clone()];
+    let proof_l1 = vec![&env, l2.clone(), h34.clone()];
     assert!(anchor.verify_receipt(&1, &l1, &proof_l1));
 
     // Verify l3 using proof [l4, h12]
@@ -119,13 +141,17 @@ fn test_integration_verify_receipt_against_external_root() {
     assert!(anchor.verify_receipt(&1, &l3, &proof_l3));
 
     // Verify invalid proof should return false
-    let bad_proof = vec![&env, l1, h34];
+    let bad_proof = vec![&env, l3, h34];
     assert!(!anchor.verify_receipt(&1, &l2, &bad_proof));
 }
 
 #[test]
 fn test_integration_prune_batches_round_trip() {
-    let TestEnv { env, anchor, merchant: _ } = setup();
+    let TestEnv {
+        env,
+        anchor,
+        merchant: _,
+    } = setup();
 
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
