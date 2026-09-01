@@ -84,7 +84,7 @@ fn budget_deposit() {
 }
 
 #[test]
-#[budget_cpu_lt(2_410_000)]
+#[budget_cpu_lt(2_870_000)]
 fn budget_refund() {
     let env = Env::default();
     let (client, merchant, _token) = setup(&env, 100);

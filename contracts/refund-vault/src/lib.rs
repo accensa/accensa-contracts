@@ -868,9 +868,7 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
 
     // Update global last-claim timestamp when the claim succeeds.
     let now_ts = env.ledger().timestamp();
-    env.storage()
-        .persistent()
-        .set(&DataKey::LastClaim, &now_ts);
+    env.storage().persistent().set(&DataKey::LastClaim, &now_ts);
     env.storage()
         .persistent()
         .extend_ttl(&DataKey::LastClaim, TTL_THRESHOLD, TTL_EXTEND);
