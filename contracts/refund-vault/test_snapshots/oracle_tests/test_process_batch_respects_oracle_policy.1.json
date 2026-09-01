@@ -300,6 +300,9 @@
                       ]
                     }
                   ]
+                },
+                {
+                  "u64": "0"
                 }
               ]
             }
@@ -444,6 +447,9 @@
                       ]
                     }
                   ]
+                },
+                {
+                  "u64": "1"
                 }
               ]
             }
@@ -847,6 +853,33 @@
           "ext": "v0"
         },
         "live_until": 518400
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "UserNonce"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "2"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
       },
       {
         "entry": {

@@ -53,7 +53,7 @@ fn test_refund_happy_path() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None, &0);
 
     let token_client = TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&buyer), 120_000);
@@ -73,9 +73,9 @@ fn test_partial_refunds_cumulative_within_ceiling() {
     let buyer = Address::generate(&env);
 
     // A 300-unit payment refunded in two partials plus one boundary call.
-    client.refund(&payment_ref, &buyer, &100, &0, &300, &None);
-    client.refund(&payment_ref, &buyer, &150, &0, &300, &None);
-    client.refund(&payment_ref, &buyer, &50, &0, &300, &None);
+    client.refund(&payment_ref, &buyer, &100, &0, &300, &None, &0);
+    client.refund(&payment_ref, &buyer, &150, &0, &300, &None, &1);
+    client.refund(&payment_ref, &buyer, &50, &0, &300, &None, &2);
 
     let record = client.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 300);
@@ -84,7 +84,7 @@ fn test_partial_refunds_cumulative_within_ceiling() {
 
     // One more call, even a single unit, is now past the ceiling.
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &1, &0, &300, &None),
+        client.try_refund(&payment_ref, &buyer, &1, &0, &300, &None, &3),
         Err(Ok(Error::ExceedsPayment))
     );
 }
@@ -99,7 +99,7 @@ fn test_refund_outside_window_fails() {
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &100, &100, &None),
+        client.try_refund(&payment_ref, &buyer, &100, &100, &100, &None, &0),
         Err(Ok(Error::WindowExpired))
     );
 }
@@ -114,7 +114,7 @@ fn test_nonce_increments_on_refund() {
     let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
     let buyer = Address::generate(&env);
     // current (200) == paid_at (100) + window (100): still inside the window.
-    client.refund(&payment_ref, &buyer, &100, &100, &100, &None);
+    client.refund(&payment_ref, &buyer, &100, &100, &100, &None, &0);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -127,7 +127,7 @@ fn test_zero_window_disables_expiry() {
 
     let payment_ref = BytesN::from_array(&env, &[3u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &0, &100, &None);
+    client.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -145,7 +145,7 @@ fn test_long_window_extends_guard_past_flat_ttl() {
 
     let payment_ref = BytesN::from_array(&env, &[10u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000, &None);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000, &None, &0);
 
     let ttl_after_refund = env.as_contract(&client.address, || {
         env.storage()
@@ -165,7 +165,7 @@ fn test_long_window_extends_guard_past_flat_ttl() {
 
     // A further partial refund for the same payment must still see the prior
     // cumulative total: the guard entry must not have gone missing.
-    client.refund(&payment_ref, &buyer, &50_000, &0, &300_000, &None);
+    client.refund(&payment_ref, &buyer, &50_000, &0, &300_000, &None, &1);
     let record = client.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 150_000);
 }
@@ -182,7 +182,7 @@ fn test_zero_window_extends_guard_to_max_ttl() {
 
     let payment_ref = BytesN::from_array(&env, &[11u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000, &None);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &300_000, &None, &0);
 
     let ttl_after_refund = env.as_contract(&client.address, || {
         env.storage()
@@ -206,7 +206,7 @@ fn test_refund_exceeding_float_fails() {
     // payment_amount >= amount so the ceiling check passes and the float
     // shortage is what gets reported.
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &10_000, &0, &10_000, &None),
+        client.try_refund(&payment_ref, &buyer, &10_000, &0, &10_000, &None, &0),
         Err(Ok(Error::InsufficientFloat))
     );
 }
@@ -230,7 +230,7 @@ fn test_nonce_does_not_increment_on_failed_operation() {
     let payment_ref = BytesN::from_array(&env, &[5u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &100, &100, &None),
+        client.try_refund(&payment_ref, &buyer, &100, &100, &100, &None, &0),
         Err(Ok(Error::WindowExpired))
     );
 
@@ -253,6 +253,7 @@ fn test_nonce_does_not_increment_on_failed_operation() {
         &(env.ledger().sequence()),
         &100,
         &None,
+        &0,
     );
     assert!(client.get_refund(&payment_ref).is_some());
 }
@@ -285,7 +286,7 @@ fn test_nonce_is_strictly_monotonic() {
 
     let payment_ref = BytesN::from_array(&env, &[8u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100, &0, &100, &None);
+    client.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
     let after_refund = client.get_nonce();
     assert!(
         after_refund > previous,
@@ -324,11 +325,11 @@ fn test_refund_invalid_amount_fails() {
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &0, &0, &100, &None),
+        client.try_refund(&payment_ref, &buyer, &0, &0, &100, &None, &0),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &-100, &0, &100, &None),
+        client.try_refund(&payment_ref, &buyer, &-100, &0, &100, &None, &0),
         Err(Ok(Error::InvalidAmount))
     );
 }
@@ -355,12 +356,12 @@ fn test_pause_unpause() {
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &0, &100, &None),
+        client.try_refund(&payment_ref, &buyer, &100, &0, &100, &None, &0),
         Err(Ok(Error::Paused))
     );
 
     client.unpause();
-    client.refund(&payment_ref, &buyer, &100, &0, &100, &None);
+    client.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -443,6 +444,7 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
                     &0,
                     &100_000,
                     &None,
+                    &0,
                 ))
             },
         },
@@ -521,7 +523,15 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
         Ok(())
     );
     assert_eq!(
-        contract_outcome(client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None)),
+        contract_outcome(client.try_refund(
+            &payment_ref,
+            &buyer,
+            &100_000,
+            &0,
+            &100_000,
+            &None,
+            &0
+        )),
         Ok(())
     );
     assert_eq!(
@@ -571,7 +581,7 @@ fn test_extend_refund_ttl_succeeds() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None, &0);
 
     // This shouldn't fail since the refund exists.
     client.extend_refund_ttl(&payment_ref);
@@ -609,7 +619,7 @@ fn test_events_emitted() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
 
-    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None, &0);
 
     let refund_events = env.events().all().filter_by_contract(&client.address);
     // The refund event carries the per-call amount and the running cumulative
@@ -778,7 +788,7 @@ fn test_refund_without_trustline() {
     ));
 
     // stranger has no trustline.
-    client.refund(&payment_ref, &stranger, &120_000, &0, &120_000, &None);
+    client.refund(&payment_ref, &stranger, &120_000, &0, &120_000, &None, &0);
 }
 
 // ── Two-step admin transfer tests ──────────────────────────────────────────
@@ -993,7 +1003,7 @@ fn test_process_batch_multiple_refunds_succeed() {
     };
 
     let batch = vec![&env, p1.clone(), p2.clone()];
-    let res = client.process_batch(&batch);
+    let res = client.process_batch(&batch, &0);
     assert_eq!(res, vec![&env, true, true]);
 
     assert!(client.get_refund(&p1.payment_ref).is_some());
@@ -1010,7 +1020,7 @@ fn test_process_batch_mixed_success_failure() {
 
     let ref1 = BytesN::from_array(&env, &[1u8; 32]);
     // Pre-refund ref1 so it fails as AlreadyRefunded during batch execution
-    client.refund(&ref1, &buyer1, &50_000, &0, &50_000, &None);
+    client.refund(&ref1, &buyer1, &50_000, &0, &50_000, &None, &0);
 
     let p1 = RefundParam {
         payment_ref: ref1,
@@ -1030,7 +1040,7 @@ fn test_process_batch_mixed_success_failure() {
     };
 
     let batch = vec![&env, p1, p2.clone()];
-    let res = client.process_batch(&batch);
+    let res = client.process_batch(&batch, &1);
 
     // First item failed (false), second item succeeded (true)
     assert_eq!(res, vec![&env, false, true]);
@@ -1062,7 +1072,7 @@ fn test_process_batch_exceeds_max_size_fails() {
         .reset_limits(2_000_000_000, 2_000_000_000);
 
     assert_eq!(
-        client.try_process_batch(&batch),
+        client.try_process_batch(&batch, &0),
         Err(Ok(Error::BatchTooLarge))
     );
 }
@@ -1144,7 +1154,7 @@ fn test_execute_policy_applies_new_window() {
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100, &1, &100, &None),
+        client.try_refund(&payment_ref, &buyer, &100, &1, &100, &None, &0),
         Err(Ok(Error::WindowExpired))
     );
 
@@ -1154,7 +1164,7 @@ fn test_execute_policy_applies_new_window() {
     client.execute_policy();
 
     // Now the refund succeeds: current ~17_580, paid_at 1, window 20_000.
-    client.refund(&payment_ref, &buyer, &100, &1, &100, &None);
+    client.refund(&payment_ref, &buyer, &100, &1, &100, &None, &0);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -1241,6 +1251,7 @@ fn test_refund_before_deadline_succeeds() {
         &env.ledger().sequence(),
         &100,
         &None,
+        &0,
     );
     assert!(client.get_refund(&payment_ref).is_some());
 }
@@ -1262,6 +1273,7 @@ fn test_refund_at_deadline_boundary_succeeds() {
         &env.ledger().sequence(),
         &100,
         &None,
+        &0,
     );
     assert!(client.get_refund(&payment_ref).is_some());
 }
@@ -1283,7 +1295,8 @@ fn test_refund_after_deadline_fails() {
             &100,
             &env.ledger().sequence(),
             &100,
-            &None
+            &None,
+            &0
         ),
         Err(Ok(Error::RefundExpired))
     );
@@ -1316,7 +1329,8 @@ fn test_deadline_and_window_are_independent_bounds() {
             &100,
             &env.ledger().sequence(),
             &100,
-            &None
+            &None,
+            &0
         ),
         Err(Ok(Error::RefundExpired))
     );
@@ -1339,6 +1353,7 @@ fn test_zero_deadline_disables_expiry() {
         &env.ledger().sequence(),
         &100,
         &None,
+        &0,
     );
     assert!(client.get_refund(&payment_ref).is_some());
 }
@@ -1417,7 +1432,7 @@ fn test_fee_defaults_disabled() {
     // Unconfigured fees: the buyer receives the full claim, nothing is diverted.
     let payment_ref = BytesN::from_array(&env, &[0x40u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None, &0);
 
     let token_client = TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&buyer), 100_000);
@@ -1442,7 +1457,7 @@ fn test_fee_deducted_and_collected_exactly() {
     client.set_fee_bps(&100); // 1%
 
     let payment_ref = BytesN::from_array(&env, &[0x41u8; 32]);
-    client.refund(&payment_ref, &buyer, &1_000_000, &0, &1_000_000, &None);
+    client.refund(&payment_ref, &buyer, &1_000_000, &0, &1_000_000, &None, &0);
 
     // 1% of 1M = 10_000 exactly; buyer receives the remainder.
     assert_eq!(token_client.balance(&buyer), 1_000_000 - 10_000);
@@ -1452,14 +1467,14 @@ fn test_fee_deducted_and_collected_exactly() {
     // 3 bp of an odd amount: 123_456 * 3 / 10_000 = 37.0368 -> 38 (rounds up).
     client.set_fee_bps(&3);
     let ref2 = BytesN::from_array(&env, &[0x42u8; 32]);
-    client.refund(&ref2, &buyer, &123_456, &0, &123_456, &None);
+    client.refund(&ref2, &buyer, &123_456, &0, &123_456, &None, &1);
     assert_eq!(token_client.balance(&fee_collector), 10_000 + 38);
     assert_eq!(token_client.balance(&buyer), 990_000 + 123_456 - 38);
 
     // 1 bp on a sub-10_000 amount still yields one unit (ceil).
     client.set_fee_bps(&1);
     let ref3 = BytesN::from_array(&env, &[0x43u8; 32]);
-    client.refund(&ref3, &buyer, &7, &0, &7, &None);
+    client.refund(&ref3, &buyer, &7, &0, &7, &None, &2);
     assert_eq!(token_client.balance(&fee_collector), 10_000 + 38 + 1);
     assert_eq!(token_client.balance(&buyer), 990_000 + 123_456 - 38 + 7 - 1);
 
@@ -1474,7 +1489,7 @@ fn test_fee_deducted_and_collected_exactly() {
     // Returning the fee to zero disables it again.
     client.set_fee_bps(&0);
     let ref4 = BytesN::from_array(&env, &[0x44u8; 32]);
-    client.refund(&ref4, &buyer, &5_000, &0, &5_000, &None);
+    client.refund(&ref4, &buyer, &5_000, &0, &5_000, &None, &3);
     assert_eq!(
         token_client.balance(&buyer),
         990_000 + 123_456 - 38 + 7 - 1 + 5_000
@@ -1521,7 +1536,7 @@ fn test_fee_math_various_bps_exact_balances() {
         let fee = reference_fee(*amount, *bps);
 
         let payment_ref = BytesN::from_array(&env, &[0x50u8 + i as u8; 32]);
-        client.refund(&payment_ref, &buyer, amount, &0, amount, &None);
+        client.refund(&payment_ref, &buyer, amount, &0, amount, &None, &(i as u64));
 
         buyer_total += amount - fee;
         fee_total += fee;
@@ -1561,7 +1576,7 @@ fn test_fee_claim_equal_to_float_succeeds_and_drains() {
     client.set_fee_bps(&1000); // 10%
 
     let payment_ref = BytesN::from_array(&env, &[0x45u8; 32]);
-    client.refund(&payment_ref, &buyer, &5_000, &0, &5_000, &None);
+    client.refund(&payment_ref, &buyer, &5_000, &0, &5_000, &None, &0);
 
     assert_eq!(token_client.balance(&buyer), 4_500);
     assert_eq!(token_client.balance(&fee_collector), 500);
@@ -1579,7 +1594,7 @@ fn test_fee_defaults_to_merchant_when_no_recipient_set() {
 
     let payment_ref = BytesN::from_array(&env, &[0x46u8; 32]);
     let buyer = Address::generate(&env);
-    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None, &0);
 
     assert_eq!(token_client.balance(&buyer), 99_000);
     assert_eq!(token_client.balance(&merchant), 500_000 + 1_000);
@@ -1590,7 +1605,7 @@ fn test_fee_defaults_to_merchant_when_no_recipient_set() {
     client.set_fee_recipient(&fee_collector);
     assert_eq!(client.get_fee_recipient(), Some(fee_collector.clone()));
     let ref2 = BytesN::from_array(&env, &[0x47u8; 32]);
-    client.refund(&ref2, &buyer, &50_000, &0, &50_000, &None);
+    client.refund(&ref2, &buyer, &50_000, &0, &50_000, &None, &1);
     assert_eq!(token_client.balance(&fee_collector), 500);
     assert_eq!(token_client.balance(&merchant), 501_000);
 }
@@ -1610,24 +1625,24 @@ fn test_fee_applies_to_partial_refunds_and_ceiling() {
 
     let payment_ref = BytesN::from_array(&env, &[0x48u8; 32]);
     // payment_amount (the ceiling) is 1M; each partial claim is pre-fee.
-    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000, &None);
+    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000, &None, &0);
     let record = client.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 400_000);
     assert_eq!(record.payment_amount, 1_000_000);
 
-    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000, &None);
+    client.refund(&payment_ref, &buyer, &400_000, &0, &1_000_000, &None, &1);
     let record = client.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 800_000);
 
     // The remaining 600_000 is still claimable (ceiling is pre-fee), but
     // 600_000 + 600_000 would exceed the ceiling.
-    client.refund(&payment_ref, &buyer, &200_000, &0, &1_000_000, &None);
+    client.refund(&payment_ref, &buyer, &200_000, &0, &1_000_000, &None, &2);
     assert_eq!(
         client.get_refund(&payment_ref).unwrap().amount_refunded,
         1_000_000
     );
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &1, &0, &1_000_000, &None),
+        client.try_refund(&payment_ref, &buyer, &1, &0, &1_000_000, &None, &3),
         Err(Ok(Error::ExceedsPayment))
     );
 }
@@ -1805,6 +1820,10 @@ fn test_shared_refund_vectors_match_typescript_sdk() {
 
     let recipient = Address::generate(&env);
 
+    // The per-user (merchant) nonce advances with every successful claim; a
+    // vector that fails (window/ceiling) must not consume one (issue #122).
+    let mut refund_nonce: u64 = 0;
+
     for v in refund_vectors::VECTORS {
         let payment_ref = BytesN::from_array(&env, &v.payment_ref);
         // `payment_amount` (the ceiling) is not part of the shared vectors,
@@ -1817,7 +1836,12 @@ fn test_shared_refund_vectors_match_typescript_sdk() {
             &v.paid_at_ledger,
             &v.amount,
             &None,
+            &refund_nonce,
         );
+
+        if res.is_ok() {
+            refund_nonce += 1;
+        }
 
         assert_eq!(
             res.is_ok(),
@@ -1853,7 +1877,15 @@ fn test_refund_to_contract_address_fails_self_transfer() {
     let contract_addr = client.address.clone();
 
     // Refunding to vault address must return SelfTransfer error
-    let res = client.try_refund(&payment_ref, &contract_addr, &50_000, &0, &50_000, &None);
+    let res = client.try_refund(
+        &payment_ref,
+        &contract_addr,
+        &50_000,
+        &0,
+        &50_000,
+        &None,
+        &0,
+    );
     assert_eq!(res, Err(Ok(Error::SelfTransfer)));
 
     // Payment ref must remain unconsumed / not recorded
@@ -1910,7 +1942,7 @@ fn test_process_batch_item_to_contract_address_skipped() {
     env.cost_estimate()
         .budget()
         .reset_limits(2_000_000_000, 2_000_000_000);
-    let res = client.process_batch(&params);
+    let res = client.process_batch(&params, &0);
 
     // First item refunded, second skipped (self-transfer), no panic.
     assert_eq!(res, vec![&env, true, false]);
@@ -2048,7 +2080,7 @@ fn test_claim_batch_successful_multiple_claims() {
         make_claim(ref2.clone(), &b2, 50_000, 0, 50_000),
         make_claim(ref3.clone(), &b3, 250_000, 0, 250_000),
     ];
-    client.claim_batch(&claims);
+    client.claim_batch(&claims, &0);
 
     assert_eq!(token_client.balance(&b1), 100_000);
     assert_eq!(token_client.balance(&b2), 50_000);
@@ -2084,7 +2116,7 @@ fn test_claim_batch_emits_one_event_per_item() {
         make_claim(ref2.clone(), &b2, 50_000, 0, 50_000),
         make_claim(ref3.clone(), &b3, 250_000, 0, 250_000),
     ];
-    client.claim_batch(&claims);
+    client.claim_batch(&claims, &0);
 
     // Exactly three refund_events, one per claim, in claim order.
     assert_eq!(
@@ -2122,7 +2154,7 @@ fn test_claim_batch_partial_failure_reverts_everything() {
         make_claim(ref3.clone(), &b3, 250_000, 0, 250_000),
     ];
     assert_eq!(
-        client.try_claim_batch(&claims),
+        client.try_claim_batch(&claims, &0),
         Err(Ok(Error::ExceedsPayment))
     );
 
@@ -2155,7 +2187,7 @@ fn test_claim_batch_same_ref_accumulates_and_excess_reverts() {
         make_claim(ref1.clone(), &buyer, 400_000, 0, 1_000_000),
         make_claim(ref1.clone(), &buyer, 400_000, 0, 1_000_000),
     ];
-    client.claim_batch(&claims);
+    client.claim_batch(&claims, &0);
     assert_eq!(client.get_refund(&ref1).unwrap().amount_refunded, 800_000);
     assert_eq!(token_client.balance(&buyer), 800_000);
 
@@ -2167,7 +2199,7 @@ fn test_claim_batch_same_ref_accumulates_and_excess_reverts() {
         make_claim(ref1.clone(), &buyer, 700_000, 0, 1_000_000),
     ];
     assert_eq!(
-        client.try_claim_batch(&excess),
+        client.try_claim_batch(&excess, &1),
         Err(Ok(Error::ExceedsPayment))
     );
 
@@ -2195,7 +2227,7 @@ fn test_claim_batch_float_checked_per_item() {
         make_claim(ref2.clone(), &b2, 300_000, 0, 300_000),
     ];
     assert_eq!(
-        client.try_claim_batch(&claims),
+        client.try_claim_batch(&claims, &0),
         Err(Ok(Error::InsufficientFloat))
     );
 
@@ -2215,7 +2247,7 @@ fn test_claim_batch_empty_succeeds() {
     let token_client = TokenClient::new(&env, &token);
 
     let claims: Vec<RefundClaim> = Vec::new(&env);
-    client.claim_batch(&claims);
+    client.claim_batch(&claims, &0);
 
     // No-op: float untouched, no events.
     assert_eq!(token_client.balance(&client.address), 100_000);
@@ -2249,7 +2281,7 @@ fn test_claim_batch_fee_applied_per_item() {
         make_claim(ref2.clone(), &b2, 1_000_000, 0, 1_000_000),
         make_claim(ref3.clone(), &b3, 1_000_000, 0, 1_000_000),
     ];
-    client.claim_batch(&claims);
+    client.claim_batch(&claims, &0);
 
     // 1% up-rounded fee per claim: buyers net 990k each, protocol nets 30k.
     assert_eq!(token_client.balance(&b1), 990_000);
@@ -2274,7 +2306,7 @@ fn test_claim_batch_without_auth_panics() {
     // Default auth setup authorizes only the contract invoker; the merchant is
     // never authorized here, so require_auth aborts the invocation.
     env.mock_auths(&[]);
-    client.claim_batch(&claims);
+    client.claim_batch(&claims, &0);
 }
 
 #[test]
@@ -2289,7 +2321,7 @@ fn test_claim_batch_when_paused_fails() {
         &env,
         make_claim(BytesN::from_array(&env, &[81u8; 32]), &buyer, 100, 0, 100),
     ];
-    assert_eq!(client.try_claim_batch(&claims), Err(Ok(Error::Paused)));
+    assert_eq!(client.try_claim_batch(&claims, &0), Err(Ok(Error::Paused)));
 
     // Paused state preserved the float and wrote nothing.
     assert_eq!(token_client.balance(&client.address), 100_000);
@@ -2313,7 +2345,7 @@ fn test_claim_batch_cost_stays_within_budget() {
 
     // Measure a single claim in a fresh default budget.
     env.cost_estimate().budget().reset_default();
-    client.refund(&single_ref, &single_buyer, &10_000, &0, &10_000, &None);
+    client.refund(&single_ref, &single_buyer, &10_000, &0, &10_000, &None, &0);
     let single_cpu = env.cost_estimate().budget().cpu_instruction_cost();
     let single_mem = env.cost_estimate().budget().memory_bytes_cost();
     assert!(single_cpu > 0);
@@ -2336,7 +2368,7 @@ fn test_claim_batch_cost_stays_within_budget() {
     }
 
     env.cost_estimate().budget().reset_default();
-    client.claim_batch(&claims);
+    client.claim_batch(&claims, &1);
     let batch_cpu = env.cost_estimate().budget().cpu_instruction_cost();
     let batch_mem = env.cost_estimate().budget().memory_bytes_cost();
 
@@ -2360,5 +2392,172 @@ fn test_claim_batch_cost_stays_within_budget() {
     assert!(
         batch_cpu < single_cpu * 12,
         "batch cpu {batch_cpu} (single {single_cpu}) exceeds 12x single"
+    );
+}
+
+// ── Per-user nonce replay protection (issue #122) ──────────────────────────
+
+#[test]
+fn test_user_nonce_sequential_refunds_advance_and_reuse_reverts() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let ref1 = BytesN::from_array(&env, &[0xa1u8; 32]);
+    let ref2 = BytesN::from_array(&env, &[0xa2u8; 32]);
+    let buyer = Address::generate(&env);
+
+    assert_eq!(client.get_user_nonce(&merchant), 0);
+
+    // First claim: nonce 0 is valid and advances the counter to 1.
+    client.refund(&ref1, &buyer, &100_000, &0, &100_000, &None, &0);
+    assert_eq!(client.get_user_nonce(&merchant), 1);
+
+    // Reusing the consumed nonce 0 is a replay and must revert.
+    assert_eq!(
+        client.try_refund(&ref2, &buyer, &100_000, &0, &100_000, &None, &0),
+        Err(Ok(Error::StaleState))
+    );
+
+    // The replay left the counter untouched; the next nonce (1) still works.
+    assert_eq!(client.get_user_nonce(&merchant), 1);
+    client.refund(&ref2, &buyer, &100_000, &0, &100_000, &None, &1);
+    assert_eq!(client.get_user_nonce(&merchant), 2);
+
+    // Skipping ahead is equally rejected.
+    let ref3 = BytesN::from_array(&env, &[0xa3u8; 32]);
+    assert_eq!(
+        client.try_refund(&ref3, &buyer, &100_000, &0, &100_000, &None, &5),
+        Err(Ok(Error::StaleState))
+    );
+}
+
+#[test]
+fn test_user_nonces_are_per_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let merchant_a = Address::generate(&env);
+    let merchant_b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin);
+    let token = sac.address();
+    StellarAssetClient::new(&env, &token).mint(&merchant_a, &FLOAT);
+    StellarAssetClient::new(&env, &token).mint(&merchant_b, &FLOAT);
+
+    // Two vaults, each with its own merchant/admin — the natural deployment
+    // shape that gives each user an independent replay-protection counter.
+    let id_a = env.register(RefundVault, (vault_init(&env, &merchant_a, &token, 100),));
+    let client_a = RefundVaultClient::new(&env, &id_a);
+    let id_b = env.register(RefundVault, (vault_init(&env, &merchant_b, &token, 100),));
+    let client_b = RefundVaultClient::new(&env, &id_b);
+
+    client_a.deposit(&merchant_a, &500_000);
+    client_b.deposit(&merchant_b, &500_000);
+
+    let buyer = Address::generate(&env);
+    let ref_a = BytesN::from_array(&env, &[0xb1u8; 32]);
+    let ref_b = BytesN::from_array(&env, &[0xb2u8; 32]);
+
+    // merchant_a consumes nonce 0 on vault A.
+    client_a.refund(&ref_a, &buyer, &100_000, &0, &100_000, &None, &0);
+    assert_eq!(client_a.get_user_nonce(&merchant_a), 1);
+
+    // merchant_b's nonce on vault B is independent and still 0.
+    assert_eq!(client_b.get_user_nonce(&merchant_b), 0);
+    assert!(client_a.get_user_nonce(&merchant_a) != client_b.get_user_nonce(&merchant_b));
+
+    // merchant_b's nonce 0 is valid even though merchant_a has moved on.
+    client_b.refund(&ref_b, &buyer, &100_000, &0, &100_000, &None, &0);
+    assert_eq!(client_b.get_user_nonce(&merchant_b), 1);
+    // merchant_a's counter was untouched by the other vault's activity.
+    assert_eq!(client_a.get_user_nonce(&merchant_a), 1);
+}
+
+#[test]
+fn test_failed_claim_does_not_consume_user_nonce() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let payment_ref = BytesN::from_array(&env, &[0xc1u8; 32]);
+    let buyer = Address::generate(&env);
+
+    // A claim that fails the ceiling check reverts entirely: the nonce must
+    // survive for the next attempt.
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &600_000, &0, &500_000, &None, &0),
+        Err(Ok(Error::ExceedsPayment))
+    );
+    assert_eq!(client.get_user_nonce(&merchant), 0);
+
+    // The same nonce 0 still works for a valid follow-up.
+    client.refund(&payment_ref, &buyer, &400_000, &0, &500_000, &None, &0);
+    assert_eq!(client.get_user_nonce(&merchant), 1);
+}
+
+#[test]
+fn test_claim_batch_consumes_one_user_nonce() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+    let claims = vec![
+        &env,
+        make_claim(
+            BytesN::from_array(&env, &[0xd1u8; 32]),
+            &b1,
+            100_000,
+            0,
+            100_000,
+        ),
+        make_claim(
+            BytesN::from_array(&env, &[0xd2u8; 32]),
+            &b2,
+            100_000,
+            0,
+            100_000,
+        ),
+    ];
+
+    assert_eq!(client.get_user_nonce(&merchant), 0);
+    client.claim_batch(&claims, &0);
+    assert_eq!(client.get_user_nonce(&merchant), 1);
+
+    // Replaying the batch's nonce reverts.
+    assert_eq!(
+        client.try_claim_batch(&claims, &0),
+        Err(Ok(Error::StaleState))
+    );
+}
+
+#[test]
+fn test_process_batch_consumes_one_user_nonce_but_empty_does_not() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    // An empty batch is a no-op that returns early and must not consume a nonce.
+    let empty: Vec<RefundParam> = Vec::new(&env);
+    assert_eq!(client.process_batch(&empty, &0), Vec::new(&env));
+    assert_eq!(client.get_user_nonce(&merchant), 0);
+
+    let buyer = Address::generate(&env);
+    let batch = vec![
+        &env,
+        RefundParam {
+            payment_ref: BytesN::from_array(&env, &[0xd3u8; 32]),
+            recipient: buyer,
+            amount: 100_000,
+            paid_at_ledger: 0,
+            payment_amount: 100_000,
+            vdf_proof: None,
+        },
+    ];
+    client.process_batch(&batch, &0);
+    assert_eq!(client.get_user_nonce(&merchant), 1);
+
+    // Replaying the consumed nonce reverts.
+    assert_eq!(
+        client.try_process_batch(&batch, &0),
+        Err(Ok(Error::StaleState))
     );
 }

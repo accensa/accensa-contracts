@@ -262,6 +262,7 @@ impl MaliciousToken {
                         &0,
                         &reentry_amount,
                         &None,
+                        &0,
                     ))
                 }
                 ReentrySelector::RefundOtherPaymentRef => {
@@ -272,6 +273,7 @@ impl MaliciousToken {
                         &0,
                         &reentry_amount,
                         &None,
+                        &0,
                     ))
                 }
                 ReentrySelector::Withdraw => {
@@ -362,7 +364,7 @@ fn test_reentrant_refund_same_payment_ref_is_blocked() {
         &amount,
     );
 
-    client.refund(&payment_ref, &buyer, &amount, &0, &amount, &None);
+    client.refund(&payment_ref, &buyer, &amount, &0, &amount, &None, &0);
 
     // The reentrant call never reached the vault's own code: the Soroban
     // host rejected it outright as a call-stack cycle.
@@ -404,7 +406,7 @@ fn test_reentrant_refund_other_payment_ref_is_blocked() {
         &amount,
     );
 
-    client.refund(&payment_ref, &buyer, &amount, &0, &amount, &None);
+    client.refund(&payment_ref, &buyer, &amount, &0, &amount, &None, &0);
 
     assert_eq!(token_client.last_result(), RESULT_HOST_BLOCKED);
     // The unrelated payment ref was never touched.
@@ -444,6 +446,7 @@ fn test_reentrant_withdraw_during_refund_is_blocked() {
         &0,
         &amount,
         &None,
+        &0,
     );
 
     assert_eq!(token_client.last_result(), RESULT_HOST_BLOCKED);
@@ -849,7 +852,7 @@ fn test_guard_blocks_refund_while_lock_held() {
     let payment_ref = BytesN::from_array(&env, &[20u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &1_000, &0, &1_000, &None),
+        client.try_refund(&payment_ref, &buyer, &1_000, &0, &1_000, &None, &0),
         Err(Ok(Error::ReentrancyBlocked))
     );
     assert!(client.get_refund(&payment_ref).is_none());
@@ -893,9 +896,9 @@ fn test_lock_is_released_after_successful_call() {
     let ref_b = BytesN::from_array(&env, &[10u8; 32]);
     let buyer = Address::generate(&env);
 
-    client.refund(&ref_a, &buyer, &1_000, &0, &1_000, &None);
+    client.refund(&ref_a, &buyer, &1_000, &0, &1_000, &None, &0);
     // If the lock leaked as "held" from the first call, this would fail with
     // ReentrancyBlocked instead of succeeding.
-    client.refund(&ref_b, &buyer, &2_000, &0, &2_000, &None);
+    client.refund(&ref_b, &buyer, &2_000, &0, &2_000, &None, &1);
     client.withdraw(&500, &merchant);
 }

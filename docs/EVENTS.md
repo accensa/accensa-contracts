@@ -13,10 +13,19 @@ When consuming these events, indexers should:
 
 ## `ReceiptAnchor` Events
 
+`ReceiptAnchor` partitions receipts into logical shards. Every batch-scoped
+event therefore carries a leading `shard_id` topic: each `shard_id` owns an
+independent batch stream, so `batch_id` alone does not identify a batch.
+
+> **Breaking change (unreleased):** `AnchorEvent` and `PruneEvent` gained a
+> leading `shard_id` topic. An indexer filtering on the previous two-element
+> tuples matches nothing. Filter on `("anchor_event", shard_id, batch_id)` and
+> read `shard_id` from the topics, not the data map.
+
 ### 1. `AnchorEvent`
 Emitted when a new batch of receipts is anchored by the merchant.
 
-- **Topics**: `("anchor_event", batch_id: u64)`
+- **Topics**: `("anchor_event", shard_id: u64, batch_id: u64)`
 - **Data Map**:
   - `root` (`BytesN<32>`): The Merkle root of the batch.
   - `count` (`u32`): Number of receipts in the batch.
@@ -24,27 +33,42 @@ Emitted when a new batch of receipts is anchored by the merchant.
   - `period_end` (`u64`): End time of the batch period.
   - `anchored_ledger` (`u32`): The ledger sequence when the batch was anchored.
 
-*Note: The data map is structurally identical to the `BatchRecord` returned by `get_batch`.*
+*Note: The data map is structurally identical to the `BatchRecord` returned by `get_batch(shard_id, batch_id)`.*
 
 ### 2. `PruneEvent`
-Emitted when old batches are pruned to reclaim rent.
+Emitted when old batches are pruned from a shard's stream to reclaim rent.
 
-- **Topics**: `("prune_event", start_batch_id: u64)`
+- **Topics**: `("prune_event", shard_id: u64, start_batch_id: u64)`
 - **Data Map**:
   - `end_batch_id` (`u64`): The upper bound (inclusive) of the pruned range.
+
+### 3. `ShardCreatedEvent`
+Emitted when the router factory-deploys a new storage shard to hold a fresh
+capacity range within a logical shard's batch stream. One is emitted per
+`SHARD_CAPACITY` (200) batches per `shard_id`, on the anchor that first lands in
+the new range.
+
+- **Topics**: `("shard_created_event", shard_id: u64, shard_index: u64)`
+- **Data Map**:
+  - `shard_address` (`Address`): The deployed `ReceiptShard` contract.
+  - `start_batch_id` (`u64`): First batch id this storage shard holds (inclusive).
+  - `end_batch_id` (`u64`): Upper bound of the range (exclusive).
+
+*Note: `shard_index` is the capacity index within `shard_id`'s stream, not a
+logical shard id. `(shard_id, shard_index)` together identify a storage shard.*
 
 ---
 
 ## `RefundVault` Events
 
-### 3. `DepositEvent`
+### 4. `DepositEvent`
 Emitted when the merchant tops up the vault's float.
 
 - **Topics**: `("deposit_event", from: Address)`
 - **Data Map**:
   - `amount` (`i128`): The amount deposited (in the token's smallest unit).
 
-### 4. `RefundEvent`
+### 5. `RefundEvent`
 Emitted when a payment is refunded to an agent. A `claim_batch` or
 `process_batch` call emits one `RefundEvent` per applied claim, in claim order
 (the same event as a single `refund`). A claim that fails emits no event — in
@@ -62,7 +86,7 @@ not applied and reported as `false` in the returned `Vec<bool>`.
 
 *Note: `fee` and `cumulative_refunded` are appended fields; per the stability policy, indexers must tolerate them rather than expect the historical `(amount, recipient, ledger)` shape.*
 
-### 5. `BatchRefundEvent`
+### 6. `BatchRefundEvent`
 Emitted once per `process_batch` call instead of one `RefundEvent` per item.
 Keeping the batch to a single compact event is what lets 50+ refunds fit inside
 a transaction's 16 KiB contract-event budget (a per-refund event would cap
@@ -77,20 +101,20 @@ batches at ~30).
 *Per-item outcomes are not persisted in the event; call `get_refund(payment_ref)`
 to inspect a refund record.*
 
-### 6. `WithdrawEvent`
+### 7. `WithdrawEvent`
 Emitted when the merchant withdraws funds from the float.
 
 - **Topics**: `("withdraw_event", to: Address)`
 - **Data Map**:
   - `amount` (`i128`): The amount withdrawn (in the token's smallest unit).
 
-### 7. `PauseEvent`
+### 8. `PauseEvent`
 Emitted when the merchant pauses the vault, halting deposits, refunds and withdrawals.
 
 - **Topics**: `("pause_event", ledger: u32)`
 - **Data Map**: *(empty)*
 
-### 8. `UnpauseEvent`
+### 9. `UnpauseEvent`
 Emitted when the merchant unpauses the vault.
 
 - **Topics**: `("unpause_event", ledger: u32)`
@@ -98,7 +122,7 @@ Emitted when the merchant unpauses the vault.
 
 The `ledger` topic lets an indexer reconstruct pause windows from the event log alone: a vault is paused between a `pause_event` and the next `unpause_event`.
 
-### 9. `RefundWindowUpdatedEvent`
+### 10. `RefundWindowUpdatedEvent`
 Emitted when the merchant changes the refund window.
 
 - **Topics**: `("refund_window_updated_event", previous_window: u32, new_window: u32)`
@@ -106,7 +130,7 @@ Emitted when the merchant changes the refund window.
 
 Both values are carried so a reader can tell whether a refund rejected at a given ledger was rejected under the old rule or the new one.
 
-### 9. `OraclePolicySetEvent`
+### 11. `OraclePolicySetEvent`
 Emitted when the merchant installs (or replaces) the dynamic oracle policy
 that gates refunds.
 
@@ -119,7 +143,7 @@ that gates refunds.
 The data map carries the full condition, so an indexer can reconstruct the
 policy in force from the event log alone.
 
-### 10. `OraclePolicyClearedEvent`
+### 12. `OraclePolicyClearedEvent`
 Emitted when the merchant removes the dynamic oracle policy, restoring purely
 time-window-based refunds.
 

@@ -97,6 +97,10 @@ use std::{format, string::String, vec};
 
 use super::{DataKey, Error, ReceiptAnchor, ReceiptAnchorClient};
 
+/// Logical shard used by the fuzz model (single-stream). Cross-shard behavior
+/// is covered by dedicated unit tests.
+const DEFAULT_SHARD: u64 = 0;
+
 /// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
 /// wasm32v1-none --release` before these tests run (see
 /// `.github/workflows/ci.yml` and the README's "Build and test" section).
@@ -111,7 +115,7 @@ fn shard_wasm_hash(env: &Env) -> BytesN<32> {
 /// Resolves the shard address holding `batch_id`, for tests that need to peek
 /// at a shard's own storage (e.g. TTLs) directly.
 fn shard_for(client: &ReceiptAnchorClient<'static>, batch_id: u64) -> Address {
-    client.get_shard_address(&((batch_id - 1) / super::SHARD_CAPACITY))
+    client.get_shard_address(&DEFAULT_SHARD, &((batch_id - 1) / super::SHARD_CAPACITY))
 }
 
 /// Bounded CI default budgets; override with `FUZZ_CASES` / `FUZZ_SEQ_LEN`.
@@ -343,10 +347,16 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                 let leaves = leaves_from_seed(*seed, *leaf_count as usize);
                 let (root, proofs) = build_tree(env, &leaves);
                 let anchored_ledger = env.ledger().sequence();
-                let id = client.anchor_batch(&BytesN::from_array(env, &root), leaf_count, &0, &100);
+                let id = client.anchor_batch(
+                    &DEFAULT_SHARD,
+                    &BytesN::from_array(env, &root),
+                    leaf_count,
+                    &0,
+                    &100,
+                );
                 model.anchors += 1;
                 assert_eq!(id, model.anchors, "batch ids must be sequential");
-                let stored = client.get_batch(&id);
+                let stored = client.get_batch(&DEFAULT_SHARD, &id);
                 assert_eq!(
                     stored.root,
                     BytesN::from_array(env, &root),
@@ -361,7 +371,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                 });
             }
             Op::Prune { before_ledger } => {
-                client.prune_batches(before_ledger);
+                client.prune_batches(&DEFAULT_SHARD, before_ledger);
                 model.prune(*before_ledger);
             }
             Op::Verify { target } => {
@@ -371,7 +381,12 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                 if slot == 0 {
                     // Nonexistent batch id: must be BatchNotFound.
                     let leaf = BytesN::from_array(env, &[0u8; 32]);
-                    let res = client.try_verify_receipt(&(n + 999), &leaf, &soroban_sdk::vec![env]);
+                    let res = client.try_verify_receipt(
+                        &DEFAULT_SHARD,
+                        &(n + 999),
+                        &leaf,
+                        &soroban_sdk::vec![env],
+                    );
                     if res != Err(Ok(Error::BatchNotFound)) {
                         failures.push(format!(
                             "verify against missing batch: expected BatchNotFound, got {res:?}"
@@ -398,6 +413,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
 
                         // 1. Real leaf, real proof.
                         if !client.verify_receipt(
+                            &DEFAULT_SHARD,
                             &batch_id,
                             &BytesN::from_array(env, leaf),
                             &proof_vec,
@@ -428,6 +444,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                                     .collect::<std::vec::Vec<_>>(),
                             );
                             if !client.verify_receipt(
+                                &DEFAULT_SHARD,
                                 &batch_id,
                                 &BytesN::from_array(env, leaf),
                                 &mirror_proof,
@@ -447,6 +464,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                             let reversed: std::vec::Vec<_> = proof.iter().cloned().rev().collect();
                             let reversed_vec = to_svec(env, reversed);
                             if client.verify_receipt(
+                                &DEFAULT_SHARD,
                                 &batch_id,
                                 &BytesN::from_array(env, leaf),
                                 &reversed_vec,
@@ -462,6 +480,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                         let mut wrong_leaf = *leaf;
                         wrong_leaf[0] ^= 0xFF;
                         if client.verify_receipt(
+                            &DEFAULT_SHARD,
                             &batch_id,
                             &BytesN::from_array(env, &wrong_leaf),
                             &proof_vec,
@@ -472,6 +491,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                         // 5. Random leaf not in the tree.
                         let random_leaf = leaves_from_seed(*target as u64 ^ 0xDEADBEEF, 1)[0];
                         if client.verify_receipt(
+                            &DEFAULT_SHARD,
                             &batch_id,
                             &BytesN::from_array(env, &random_leaf),
                             &proof_vec,
@@ -489,6 +509,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                             *last = BytesN::from_array(env, &arr);
                             let wrong_vec = to_svec(env, wrong);
                             if client.verify_receipt(
+                                &DEFAULT_SHARD,
                                 &batch_id,
                                 &BytesN::from_array(env, leaf),
                                 &wrong_vec,
@@ -503,6 +524,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                             truncated.pop();
                             let trunc_vec = to_svec(env, truncated);
                             if client.verify_receipt(
+                                &DEFAULT_SHARD,
                                 &batch_id,
                                 &BytesN::from_array(env, leaf),
                                 &trunc_vec,
@@ -520,6 +542,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                             ));
                             let ext_vec = to_svec(env, extended);
                             if client.verify_receipt(
+                                &DEFAULT_SHARD,
                                 &batch_id,
                                 &BytesN::from_array(env, leaf),
                                 &ext_vec,
@@ -534,7 +557,12 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                     // The batch was pruned: verification must fail cleanly with
                     // BatchNotFound (the record is gone).
                     let leaf = BytesN::from_array(env, &[0u8; 32]);
-                    let res = client.try_verify_receipt(&batch_id, &leaf, &soroban_sdk::vec![env]);
+                    let res = client.try_verify_receipt(
+                        &DEFAULT_SHARD,
+                        &batch_id,
+                        &leaf,
+                        &soroban_sdk::vec![env],
+                    );
                     if res != Err(Ok(Error::BatchNotFound)) {
                         failures.push(format!(
                             "verify on pruned batch {batch_id}: expected BatchNotFound, got {res:?}"
@@ -554,8 +582,12 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                             .map(|s| BytesN::from_array(env, s))
                             .collect::<std::vec::Vec<_>>();
                         let proof_vec = to_svec(env, proof_vec);
-                        if client.verify_receipt(&b1.id, &BytesN::from_array(env, leaf), &proof_vec)
-                        {
+                        if client.verify_receipt(
+                            &DEFAULT_SHARD,
+                            &b1.id,
+                            &BytesN::from_array(env, leaf),
+                            &proof_vec,
+                        ) {
                             failures.push(format!(
                                 "proof from batch {} verified against batch {}",
                                 b0.id, b1.id
@@ -569,7 +601,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                 let slot = if n == 0 { 0 } else { target % (n as u32 + 1) };
                 let batch_id = slot as u64;
                 if slot == 0 {
-                    let res = client.try_extend_batch_ttl(&(n + 999));
+                    let res = client.try_extend_batch_ttl(&DEFAULT_SHARD, &(n + 999));
                     if res != Err(Ok(Error::BatchNotFound)) {
                         failures.push(format!(
                             "extend_ttl on missing batch: expected BatchNotFound, got {res:?}"
@@ -583,7 +615,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                             .persistent()
                             .get_ttl(&receipt_shard::DataKey::Batch(batch_id))
                     });
-                    client.extend_batch_ttl(&batch_id);
+                    client.extend_batch_ttl(&DEFAULT_SHARD, &batch_id);
                     let ttl_after = env.as_contract(&shard_addr, || {
                         env.storage()
                             .persistent()
@@ -597,7 +629,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
                     }
                 } else {
                     // Pruned batch: TTL extension on a missing record errors.
-                    let res = client.try_extend_batch_ttl(&batch_id);
+                    let res = client.try_extend_batch_ttl(&DEFAULT_SHARD, &batch_id);
                     if res != Err(Ok(Error::BatchNotFound)) {
                         failures.push(format!(
                             "extend_ttl on pruned batch {batch_id}: expected BatchNotFound, got {res:?}"
@@ -611,7 +643,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
         //
         // 1. `get_batch_count` == number of anchor_batch calls, regardless of
         //    pruning.
-        let count = client.get_batch_count();
+        let count = client.get_batch_count(&DEFAULT_SHARD);
         if count != model.anchors {
             failures.push(format!(
                 "batch count mismatch: contract {count}, model {} (after {op:?})",
@@ -625,9 +657,13 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
         //    probe the cursor boundary so a mid-sequence violation is
         //    attributed to the operation that caused it.
         let cursor_exists = model.pruned_up_to <= model.anchors
-            && client.try_get_batch(&model.pruned_up_to).is_ok();
-        let before_cursor_exists =
-            model.pruned_up_to > 1 && client.try_get_batch(&(model.pruned_up_to - 1)).is_ok();
+            && client
+                .try_get_batch(&DEFAULT_SHARD, &model.pruned_up_to)
+                .is_ok();
+        let before_cursor_exists = model.pruned_up_to > 1
+            && client
+                .try_get_batch(&DEFAULT_SHARD, &(model.pruned_up_to - 1))
+                .is_ok();
         if cursor_exists != (model.pruned_up_to <= model.anchors) {
             failures.push(format!(
                 "batch at cursor {} should be readable but is not",
@@ -645,7 +681,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
         let stored_cursor: u64 = env.as_contract(&client.address, || {
             env.storage()
                 .instance()
-                .get(&DataKey::PrunedUpTo)
+                .get(&DataKey::ShardPrunedUpTo(DEFAULT_SHARD))
                 .unwrap_or(1)
         });
         if stored_cursor != model.pruned_up_to {
@@ -666,7 +702,7 @@ fn execute(env: &Env, client: &ReceiptAnchorClient<'static>, ops: &[Op]) -> std:
     // [pruned_up_to, batch_count] — a contiguous suffix, never a middle slice.
     let mut first_existing: Option<u64> = None;
     for id in 1..=model.anchors {
-        if client.try_get_batch(&id).is_ok() {
+        if client.try_get_batch(&DEFAULT_SHARD, &id).is_ok() {
             if first_existing.is_none() {
                 first_existing = Some(id);
             }
@@ -755,12 +791,12 @@ proptest! {
         let (env, client, _merchant) = setup();
         let leaves = leaves_from_seed(anchor_seed, 2);
         let (root, _proofs) = build_tree(&env, &leaves);
-        let batch_id = client.anchor_batch(&BytesN::from_array(&env, &root), &2, &0, &100);
+        let batch_id = client.anchor_batch(&DEFAULT_SHARD, &BytesN::from_array(&env, &root), &2, &0, &100);
 
         // Extension on a record that does not exist errors.
         let missing = missing_id.wrapping_add(batch_id + 1000);
         assert_eq!(
-            client.try_extend_batch_ttl(&missing),
+            client.try_extend_batch_ttl(&DEFAULT_SHARD, &missing),
             Err(Ok(Error::BatchNotFound))
         );
 
@@ -772,7 +808,7 @@ proptest! {
                     .persistent()
                     .get_ttl(&receipt_shard::DataKey::Batch(batch_id))
             });
-            client.extend_batch_ttl(&batch_id);
+            client.extend_batch_ttl(&DEFAULT_SHARD, &batch_id);
             let ttl_after: u32 = env.as_contract(&shard_addr, || {
                 env.storage()
                     .persistent()
@@ -783,7 +819,7 @@ proptest! {
                 "extend_batch_ttl shortened TTL: {ttl_before} -> {ttl_after}"
             );
             // The batch must remain readable after extension.
-            client.get_batch(&batch_id);
+            client.get_batch(&DEFAULT_SHARD, &batch_id);
         }
     }
 }
@@ -827,22 +863,40 @@ fn test_regression_prune_prefix_stays_contiguous_after_full_prune() {
     env.ledger().with_mut(|li| li.sequence_number = 100);
     let leaves = leaves_from_seed(1, 2);
     let (root, _) = build_tree(&env, &leaves);
-    let b1 = client.anchor_batch(&BytesN::from_array(&env, &root), &2, &0, &100);
+    let b1 = client.anchor_batch(
+        &DEFAULT_SHARD,
+        &BytesN::from_array(&env, &root),
+        &2,
+        &0,
+        &100,
+    );
 
     env.ledger().with_mut(|li| li.sequence_number = 200);
     let leaves2 = leaves_from_seed(2, 2);
     let (root2, _) = build_tree(&env, &leaves2);
-    let b2 = client.anchor_batch(&BytesN::from_array(&env, &root2), &2, &0, &100);
+    let b2 = client.anchor_batch(
+        &DEFAULT_SHARD,
+        &BytesN::from_array(&env, &root2),
+        &2,
+        &0,
+        &100,
+    );
 
     // Prune everything anchored before 300.
-    client.prune_batches(&300);
-    assert_eq!(client.try_get_batch(&b1), Err(Ok(Error::BatchNotFound)));
-    assert_eq!(client.try_get_batch(&b2), Err(Ok(Error::BatchNotFound)));
+    client.prune_batches(&DEFAULT_SHARD, &300);
+    assert_eq!(
+        client.try_get_batch(&DEFAULT_SHARD, &b1),
+        Err(Ok(Error::BatchNotFound))
+    );
+    assert_eq!(
+        client.try_get_batch(&DEFAULT_SHARD, &b2),
+        Err(Ok(Error::BatchNotFound))
+    );
 
     let stored_cursor: u64 = env.as_contract(&client.address, || {
         env.storage()
             .instance()
-            .get(&DataKey::PrunedUpTo)
+            .get(&DataKey::ShardPrunedUpTo(DEFAULT_SHARD))
             .unwrap_or(1)
     });
     assert_eq!(
@@ -854,9 +908,15 @@ fn test_regression_prune_prefix_stays_contiguous_after_full_prune() {
     env.ledger().with_mut(|li| li.sequence_number = 400);
     let leaves3 = leaves_from_seed(3, 2);
     let (root3, _) = build_tree(&env, &leaves3);
-    let b3 = client.anchor_batch(&BytesN::from_array(&env, &root3), &2, &0, &100);
+    let b3 = client.anchor_batch(
+        &DEFAULT_SHARD,
+        &BytesN::from_array(&env, &root3),
+        &2,
+        &0,
+        &100,
+    );
     assert_eq!(b3, 3);
-    client.get_batch(&b3); // panics if missing
+    client.get_batch(&DEFAULT_SHARD, &b3); // panics if missing
 }
 
 #[test]
@@ -864,20 +924,42 @@ fn test_regression_verify_wrong_batch_rejected() {
     let (env, client, _merchant) = setup();
     let leaves_a = leaves_from_seed(10, 4);
     let (root_a, proofs_a) = build_tree(&env, &leaves_a);
-    let ba = client.anchor_batch(&BytesN::from_array(&env, &root_a), &4, &0, &100);
+    let ba = client.anchor_batch(
+        &DEFAULT_SHARD,
+        &BytesN::from_array(&env, &root_a),
+        &4,
+        &0,
+        &100,
+    );
 
     let leaves_b = leaves_from_seed(20, 4);
     let (root_b, _proofs_b) = build_tree(&env, &leaves_b);
-    let bb = client.anchor_batch(&BytesN::from_array(&env, &root_b), &4, &0, &100);
+    let bb = client.anchor_batch(
+        &DEFAULT_SHARD,
+        &BytesN::from_array(&env, &root_b),
+        &4,
+        &0,
+        &100,
+    );
 
     let proof_vec = proofs_a[0]
         .iter()
         .map(|s| BytesN::from_array(&env, s))
         .collect::<std::vec::Vec<_>>();
     let proof = to_svec(&env, proof_vec);
-    assert!(client.verify_receipt(&ba, &BytesN::from_array(&env, &leaves_a[0]), &proof));
+    assert!(client.verify_receipt(
+        &DEFAULT_SHARD,
+        &ba,
+        &BytesN::from_array(&env, &leaves_a[0]),
+        &proof
+    ));
     // Same leaf+proof must not verify against the other batch's root.
-    assert!(!client.verify_receipt(&bb, &BytesN::from_array(&env, &leaves_a[0]), &proof));
+    assert!(!client.verify_receipt(
+        &DEFAULT_SHARD,
+        &bb,
+        &BytesN::from_array(&env, &leaves_a[0]),
+        &proof
+    ));
 }
 
 #[test]
@@ -888,7 +970,13 @@ fn test_regression_mirrored_tree_position_irrelevant() {
     let (env, client, _merchant) = setup();
     let leaves = leaves_from_seed(7, 4);
     let (root, _proofs) = build_tree(&env, &leaves);
-    let batch = client.anchor_batch(&BytesN::from_array(&env, &root), &4, &0, &100);
+    let batch = client.anchor_batch(
+        &DEFAULT_SHARD,
+        &BytesN::from_array(&env, &root),
+        &4,
+        &0,
+        &100,
+    );
 
     let mut mirrored = leaves.clone();
     mirrored.reverse();
@@ -905,7 +993,12 @@ fn test_regression_mirrored_tree_position_irrelevant() {
                 .collect::<std::vec::Vec<_>>(),
         );
         assert!(
-            client.verify_receipt(&batch, &BytesN::from_array(&env, leaf), &mirror_proof),
+            client.verify_receipt(
+                &DEFAULT_SHARD,
+                &batch,
+                &BytesN::from_array(&env, leaf),
+                &mirror_proof
+            ),
             "mirrored proof for leaf {li} must verify"
         );
     }
@@ -919,7 +1012,13 @@ fn test_regression_reversed_level_sequence_rejected() {
     let (env, client, _merchant) = setup();
     let leaves = leaves_from_seed(7, 4);
     let (root, proofs) = build_tree(&env, &leaves);
-    let batch = client.anchor_batch(&BytesN::from_array(&env, &root), &4, &0, &100);
+    let batch = client.anchor_batch(
+        &DEFAULT_SHARD,
+        &BytesN::from_array(&env, &root),
+        &4,
+        &0,
+        &100,
+    );
 
     let proof_vec = proofs[0]
         .iter()
@@ -931,7 +1030,12 @@ fn test_regression_reversed_level_sequence_rejected() {
     let reversed = to_svec(&env, reversed);
 
     assert!(
-        !client.verify_receipt(&batch, &BytesN::from_array(&env, &leaves[0]), &reversed),
+        !client.verify_receipt(
+            &DEFAULT_SHARD,
+            &batch,
+            &BytesN::from_array(&env, &leaves[0]),
+            &reversed
+        ),
         "reversed level sequence must be rejected"
     );
 }
@@ -959,7 +1063,7 @@ fn benchmark_gas_and_cpu_instructions() {
     let root = BytesN::from_array(&env, &[1u8; 32]);
 
     env.cost_estimate().budget().reset_default();
-    let batch_id = client.anchor_batch(&root, &1000, &0, &100);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &1000, &0, &100);
     let cpu_anchor = env.cost_estimate().budget().cpu_instruction_cost();
     let mem_anchor = env.cost_estimate().budget().memory_bytes_cost();
 
@@ -967,7 +1071,7 @@ fn benchmark_gas_and_cpu_instructions() {
     let proof = soroban_sdk::vec![&env, BytesN::from_array(&env, &[2u8; 32])];
 
     env.cost_estimate().budget().reset_default();
-    let _verified = client.verify_receipt(&batch_id, &leaf, &proof);
+    let _verified = client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof);
     let cpu_verify = env.cost_estimate().budget().cpu_instruction_cost();
     let mem_verify = env.cost_estimate().budget().memory_bytes_cost();
 

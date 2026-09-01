@@ -142,6 +142,9 @@ struct Model {
     paused: bool,
     window: u32,
     merchant_balance: i128,
+    /// Per-user (merchant) nonce: the next nonce a successful refund op must
+    /// present. Mitigates replay attacks on the signed refund RPC (issue #122).
+    refund_nonce: u64,
 }
 
 impl Model {
@@ -154,6 +157,7 @@ impl Model {
             paused: false,
             window,
             merchant_balance: FLOAT,
+            refund_nonce: 0,
         }
     }
 
@@ -191,14 +195,19 @@ impl Model {
             }
 
             // Refunds
+            let mut refund_nonce: u64 = 0;
             for (idx, amt) in refund_amounts.into_iter().enumerate() {
                 let mut ref_bytes = [0u8; 32];
                 ref_bytes[0] = (idx + 1) as u8;
                 let payment_ref = BytesN::from_array(&env, &ref_bytes);
                 let recipient = Address::generate(&env);
 
-                if client.try_refund(&payment_ref, &recipient, &amt, &0, &amt, &None).is_ok() {
+                if client
+                    .try_refund(&payment_ref, &recipient, &amt, &0, &amt, &None, &refund_nonce)
+                    .is_ok()
+                {
                     expected_balance -= amt;
+                    refund_nonce += 1;
                 }
                 let actual_balance = token_client.balance(&client.address);
                 assert_eq!(actual_balance, expected_balance, "Invariant mismatch after refund");
@@ -237,7 +246,7 @@ fn test_refund_resource_cost_budget() {
     let recipient = Address::generate(&env);
 
     env.cost_estimate().budget().reset_default();
-    client.refund(&payment_ref, &recipient, &100_000, &0, &100_000, &None);
+    client.refund(&payment_ref, &recipient, &100_000, &0, &100_000, &None, &0);
     let cpu_refund = env.cost_estimate().budget().cpu_instruction_cost();
     let mem_refund = env.cost_estimate().budget().memory_bytes_cost();
 
@@ -283,7 +292,6 @@ enum Op {
         slot: u32,
     },
 }
-
 
 fn amount_strategy() -> impl Strategy<Value = i128> {
     (-1000i128..=FLOAT).boxed()
@@ -385,6 +393,7 @@ fn execute_op(
                 paid_at_ledger,
                 payment_amount,
                 &None,
+                &model.refund_nonce,
             );
             let (cumulative, ceiling) = model.refunded[idx].unwrap_or((0, *payment_amount));
             match res {
@@ -414,6 +423,7 @@ fn execute_op(
                         model.refunds += *amount;
                         model.merchant_balance += *amount;
                         model.refunded[idx] = Some((cumulative + *amount, ceiling));
+                        model.refund_nonce += 1;
                     }
                 }
                 Err(Ok(Error::Paused)) => {
@@ -422,8 +432,8 @@ fn execute_op(
                     }
                 }
                 Err(Ok(Error::ExceedsPayment)) => {
-                    let over_ceiling = cumulative.checked_add(*amount).is_none()
-                        || cumulative + *amount > ceiling;
+                    let over_ceiling =
+                        cumulative.checked_add(*amount).is_none() || cumulative + *amount > ceiling;
                     if !over_ceiling {
                         failures.push(format!(
                             "refund of slot {slot} rejected as ExceedsPayment but cumulative \
@@ -432,8 +442,8 @@ fn execute_op(
                     }
                 }
                 Err(Ok(Error::WindowExpired)) => {
-                    let expired = model.window > 0
-                        && env.ledger().sequence() > paid_at_ledger + model.window;
+                    let expired =
+                        model.window > 0 && env.ledger().sequence() > paid_at_ledger + model.window;
                     if !expired {
                         failures.push(format!(
                             "refund rejected as WindowExpired but ledger {} <= paid {} + window {}",
@@ -450,6 +460,14 @@ fn execute_op(
                             model.float()
                         ));
                     }
+                }
+                Err(Ok(Error::StaleState)) => {
+                    // Reaching the refund path with the wrong nonce means the
+                    // model lost track of successful refunds (issue #122).
+                    failures.push(format!(
+                        "refund of slot {slot} rejected as StaleState with nonce {}",
+                        model.refund_nonce
+                    ));
                 }
                 Err(Ok(Error::InvalidAmount)) => {
                     if *amount > 0 {
@@ -531,8 +549,7 @@ fn execute_op(
                 }
                 Err(Ok(Error::InvalidAmount)) => {
                     if *amount > 0 {
-                        failures
-                            .push(format!("withdraw of {amount} rejected as invalid amount"));
+                        failures.push(format!("withdraw of {amount} rejected as invalid amount"));
                     }
                 }
                 Err(Ok(Error::InsufficientFloat)) => {
@@ -572,7 +589,8 @@ fn execute_op(
             // flow so the model's window tracks the contract's real window.
             let _ = client.try_propose_policy(window, &0, &0);
             let seq = env.ledger().sequence();
-            env.ledger().with_mut(|li| li.sequence_number = seq + crate::POLICY_TIMELOCK);
+            env.ledger()
+                .with_mut(|li| li.sequence_number = seq + crate::POLICY_TIMELOCK);
             if client.try_execute_policy() == Ok(Ok(())) {
                 model.window = *window;
             }
@@ -683,7 +701,7 @@ proptest! {
         client.deposit(&merchant, &1_000_000);
         let buyer = Address::generate(&env);
         let ref_ = payment_ref(&env, 0);
-        client.refund(&ref_, &buyer, &100_000, &0, &100_000, &None);
+        client.refund(&ref_, &buyer, &100_000, &0, &100_000, &None, &0);
 
         // Extension on a record that does not exist errors. Slot 0 is the
         // refunded one, so pick a guaranteed-distinct slot (1..REF_SLOTS).
@@ -761,7 +779,7 @@ proptest! {
             BytesN::from_array(&env, &[0u8; 32]);
         let buyer = Address::generate(&env);
         let res = client.try_refund(
-            &payment_ref, &buyer, &amount, &0, &amount, &None,
+            &payment_ref, &buyer, &amount, &0, &amount, &None, &0,
         );
 
         if amount <= 0 {
@@ -841,6 +859,7 @@ proptest! {
         let mut total_refunds: i128 = 0;
         let mut total_withdrawals: i128 = 0;
         let mut refund_counter: u32 = 0;
+        let mut refund_nonce: u64 = 0;
 
         for op in ops {
             match op {
@@ -873,10 +892,12 @@ proptest! {
                             &0,
                             &amount,
                             &None,
+                            &refund_nonce,
                         )
                         .is_ok()
                     {
                         total_refunds += amount;
+                        refund_nonce += 1;
                     }
                 }
                 VaultOp::Withdraw(amount) => {
@@ -962,7 +983,7 @@ fn test_regression_float_accounts_across_full_cycle() {
 
     let ref_a = payment_ref(&env, 0);
     let buyer = Address::generate(&env);
-    client.refund(&ref_a, &buyer, &400_000, &0, &400_000, &None);
+    client.refund(&ref_a, &buyer, &400_000, &0, &400_000, &None, &0);
     assert_eq!(token_client.balance(&client.address), 2_600_000);
 
     client.withdraw(&500_000, &merchant);
@@ -971,7 +992,7 @@ fn test_regression_float_accounts_across_full_cycle() {
     // The ceiling guard holds even after other activity: cumulative 400_000
     // + 100 would exceed the 400_000 ceiling.
     assert_eq!(
-        client.try_refund(&ref_a, &buyer, &100, &0, &400_000, &None),
+        client.try_refund(&ref_a, &buyer, &100, &0, &400_000, &None, &1),
         Err(Ok(Error::ExceedsPayment))
     );
     assert_eq!(token_client.balance(&client.address), 2_100_000);
@@ -991,13 +1012,13 @@ fn test_regression_pause_blocks_and_preserves_state() {
     let buyer = Address::generate(&env);
     let ref_ = payment_ref(&env, 1);
     assert_eq!(
-        client.try_refund(&ref_, &buyer, &100, &0, &100, &None),
+        client.try_refund(&ref_, &buyer, &100, &0, &100, &None, &0),
         Err(Ok(Error::Paused))
     );
     assert!(client.get_refund(&ref_).is_none());
     assert_eq!(token_client.balance(&client.address), 1_000_000);
 
     client.unpause();
-    client.refund(&ref_, &buyer, &100, &0, &100, &None);
+    client.refund(&ref_, &buyer, &100, &0, &100, &None, &0);
     assert_eq!(token_client.balance(&client.address), 999_900);
 }

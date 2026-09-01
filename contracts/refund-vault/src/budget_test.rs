@@ -92,5 +92,5 @@ fn budget_refund() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
     env.cost_estimate().budget().reset_unlimited();
-    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None, &0);
 }

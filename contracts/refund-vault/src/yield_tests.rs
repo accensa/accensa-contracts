@@ -563,7 +563,7 @@ fn test_refund_succeeds_after_deploy_within_reserve() {
 
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
     let buyer = Address::generate(&env);
-    vault_client.refund(&payment_ref, &buyer, &500_000, &0, &500_000, &None);
+    vault_client.refund(&payment_ref, &buyer, &500_000, &0, &500_000, &None, &0);
 
     assert_eq!(tc.balance(&buyer), 500_000);
     assert_eq!(tc.balance(&vault_client.address), 1_500_000);
@@ -579,7 +579,7 @@ fn test_refund_exceeding_liquid_after_deploy_fails() {
     let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        vault_client.try_refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000, &None),
+        vault_client.try_refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000, &None, &0),
         Err(Ok(Error::InsufficientFloat))
     );
 }
@@ -595,7 +595,7 @@ fn test_refund_after_withdraw_from_yield() {
 
     let payment_ref = BytesN::from_array(&env, &[3u8; 32]);
     let buyer = Address::generate(&env);
-    vault_client.refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000, &None);
+    vault_client.refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000, &None, &0);
 
     assert_eq!(tc.balance(&buyer), 2_500_000);
 }
@@ -801,7 +801,7 @@ fn test_existing_deposit_refund_withdraw_still_works() {
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
-    vault_client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None);
+    vault_client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None, &0);
 
     let tc = TokenClient::new(&env, &token);
     assert_eq!(tc.balance(&buyer), 120_000);
@@ -962,7 +962,7 @@ fn test_yield_info_survives_refund() {
     // Refund from liquid balance — must not alter yield state.
     let payment_ref = BytesN::from_array(&env, &[0xAAu8; 32]);
     let buyer = Address::generate(&env);
-    vault_client.refund(&payment_ref, &buyer, &500_000, &0, &500_000, &None);
+    vault_client.refund(&payment_ref, &buyer, &500_000, &0, &500_000, &None, &0);
 
     let info_after = vault_client.get_yield_info();
     assert_eq!(

@@ -28,6 +28,9 @@ use soroban_sdk::{
     Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
 
+/// Logical shard used by these governance-admin tests (single-stream).
+const DEFAULT_SHARD: u64 = 0;
+
 /// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
 /// wasm32v1-none --release` before these tests run (see `.github/workflows/ci.yml`).
 mod shard_wasm {
@@ -162,6 +165,7 @@ fn anchor_and_prune_run_through_governance() {
     let anchor_args = Vec::from_array(
         &env,
         [
+            DEFAULT_SHARD.into_val(&env),
             root.into_val(&env),
             10u32.into_val(&env),
             100u64.into_val(&env),
@@ -185,11 +189,14 @@ fn anchor_and_prune_run_through_governance() {
     env.set_auths(&[]);
     gov.execute(&anchor_proposal);
 
-    let batch = anchor.get_batch(&1);
+    let batch = anchor.get_batch(&DEFAULT_SHARD, &1);
     assert_eq!(batch.count, 10, "the anchored batch must be stored");
 
     let prune_fn = Symbol::new(&env, "prune_batches");
-    let prune_args = Vec::from_array(&env, [1_000_000u32.into_val(&env)]);
+    let prune_args = Vec::from_array(
+        &env,
+        [DEFAULT_SHARD.into_val(&env), 1_000_000u32.into_val(&env)],
+    );
 
     mock_propose_auth(&env, &gov_id, &m2, &anchor.address, &prune_fn, &prune_args);
     let prune_proposal = gov.propose(&m2, &anchor.address, &prune_fn, &prune_args);
@@ -201,7 +208,7 @@ fn anchor_and_prune_run_through_governance() {
     gov.execute(&prune_proposal);
 
     assert!(
-        anchor.try_get_batch(&1).is_err(),
+        anchor.try_get_batch(&DEFAULT_SHARD, &1).is_err(),
         "the pruned batch must be gone"
     );
 }

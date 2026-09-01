@@ -40,6 +40,19 @@ breaking changes bump the **minor** version, and they are called out as such.
   Absent key ⇔ unconfigured, which is the correct on-chain semantic anyway
   (`Void` is not a legal contract-data value).
 
+- **Per-user nonce replay protection** (issue #122): `refund`, `claim_batch`,
+  and `process_batch` now each take a required `nonce` argument equal to the
+  caller's (merchant's) current per-user counter, stored in persistent storage
+  under `DataKey::UserNonce(Address)`. The counter starts at `0`, increments
+  once per **successful** claim call, and a mismatch — replaying a consumed
+  nonce or skipping ahead — reverts the call with `Error::StaleState`
+  (mirroring the state channel's nonce semantics). Failed claims revert
+  atomically and do not consume a nonce; an empty `process_batch` returns
+  early without consuming one. New `get_user_nonce(caller)` getter, and new
+  tests covering sequential advance, replay rejection, per-caller
+  independence, and batched entry points. This is a **breaking interface
+  change** to the three claim entry points.
+
 ### Changed
 
 - **`Governance` contract**: a proposal-based, weighted-vote governance wrapper

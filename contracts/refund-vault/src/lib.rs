@@ -118,6 +118,14 @@ pub enum DataKey {
     /// commitment must survive until its reveal, which is guaranteed to be at
     /// least `COMMIT_MIN_DELAY_LEDGERS` ledgers later.
     Commit(BytesN<32>),
+    /// Replay-protection nonce for a caller (issue #122). A per-user,
+    /// sequential counter keyed by the authorized caller's address: every
+    /// `refund`, `claim_batch`, and `process_batch` invocation must supply the
+    /// caller's current nonce (starting at 0) and consumes it by incrementing
+    /// on success, so replaying a previously-signed claim reverts with
+    /// `StaleState`. Stored in Persistent storage (TTL-managed) so the counter
+    /// survives independent of the vault's instance-storage TTL.
+    UserNonce(Address),
 }
 
 #[contracttype]
@@ -526,6 +534,33 @@ fn increment_nonce(env: &Env) -> u64 {
     current
 }
 
+/// The caller's current replay-protection nonce (issue #122), defaulting to
+/// `0` for a caller that has never submitted a claim. Read as the "expected
+/// next nonce" for the next `refund`/`claim_batch`/`process_batch` call.
+fn current_user_nonce(env: &Env, caller: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserNonce(caller.clone()))
+        .unwrap_or(0)
+}
+
+/// Validate that `provided` equals the caller's expected next nonce and, on
+/// success, consume it by advancing the stored counter (issue #122).
+///
+/// A mismatch — whether a replay of an already-consumed nonce, or a skipped
+/// one — reverts with `Error::StaleState`, mirroring the state-channel's
+/// nonce-replay semantics.
+fn check_and_bump_user_nonce(env: &Env, caller: &Address, provided: u64) -> Result<(), Error> {
+    let expected = current_user_nonce(env, caller);
+    if provided != expected {
+        return Err(Error::StaleState);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserNonce(caller.clone()), &(expected + 1));
+    Ok(())
+}
+
 /// How many ledgers to extend a payment's `RefundV2` record's TTL by, so the
 /// double-refund guard cannot go archived while `refund` calls against that
 /// payment are still policy-valid.
@@ -857,7 +892,9 @@ impl RefundVault {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
-        env.storage().instance().set(&DataKey::Admin, &init.merchant);
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &init.merchant);
         env.storage().instance().set(&DataKey::Token, &init.token);
         env.storage()
             .instance()
@@ -927,6 +964,13 @@ impl RefundVault {
     /// Current monotonic nonce (issue #136).
     pub fn get_nonce(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::Nonce).unwrap_or(0)
+    }
+
+    /// Current replay-protection nonce for `caller` (issue #122): the expected
+    /// `nonce` the caller's next `refund`/`claim_batch`/`process_batch` call
+    /// must supply. `0` for a caller that has not yet made a successful claim.
+    pub fn get_user_nonce(env: Env, caller: Address) -> u64 {
+        current_user_nonce(&env, &caller)
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
@@ -1028,6 +1072,7 @@ impl RefundVault {
         paid_at_ledger: u32,
         payment_amount: i128,
         vdf_proof: Option<BytesN<256>>,
+        nonce: u64,
     ) -> Result<(), Error> {
         acquire_reentrancy_lock(&env)?;
 
@@ -1046,6 +1091,8 @@ impl RefundVault {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
+
+        check_and_bump_user_nonce(&env, &merchant, nonce)?;
 
         let claim = RefundClaim {
             payment_ref,
@@ -1085,7 +1132,7 @@ impl RefundVault {
     /// persists, or none of them do.
     ///
     /// An empty `claims` vector succeeds as a no-op.
-    pub fn claim_batch(env: Env, claims: Vec<RefundClaim>) -> Result<(), Error> {
+    pub fn claim_batch(env: Env, claims: Vec<RefundClaim>, nonce: u64) -> Result<(), Error> {
         if claims.len() > MAX_BATCH_SIZE {
             return Err(Error::BatchTooLarge);
         }
@@ -1108,6 +1155,8 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        check_and_bump_user_nonce(&env, &merchant, nonce)?;
+
         for claim in claims.iter() {
             claim_single(&env, &claim)?;
         }
@@ -1129,7 +1178,11 @@ impl RefundVault {
     /// Unlike [`RefundVault::claim_batch`], this is *not* atomic: a failing
     /// item does not roll back the others, and no reentrancy lock is held, so
     /// callers that require all-or-nothing semantics should use `claim_batch`.
-    pub fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error> {
+    pub fn process_batch(
+        env: Env,
+        refunds: Vec<RefundParam>,
+        nonce: u64,
+    ) -> Result<Vec<bool>, Error> {
         if refunds.len() > MAX_BATCH_SIZE {
             return Err(Error::BatchTooLarge);
         }
@@ -1151,10 +1204,13 @@ impl RefundVault {
         merchant.require_auth();
 
         // An empty batch is a no-op; return before touching any state so the
-        // caller can probe auth without paying for state loads.
+        // caller can probe auth without paying for state loads or consuming a
+        // nonce.
         if refunds.is_empty() {
             return Ok(Vec::new(&env));
         }
+
+        check_and_bump_user_nonce(&env, &merchant, nonce)?;
 
         // The loop below only touches per-payment storage and performs the
         // transfers; each item runs the identical per-claim logic as `refund`.
@@ -1973,7 +2029,6 @@ impl RefundVault {
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
-
 
     pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
         if basis_points > 10_000 {

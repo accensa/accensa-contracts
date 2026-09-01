@@ -22,9 +22,20 @@ contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
 #[contracttype]
 pub enum DataKey {
     Admin,
-    BatchCount,
-    PrunedUpTo,
-    RootBuffer,
+    /// Per-logical-shard batch count. Each `shard_id` owns an independent
+    /// batch stream that starts at `1`, so one region/asset type can anchor
+    /// concurrently with another without sharing numbering or the
+    /// duplicate-root check.
+    ShardBatchCount(u64),
+    /// Per-logical-shard prune cursor (`PrunedUpTo`), mirroring the
+    /// contiguous-prefix guarantee independently for each `shard_id`.
+    ShardPrunedUpTo(u64),
+    /// Per-logical-shard historical root ring buffer.
+    ShardRootBuffer(u64),
+    /// The set of logical `shard_id`s that have anchored at least one batch,
+    /// in first-use (insertion) order. Lets callers enumerate the live shards
+    /// via `get_shard_ids`.
+    ShardIds,
     /// Admin-configured token-bucket rate limit for `anchor_batch`.
     /// `{0, 0}` (the default) disables rate limiting.
     RateLimitConfig,
@@ -32,12 +43,13 @@ pub enum DataKey {
     /// (the merchant). Written only while rate limiting is enabled.
     RateLimitBucket(Address),
     /// The installed `ReceiptShard` wasm hash, set at `initialize` and used by
-    /// the factory to deploy every subsequent shard.
+    /// the router to deploy every subsequent storage shard.
     ShardWasmHash,
-    ShardCount,
-    /// Maps a shard index (`batch_id_zero_based / SHARD_CAPACITY`) to the
-    /// deployed shard's contract address.
-    Shard(u64),
+    /// Maps a storage-shard index (`(batch_id-1) % SHARD_CAPACITY`, computed
+    /// within a logical `shard_id`'s own stream) to the deployed storage
+    /// shard's contract address. Keyed by `(logical shard_id, storage index)`
+    /// so logical shards isolate their storage shards from one another.
+    Shard(u64, u64),
 }
 
 /// Admin-configurable token-bucket rate limit applied to `anchor_batch`.
@@ -112,11 +124,14 @@ pub trait ShardInterface {
 
 /// Emitted when a merchant anchors a batch of receipts.
 ///
-/// Topics: `("anchor_event", batch_id)`. The data map mirrors [`BatchRecord`], so
-/// indexers can decode it with the same shape returned by `get_batch`.
+/// Topics: `("anchor_event", shard_id, batch_id)`. The data map mirrors
+/// [`BatchRecord`], so indexers can decode it with the same shape returned by
+/// `get_batch`.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnchorEvent {
+    #[topic]
+    pub shard_id: u64,
     #[topic]
     pub batch_id: u64,
     pub root: BytesN<32>,
@@ -126,18 +141,28 @@ pub struct AnchorEvent {
     pub anchored_ledger: u32,
 }
 
+/// Emitted when a merchant prunes a contiguous prefix of a shard's batch
+/// stream.
+///
+/// Topics: `("prune_event", shard_id, start_batch_id)`. Pruning is per logical
+/// shard, so `shard_id` is required to disambiguate the range.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PruneEvent {
+    #[topic]
+    pub shard_id: u64,
     #[topic]
     pub start_batch_id: u64,
     pub end_batch_id: u64,
 }
 
-/// Emitted when the factory spawns a new shard to hold a fresh capacity range.
+/// Emitted when the router spawns a new storage shard to hold a fresh capacity
+/// range within a logical `shard_id`'s batch stream.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShardCreatedEvent {
+    #[topic]
+    pub shard_id: u64,
     #[topic]
     pub shard_index: u64,
     pub shard_address: Address,
@@ -208,18 +233,9 @@ impl ReceiptAnchor {
             return Err(Error::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &merchant);
-        env.storage().instance().set(&DataKey::BatchCount, &0u64);
-        // PrunedUpTo invariant:
-        // "PrunedUpTo" represents the water-mark up to which batches have been deliberately
-        // pruned and deleted. Every batch ID strictly less than PrunedUpTo is guaranteed to have
-        // been deliberately removed by prune_batches, or if missing due to TTL archival, it is
-        // never allowed to sit below PrunedUpTo in a way that violates the contiguous prefix
-        // guarantee. Specifically, the contract stops pruning or advancing the watermark upon
-        // encountering any gap, ensuring restored batches can never land below PrunedUpTo.
-        env.storage().instance().set(&DataKey::PrunedUpTo, &1u64);
         env.storage()
             .instance()
-            .set(&DataKey::RootBuffer, &Vec::<BytesN<32>>::new(&env));
+            .set(&DataKey::ShardIds, &Vec::<u64>::new(&env));
         env.storage().instance().set(
             &DataKey::RateLimitConfig,
             &RateLimitConfig {
@@ -230,28 +246,35 @@ impl ReceiptAnchor {
         env.storage()
             .instance()
             .set(&DataKey::ShardWasmHash, &shard_wasm_hash);
-        env.storage().instance().set(&DataKey::ShardCount, &0u64);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 
-    /// Anchors a batch of receipts using a state root.
+    /// Anchors a batch of receipts for `shard_id` using a state root.
+    ///
+    /// `shard_id` is a logical partition of the merchant's receipts (region,
+    /// asset type, etc.). Each `shard_id` owns an independent batch stream, so
+    /// different shards can be anchored concurrently and share no batch
+    /// numbering, no duplicate-root check, and no root history.
     pub fn anchor_batch(
         env: Env,
+        shard_id: u64,
         root: BytesN<32>,
         count: u32,
         period_start: u64,
         period_end: u64,
     ) -> Result<u64, Error> {
-        Self::anchor_batch_internal(&env, root, count, period_start, period_end)
+        Self::anchor_batch_internal(&env, shard_id, root, count, period_start, period_end)
     }
 
-    /// Anchors a batch of receipts by verifying a ZK validity proof of the state root.
-    /// Returns the assigned `batch_id` upon successful verification.
+    /// Anchors a batch of receipts for `shard_id` by verifying a ZK validity
+    /// proof of the state root. Returns the assigned `batch_id` (in that
+    /// shard's own stream) upon successful verification.
     pub fn anchor_batch_zk(
         env: Env,
+        shard_id: u64,
         state_root: BytesN<32>,
         proof: ZkProof,
         count: u32,
@@ -262,12 +285,13 @@ impl ReceiptAnchor {
         if !is_valid {
             return Err(Error::InvalidProof);
         }
-        Self::anchor_batch_internal(&env, state_root, count, period_start, period_end)
+        Self::anchor_batch_internal(&env, shard_id, state_root, count, period_start, period_end)
     }
 
     /// Internal batch anchoring helper.
     fn anchor_batch_internal(
         env: &Env,
+        shard_id: u64,
         root: BytesN<32>,
         count: u32,
         period_start: u64,
@@ -292,7 +316,8 @@ impl ReceiptAnchor {
         // been written, so a failed anchor (e.g. a duplicate root) does not
         // spend a token. When rate limiting is disabled this costs exactly one
         // instance-storage read — nothing is written and no bucket entry is
-        // ever created.
+        // ever created. The limiter is global per merchant (v1 scope), not per
+        // shard.
         let rate_limit: RateLimitConfig = env
             .storage()
             .instance()
@@ -305,15 +330,21 @@ impl ReceiptAnchor {
             rate_limit.burst_capacity > 0 && rate_limit.refill_interval_secs > 0;
         let bucket_key = if rate_limit_active {
             let key = DataKey::RateLimitBucket(merchant.clone());
-            Self::rate_limit_admitted(&env, &key, &rate_limit)?;
+            Self::rate_limit_admitted(env, &key, &rate_limit)?;
             Some(key)
         } else {
             None
         };
 
-        let batch_count: u64 = env.storage().instance().get(&DataKey::BatchCount).unwrap();
+        // The duplicate-root check is scoped to this shard's own stream: the
+        // latest batch of *this* shard, not a global last batch.
+        let batch_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ShardBatchCount(shard_id))
+            .unwrap_or(0);
         if batch_count > 0 {
-            if let Ok(last_batch) = Self::get_batch(env.clone(), batch_count) {
+            if let Ok(last_batch) = Self::get_batch(env.clone(), shard_id, batch_count) {
                 if last_batch.root == root {
                     return Err(Error::DuplicateRoot);
                 }
@@ -321,7 +352,7 @@ impl ReceiptAnchor {
         }
         let batch_id = batch_count + 1;
         let shard_index = (batch_id - 1) / SHARD_CAPACITY;
-        let shard_addr = Self::get_or_create_shard(env, shard_index)?;
+        let shard_addr = Self::get_or_create_shard(env, shard_id, shard_index)?;
 
         let anchored_ledger = env.ledger().sequence();
         ShardClient::new(env, &shard_addr).anchor_batch(
@@ -334,28 +365,35 @@ impl ReceiptAnchor {
 
         env.storage()
             .instance()
-            .set(&DataKey::BatchCount, &batch_id);
+            .set(&DataKey::ShardBatchCount(shard_id), &batch_id);
+        Self::register_shard_id(env, shard_id);
 
         // Phase 2 of the rate limit: spend the token now that the anchor
         // succeeded, persisting the bucket alongside the batch.
         if let Some(key) = bucket_key {
-            Self::rate_limit_consume(&env, &key, &rate_limit);
+            Self::rate_limit_consume(env, &key, &rate_limit);
         }
 
-        // Push root into the ring buffer, evicting the oldest if full.
-        let mut buffer: Vec<BytesN<32>> =
-            env.storage().instance().get(&DataKey::RootBuffer).unwrap();
+        // Push root into this shard's ring buffer, evicting the oldest if full.
+        let mut buffer: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ShardRootBuffer(shard_id))
+            .unwrap_or_else(|| Vec::new(env));
         if buffer.len() >= ROOT_BUFFER_SIZE {
             buffer.remove(0);
         }
         buffer.push_back(root.clone());
-        env.storage().instance().set(&DataKey::RootBuffer, &buffer);
+        env.storage()
+            .instance()
+            .set(&DataKey::ShardRootBuffer(shard_id), &buffer);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
 
         AnchorEvent {
+            shard_id,
             batch_id,
             root,
             count,
@@ -378,27 +416,31 @@ impl ReceiptAnchor {
         zk_verifier::verify_groth16(&env, &proof, &vk, &public_inputs)
     }
 
-    pub fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error> {
-        let shard_addr = Self::shard_for_batch(&env, batch_id)?;
+    pub fn get_batch(env: Env, shard_id: u64, batch_id: u64) -> Result<BatchRecord, Error> {
+        let shard_addr = Self::shard_for_batch(&env, shard_id, batch_id)?;
         Self::unwrap_shard_result(ShardClient::new(&env, &shard_addr).try_get_batch(&batch_id))
     }
 
     pub fn verify_receipt(
         env: Env,
+        shard_id: u64,
         batch_id: u64,
         leaf: BytesN<32>,
         proof: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
-        let shard_addr = Self::shard_for_batch(&env, batch_id)?;
+        let shard_addr = Self::shard_for_batch(&env, shard_id, batch_id)?;
         Self::unwrap_shard_result(
             ShardClient::new(&env, &shard_addr).try_verify_receipt(&batch_id, &leaf, &proof),
         )
     }
 
-    /// Verify a receipt against any root in the historical ring buffer.
-    /// Returns `true` if the root is in the buffer AND the Merkle proof is valid.
+    /// Verify a receipt against any root in `shard_id`'s historical ring
+    /// buffer. Returns `true` if the root is in the buffer AND the Merkle
+    /// proof is valid. Roots are isolated per shard, so a root anchored in one
+    /// shard is not verifiable by root in another.
     pub fn verify_receipt_by_root(
         env: Env,
+        shard_id: u64,
         root: BytesN<32>,
         leaf: BytesN<32>,
         proof: Vec<BytesN<32>>,
@@ -406,11 +448,14 @@ impl ReceiptAnchor {
         if proof.len() > MAX_PROOF_LEN {
             return Err(Error::ProofTooLong);
         }
+        Self::require_initialized(&env)?;
+        // A shard with no anchored roots has an empty root history, so any
+        // root is unknown.
         let buffer: Vec<BytesN<32>> = env
             .storage()
             .instance()
-            .get(&DataKey::RootBuffer)
-            .ok_or(Error::NotInitialized)?;
+            .get(&DataKey::ShardRootBuffer(shard_id))
+            .unwrap_or_else(|| Vec::new(&env));
 
         let mut found = false;
         for stored_root in buffer.iter() {
@@ -447,11 +492,12 @@ impl ReceiptAnchor {
         computed_hash
     }
 
-    /// Returns the current ring buffer of historical roots (read-only).
-    pub fn get_root_buffer(env: Env) -> Vec<BytesN<32>> {
+    /// Returns the current ring buffer of historical roots for `shard_id`
+    /// (read-only).
+    pub fn get_root_buffer(env: Env, shard_id: u64) -> Vec<BytesN<32>> {
         env.storage()
             .instance()
-            .get(&DataKey::RootBuffer)
+            .get(&DataKey::ShardRootBuffer(shard_id))
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -460,11 +506,40 @@ impl ReceiptAnchor {
         ROOT_BUFFER_SIZE
     }
 
-    pub fn get_batch_count(env: Env) -> Result<u64, Error> {
+    /// Returns the latest root anchored for `shard_id`, if any.
+    pub fn get_shard_root(env: Env, shard_id: u64) -> Result<BytesN<32>, Error> {
+        Self::require_initialized(&env)?;
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ShardBatchCount(shard_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return Err(Error::BatchNotFound);
+        }
+        let last = Self::get_batch(env, shard_id, count)?;
+        Ok(last.root)
+    }
+
+    /// Returns the logical `shard_id`s that have anchored at least one batch,
+    /// in first-use order.
+    pub fn get_shard_ids(env: Env) -> Vec<u64> {
         env.storage()
             .instance()
-            .get(&DataKey::BatchCount)
-            .ok_or(Error::NotInitialized)
+            .get(&DataKey::ShardIds)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Returns the number of batches anchored for `shard_id`. Returns `0` for
+    /// an as-yet-unused shard once the contract is initialized; `NotInitialized`
+    /// before the contract itself has been initialized.
+    pub fn get_batch_count(env: Env, shard_id: u64) -> Result<u64, Error> {
+        Self::require_initialized(&env)?;
+        Ok(env
+            .storage()
+            .instance()
+            .get(&DataKey::ShardBatchCount(shard_id))
+            .unwrap_or(0))
     }
 
     /// Configures the token-bucket rate limit applied to `anchor_batch`.
@@ -508,12 +583,16 @@ impl ReceiptAnchor {
         SHARD_CAPACITY
     }
 
-    pub fn get_shard_count(env: Env) -> Result<u64, Error> {
+    /// Returns the number of storage shards currently holding `shard_id`'s
+    /// batch stream. Returns `0` for an as-yet-unused shard once the contract
+    /// is initialized.
+    pub fn get_shard_count(env: Env, shard_id: u64) -> Result<u64, Error> {
+        Self::require_initialized(&env)?;
         let batch_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::BatchCount)
-            .ok_or(Error::NotInitialized)?;
+            .get(&DataKey::ShardBatchCount(shard_id))
+            .unwrap_or(0);
         if batch_count == 0 {
             Ok(0)
         } else {
@@ -521,8 +600,10 @@ impl ReceiptAnchor {
         }
     }
 
-    pub fn get_shard_address(env: Env, shard_index: u64) -> Result<Address, Error> {
-        let key = DataKey::Shard(shard_index);
+    /// Returns the storage-shard address holding `shard_id`'s
+    /// `shard_index`-th capacity chunk.
+    pub fn get_shard_address(env: Env, shard_id: u64, shard_index: u64) -> Result<Address, Error> {
+        let key = DataKey::Shard(shard_id, shard_index);
         env.storage()
             .instance()
             .get(&key)
@@ -632,13 +713,28 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
-    /// Returns the pruned-up-to batch ID. Batches with IDs less than or equal
-    /// to this value have been pruned and are no longer verifiable on-chain.
-    pub fn get_pruned_up_to(env: Env) -> Result<u64, Error> {
-        env.storage()
+    /// Returns `NotInitialized` unless the contract has been initialized
+    /// (i.e. an admin is set). Per-shard state is lazily created, so a shard's
+    /// absent keys must not be mistaken for an uninitialized contract.
+    fn require_initialized(env: &Env) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            Ok(())
+        } else {
+            Err(Error::NotInitialized)
+        }
+    }
+
+    /// Returns the pruned-up-to batch ID for `shard_id`. Batches in that
+    /// shard's stream with IDs less than or equal to this value have been
+    /// pruned and are no longer verifiable on-chain. Returns `1` (nothing
+    /// pruned) for an as-yet-unused shard once the contract is initialized.
+    pub fn get_pruned_up_to(env: Env, shard_id: u64) -> Result<u64, Error> {
+        Self::require_initialized(&env)?;
+        Ok(env
+            .storage()
             .instance()
-            .get(&DataKey::PrunedUpTo)
-            .ok_or(Error::NotInitialized)
+            .get(&DataKey::ShardPrunedUpTo(shard_id))
+            .unwrap_or(1))
     }
 
     /// Returns the maximum batch size supported by an anchor.
@@ -646,9 +742,9 @@ impl ReceiptAnchor {
         MAX_BATCH_SIZE
     }
 
-    /// Extends the persistent TTL of a batch record.
-    pub fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error> {
-        let shard_addr = Self::shard_for_batch(&env, batch_id)?;
+    /// Extends the persistent TTL of a batch record in `shard_id`'s stream.
+    pub fn extend_batch_ttl(env: Env, shard_id: u64, batch_id: u64) -> Result<(), Error> {
+        let shard_addr = Self::shard_for_batch(&env, shard_id, batch_id)?;
         Self::unwrap_shard_result(
             ShardClient::new(&env, &shard_addr).try_extend_batch_ttl(&batch_id),
         )
@@ -659,22 +755,23 @@ impl ReceiptAnchor {
         MAX_PROOF_LEN
     }
 
-    /// Prunes batches anchored prior to `before_ledger`.
-    pub fn prune_batches(env: Env, before_ledger: u32) -> Result<u64, Error> {
+    /// Prunes `shard_id`'s batches anchored prior to `before_ledger`. Each
+    /// logical shard prunes independently against its own cursor.
+    pub fn prune_batches(env: Env, shard_id: u64, before_ledger: u32) -> Result<u64, Error> {
         let mut pruned_count: u64 = 0;
         let mut cursor: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PrunedUpTo)
+            .get(&DataKey::ShardPrunedUpTo(shard_id))
             .unwrap_or(1);
         let batch_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::BatchCount)
+            .get(&DataKey::ShardBatchCount(shard_id))
             .unwrap_or(0);
 
         while cursor <= batch_count && (pruned_count as u32) < MAX_PRUNE_BATCHES {
-            let shard_addr = match Self::shard_for_batch(&env, cursor) {
+            let shard_addr = match Self::shard_for_batch(&env, shard_id, cursor) {
                 Ok(addr) => addr,
                 Err(_) => {
                     cursor += 1;
@@ -694,15 +791,18 @@ impl ReceiptAnchor {
             cursor = next_cursor;
         }
 
-        env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
+        env.storage()
+            .instance()
+            .set(&DataKey::ShardPrunedUpTo(shard_id), &cursor);
 
         Ok(cursor)
     }
 
-    /// Returns the shard address that owns `batch_id`, deploying it via the
-    /// factory if this is the first batch to land in its capacity range.
-    fn get_or_create_shard(env: &Env, shard_index: u64) -> Result<Address, Error> {
-        let key = DataKey::Shard(shard_index);
+    /// Returns the storage-shard address that owns `batch_id` in `shard_id`'s
+    /// stream, deploying it if this is the first batch to land in its capacity
+    /// range.
+    fn get_or_create_shard(env: &Env, shard_id: u64, shard_index: u64) -> Result<Address, Error> {
+        let key = DataKey::Shard(shard_id, shard_index);
         if let Some(addr) = env.storage().instance().get::<_, Address>(&key) {
             return Ok(addr);
         }
@@ -716,23 +816,19 @@ impl ReceiptAnchor {
         let start_batch_id = shard_index * SHARD_CAPACITY + 1;
         let end_batch_id = start_batch_id + SHARD_CAPACITY;
 
-        let salt = Self::shard_salt(env, shard_index);
+        // The salt composes both the logical `shard_id` (high 8 bytes) and the
+        // storage index (low 8 bytes), so (shard_id, index) always resolves to
+        // the same address and distinct pairs never collide.
+        let salt = Self::shard_salt(env, shard_id, shard_index);
         let shard_addr = env.deployer().with_current_contract(salt).deploy_v2(
             wasm_hash,
             (env.current_contract_address(), start_batch_id, end_batch_id),
         );
 
         env.storage().instance().set(&key, &shard_addr);
-        let shard_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ShardCount)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::ShardCount, &(shard_count + 1));
 
         ShardCreatedEvent {
+            shard_id,
             shard_index,
             shard_address: shard_addr.clone(),
             start_batch_id,
@@ -743,25 +839,42 @@ impl ReceiptAnchor {
         Ok(shard_addr)
     }
 
-    /// Deterministic per-shard deploy salt: the shard index big-endian in the
-    /// low 8 bytes, zero-padded. Deterministic so the same shard index always
-    /// resolves to the same address, and distinct across indices so shards
-    /// never collide.
-    fn shard_salt(env: &Env, shard_index: u64) -> BytesN<32> {
+    /// Deterministic per-(shard_id, storage-index) deploy salt: the logical
+    /// `shard_id` in the high 8 bytes and the storage `shard_index` in the low
+    /// 8 bytes, zero-padded. Deterministic so the same pair always resolves to
+    /// the same address, and distinct across pairs so storage shards never
+    /// collide — even across logical shards (e.g. shard 1 index 0 vs shard 0
+    /// index 1).
+    fn shard_salt(env: &Env, shard_id: u64, shard_index: u64) -> BytesN<32> {
         let mut bytes = [0u8; 32];
+        bytes[16..24].copy_from_slice(&shard_id.to_be_bytes());
         bytes[24..32].copy_from_slice(&shard_index.to_be_bytes());
         BytesN::from_array(env, &bytes)
     }
 
-    fn shard_for_batch(env: &Env, batch_id: u64) -> Result<Address, Error> {
+    fn shard_for_batch(env: &Env, shard_id: u64, batch_id: u64) -> Result<Address, Error> {
         if batch_id == 0 {
             return Err(Error::BatchNotFound);
         }
         let shard_index = (batch_id - 1) / SHARD_CAPACITY;
         env.storage()
             .instance()
-            .get(&DataKey::Shard(shard_index))
+            .get(&DataKey::Shard(shard_id, shard_index))
             .ok_or(Error::BatchNotFound)
+    }
+
+    /// Records `shard_id` in the `ShardIds` enumeration set if it is not
+    /// already there, preserving first-use order.
+    fn register_shard_id(env: &Env, shard_id: u64) {
+        let mut ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ShardIds)
+            .unwrap_or_else(|| Vec::new(env));
+        if !ids.iter().any(|id| id == shard_id) {
+            ids.push_back(shard_id);
+            env.storage().instance().set(&DataKey::ShardIds, &ids);
+        }
     }
 
     fn unwrap_shard_result<T, C>(
