@@ -246,13 +246,17 @@ fn test_set_yield_strategy() {
 fn test_set_yield_strategy_uninitialized_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let vault_id = env.register(RefundVault, ());
+    let merchant = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin);
+    let token = sac.address();
+    let init = vault_init(&env, &merchant, &token, 100);
+    let vault_id = env.register(RefundVault, (init.clone(),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    let addr = Address::generate(&env);
 
     assert_eq!(
-        vault_client.try_set_yield_strategy(&addr),
-        Err(Ok(Error::NotInitialized))
+        vault_client.try_initialize(&init),
+        Err(Ok(Error::AlreadyInitialized))
     );
 }
 

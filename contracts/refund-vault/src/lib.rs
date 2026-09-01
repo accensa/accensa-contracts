@@ -844,50 +844,76 @@ const INITIAL_STORAGE_VERSION: u32 = 1;
 
 #[contractimpl]
 impl RefundVault {
-    /// Initializes the vault.
+    /// Constructor-wired initialization (issue #129). Sets the merchant admin,
+    /// settlement token, policy addresses, fee, refund window, deadline and VDF
+    /// delay from the [`VaultInit`] struct in one call. There is no
+    /// post-deployment `initialize` window; the factory (`deploy_v2`) wires
+    /// these inputs, and a merchant must not be able to choose them after the
+    /// vault exists.
+    ///
     /// # Errors
-    /// - `AlreadyInitialized`: If already set.
-    pub fn initialize(
-        env: Env,
-        merchant: Address,
-        token: Address,
-        refund_window: u32,
-    ) -> Result<(), Error> {
+    /// - `AlreadyInitialized`: If the vault is already initialized.
+    pub fn __constructor(env: Env, init: VaultInit) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
-        env.storage().instance().set(&DataKey::Admin, &merchant);
-        env.storage().instance().set(&DataKey::Token, &token);
+        env.storage().instance().set(&DataKey::Admin, &init.merchant);
+        env.storage().instance().set(&DataKey::Token, &init.token);
         env.storage()
             .instance()
-            .set(&DataKey::RefundWindow, &refund_window);
+            .set(&DataKey::RefundWindow, &init.refund_window);
         env.storage()
             .instance()
-            .set(&DataKey::TimePolicyContract, policy);
-    }
-    if let Some(policy) = &init.vdf_policy {
+            .set(&DataKey::RefundDeadline, &init.deadline);
         env.storage()
             .instance()
-            .set(&DataKey::VdfPolicyContract, policy);
-    }
-    env.storage()
-        .instance()
-        .set(&DataKey::StorageVersion, &INITIAL_STORAGE_VERSION);
+            .set(&DataKey::VdfDelay, &init.vdf_delay);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeBps, &init.fee_bps);
+        if let Some(recipient) = &init.fee_recipient {
+            env.storage()
+                .instance()
+                .set(&DataKey::FeeRecipient, recipient);
+        }
+        if let Some(policy) = &init.time_policy {
+            env.storage()
+                .instance()
+                .set(&DataKey::TimePolicyContract, policy);
+        }
+        if let Some(policy) = &init.vdf_policy {
+            env.storage()
+                .instance()
+                .set(&DataKey::VdfPolicyContract, policy);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &INITIAL_STORAGE_VERSION);
 
-    // Issue #136: store the domain separator (a hash of this contract's
-    // address) and initialise the monotonic nonce to 0.
-    let contract_addr = env.current_contract_address();
-    let addr_str = contract_addr.to_string();
-    let separator: BytesN<32> = env
-        .crypto()
-        .sha256(&soroban_sdk::Bytes::from(addr_str))
-        .to_bytes();
-    env.storage()
-        .instance()
-        .set(&DataKey::DomainSeparator, &separator);
-    env.storage().instance().set(&DataKey::Nonce, &0u64);
+        // Issue #136: store the domain separator (a hash of this contract's
+        // address) and initialise the monotonic nonce to 0.
+        let contract_addr = env.current_contract_address();
+        let addr_str = contract_addr.to_string();
+        let separator: BytesN<32> = env
+            .crypto()
+            .sha256(&soroban_sdk::Bytes::from(addr_str))
+            .to_bytes();
+        env.storage()
+            .instance()
+            .set(&DataKey::DomainSeparator, &separator);
+        env.storage().instance().set(&DataKey::Nonce, &0u64);
 
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// `initialize` alias of [`__constructor`](Self::__constructor) for
+    /// environments where deploy-via-constructor is unavailable. Same
+    /// [`VaultInit`] argument and identical behavior.
+    pub fn initialize(env: Env, init: VaultInit) -> Result<(), Error> {
+        Self::__constructor(env, init)
     }
 
     /// Domain separator for this vault instance (issue #136).
@@ -1807,26 +1833,14 @@ impl RefundVault {
             fee_bps: bps,
             fee_recipient: active_fee_recipient(&env),
         }
-
-        let token_address: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Token)
-            .ok_or(Error::NotInitialized)?;
-        let token_client = token::TokenClient::new(&env, &token_address);
-        token_client.transfer(&merchant, &env.current_contract_address(), &amount);
+        .publish(&env);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-
-        DepositEvent { from, amount }.publish(&env);
-
         Ok(())
     }
 
-    /// Sets the address that collects the refund fee; rejects the vault's own
-    /// address. Merchant auth. Emits a [`FeeConfigUpdatedEvent`].
     pub fn set_fee_recipient(env: Env, recipient: Address) -> Result<(), Error> {
         if recipient == env.current_contract_address() {
             return Err(Error::SelfTransfer);
@@ -1834,11 +1848,9 @@ impl RefundVault {
         let merchant: Address = env
             .storage()
             .instance()
-            .get(&DataKey::RefundMax)
-            .unwrap_or(0);
-        if max_refund > 0 && amount > max_refund {
-            return Err(Error::AmountExceedsMax);
-        }
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
 
         env.storage()
             .instance()
@@ -1892,15 +1904,11 @@ impl RefundVault {
             refund_when_below: policy.refund_when_below,
             max_staleness_ledgers: policy.max_staleness_ledgers,
         }
-
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+        .publish(&env);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-
-        WithdrawEvent { to: recipient, amount }.publish(&env);
-
         Ok(())
     }
 
@@ -1966,20 +1974,19 @@ impl RefundVault {
         Ok(())
     }
 
-    pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-    }
 
-    pub fn set_refund_window(env: Env, refund_window_ledgers: u32) -> Result<(), Error> {
+    pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
+        if basis_points > 10_000 {
+            return Err(Error::InvalidRatio);
+        }
+
         let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
+
         env.storage()
             .persistent()
             .set(&DataKey::ReserveRatio, &basis_points);
@@ -1991,23 +1998,20 @@ impl RefundVault {
         Ok(())
     }
 
-    pub fn get_refund_window(env: Env) -> Result<u32, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::RefundWindow)
-            .ok_or(Error::NotInitialized)
-    }
+    /// Set the maximum deployment ratio in basis points.
+    /// E.g., 8000 = at most 80% of total vault value can be deployed to yield.
+    pub fn set_max_deploy_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
+        if basis_points > 10_000 {
+            return Err(Error::InvalidRatio);
+        }
 
-    pub fn set_refund_max(env: Env, max_amount: i128) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
-        if max_amount < 0 {
-            return Err(Error::InvalidAmount);
-        }
+
         env.storage()
             .persistent()
             .set(&DataKey::MaxDeployRatio, &basis_points);
@@ -2032,11 +2036,16 @@ impl RefundVault {
         if env
             .storage()
             .instance()
-            .get(&DataKey::RefundMax)
-            .unwrap_or(0))
-    }
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            return Err(Error::Paused);
+        }
 
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
         let merchant: Address = env
             .storage()
             .instance()
@@ -2054,11 +2063,9 @@ impl RefundVault {
         let token_client = token::Client::new(&env, &token_addr);
         let token_balance = token_client.balance(&env.current_contract_address());
 
-        AdminTransferInitiatedEvent {
-            from: merchant,
-            to: new_admin,
+        if token_balance < amount {
+            return Err(Error::InsufficientFloat);
         }
-        .publish(&env);
 
         let deployed: i128 = env
             .storage()
@@ -2076,8 +2083,8 @@ impl RefundVault {
         //  but it belongs to the operator, not the principal pool — subtract it)
         let total_value = token_balance + deployed - harvested;
 
-    pub fn accept_admin(env: Env) -> Result<(), Error> {
-        let pending: Address = env
+        // Reserve check: after deployment, liquid tokens must cover the reserve.
+        let reserve_ratio: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::ReserveRatio)
@@ -2088,7 +2095,8 @@ impl RefundVault {
             return Err(Error::InsufficientReserve);
         }
 
-        let old_merchant: Address = env
+        // Max deployment check.
+        let max_deploy_ratio: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::MaxDeployRatio)
@@ -2141,12 +2149,11 @@ impl RefundVault {
         {
             return Err(Error::Paused);
         }
-        .publish(&env);
 
-        Ok(())
-    }
+        if principal <= 0 {
+            return Err(Error::InvalidAmount);
+        }
 
-    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
@@ -2196,8 +2203,8 @@ impl RefundVault {
             yield_amount: yield_returned,
             nonce,
         }
+        .publish(&env);
 
-        env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -2257,7 +2264,6 @@ impl RefundVault {
         }
         .publish(&env);
 
-        env.storage().instance().set(&DataKey::YieldStrategy, &info);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -2298,9 +2304,9 @@ impl RefundVault {
         let merchant: Address = env
             .storage()
             .instance()
-            .get(&DataKey::YieldStrategy)
-            .ok_or(Error::StrategyNotSet)
-    }
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
 
         env.storage().instance().set(&DataKey::IsPaused, &true);
 
@@ -2311,8 +2317,8 @@ impl RefundVault {
 
         env.storage()
             .instance()
-            .get::<_, YieldInfo>(&DataKey::YieldStrategy)
-            .and_then(|info| info.strategy)
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
     }
 
     pub fn unpause(env: Env) -> Result<(), Error> {
@@ -2373,11 +2379,16 @@ impl RefundVault {
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+
         AdminTransferInitiatedEvent {
-            from: admin,
+            from: admin.clone(),
             to: new_admin,
         }
         .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 
@@ -2399,10 +2410,14 @@ impl RefundVault {
         env.storage().instance().remove(&DataKey::PendingAdmin);
 
         AdminTransferAcceptedEvent {
-            from: old_admin,
+            from: old_admin.clone(),
             to: pending,
         }
         .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 

@@ -467,7 +467,6 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
-<<<<<<< ours
     /// Configures the token-bucket rate limit applied to `anchor_batch`.
     ///
     /// `burst_capacity` anchors may be submitted back-to-back before the
@@ -484,7 +483,27 @@ impl ReceiptAnchor {
         burst_capacity: u32,
         refill_interval_secs: u32,
     ) -> Result<(), Error> {
-=======
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let config = RateLimitConfig {
+            burst_capacity,
+            refill_interval_secs,
+        };
+        if !Self::is_valid_rate_limit(&config) {
+            return Err(Error::InvalidRateLimitConfig);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RateLimitConfig, &config);
+        Ok(())
+    }
+
     pub fn get_shard_capacity(_env: Env) -> u64 {
         SHARD_CAPACITY
     }
@@ -508,32 +527,6 @@ impl ReceiptAnchor {
             .instance()
             .get(&key)
             .ok_or(Error::BatchNotFound)
-    }
-
-    /// Sets the minimum interval (in seconds) between consecutive anchors.
-    /// Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables
-    /// rate-limiting entirely.
-    pub fn set_min_anchor_interval(env: Env, interval: u32) -> Result<(), Error> {
->>>>>>> theirs
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        let config = RateLimitConfig {
-            burst_capacity,
-            refill_interval_secs,
-        };
-        if !Self::is_valid_rate_limit(&config) {
-            return Err(Error::InvalidRateLimitConfig);
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::RateLimitConfig, &config);
-        Ok(())
     }
 
     /// Returns the current anchor rate-limit configuration (read-only).

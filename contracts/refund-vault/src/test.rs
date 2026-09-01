@@ -227,7 +227,6 @@ fn test_nonce_does_not_increment_on_failed_operation() {
 
     env.ledger().with_mut(|li| li.sequence_number = 500);
 
-    client.set_refund_window(&600);
     let payment_ref = BytesN::from_array(&env, &[5u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
@@ -259,31 +258,22 @@ fn test_nonce_does_not_increment_on_failed_operation() {
 }
 
 #[test]
-fn test_uninitialized_calls_fail() {
+fn test_initialize_returns_already_initialized() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
+    let merchant = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin);
+    let token = sac.address();
+    StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
+    let init = vault_init(&env, &merchant, &token, 100);
+    let contract_id = env.register(RefundVault, (init.clone(),));
     let client = RefundVaultClient::new(&env, &contract_id);
-    let addr = Address::generate(&env);
-    let payment_ref = BytesN::from_array(&env, &[6u8; 32]);
 
     assert_eq!(
-        client.try_deposit(&addr, &100),
-        Err(Ok(Error::NotInitialized))
+        client.try_initialize(&init),
+        Err(Ok(Error::AlreadyInitialized))
     );
-    assert_eq!(
-        client.try_refund(&payment_ref, &addr, &100, &0, &100, &None),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(
-        client.try_withdraw(&100, &addr),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(
-        client.try_propose_policy(&10, &0, &0),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
 }
 
 #[test]
@@ -569,7 +559,7 @@ fn test_extend_refund_ttl_fails_if_missing() {
     client.deposit(&merchant, &500_000);
     let payment_ref = BytesN::from_array(&env, &[99u8; 32]);
     assert_eq!(
-        client.try_get_refund(&payment_ref),
+        client.try_extend_refund_ttl(&payment_ref),
         Err(Ok(Error::RefundNotFound))
     );
 }

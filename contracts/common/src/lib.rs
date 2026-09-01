@@ -161,6 +161,9 @@ pub enum Error {
     /// policy's schema (`TimePolicyParams` / `VdfPolicyParams`). Indicates a
     /// vault configured a policy entry against the wrong contract.
     InvalidPolicyParams = 318,
+    /// An anchor rate-limit configuration was rejected (non-positive burst
+    /// capacity or refill interval). Raised by `set_anchor_rate_limit`.
+    InvalidRateLimitConfig = 319,
 }
 
 /// Parameters for the stateless **time** policy contract (issue #129).
