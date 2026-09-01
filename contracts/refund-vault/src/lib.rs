@@ -2094,6 +2094,8 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Set the minimum reserve ratio in basis points (1 bp = 0.01%).
+    /// E.g., 2000 = 20% of total vault value must remain as liquid token balance.
     pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
         if basis_points > 10_000 {
             return Err(Error::InvalidRatio);

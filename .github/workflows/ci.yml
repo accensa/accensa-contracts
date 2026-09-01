@@ -90,10 +90,12 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build receipt-shard wasm
-        # receipt-anchor's test/clippy target imports this wasm via
-        # `contractimport!` to test the shard factory end-to-end.
-        run: cargo build -p receipt-shard --target wasm32v1-none --release
+      - name: Build the wasms the lint targets import
+        # `--all-targets` compiles the test targets too, and those pull in
+        # three contracts via `contractimport!`. Same set as the test job.
+        run: |
+          cargo build --target wasm32v1-none --release \
+            -p receipt-shard -p receipt-anchor -p refund-vault
       - name: Run clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
@@ -114,10 +116,15 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build receipt-shard wasm
-        # receipt-anchor's tests import this wasm via `contractimport!` to
-        # test the shard factory end-to-end.
-        run: cargo build -p receipt-shard --target wasm32v1-none --release
+      - name: Build the wasms the tests import
+        # Three contracts are pulled in via `contractimport!`: receipt-shard
+        # and receipt-anchor for the shard-factory tests, and refund-vault for
+        # refund-vault-factory's deploy_vault tests. All three must exist as
+        # built wasm before `cargo test`, or the importing crate fails to
+        # compile with a bare "No such file or directory".
+        run: |
+          cargo build --target wasm32v1-none --release \
+            -p receipt-shard -p receipt-anchor -p refund-vault
       - name: Run Tests
         run: cargo test --locked --workspace
 

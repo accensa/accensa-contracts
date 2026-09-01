@@ -45,6 +45,9 @@ pub enum DataKey {
     /// The installed `ReceiptShard` wasm hash, set at `initialize` and used by
     /// the router to deploy every subsequent storage shard.
     ShardWasmHash,
+    /// Admin-configured minimum interval, in seconds, between anchors.
+    /// `0` (the default) disables the check.
+    MinAnchorInterval,
     /// Maps a storage-shard index (`(batch_id-1) % SHARD_CAPACITY`, computed
     /// within a logical `shard_id`'s own stream) to the deployed storage
     /// shard's contract address. Keyed by `(logical shard_id, storage index)`
@@ -206,6 +209,9 @@ const ROOT_BUFFER_SIZE: u32 = 100;
 /// back-to-back anchors a single identity can submit before the bucket
 /// refills, so an admin cannot configure the burst so large that the
 /// protection is meaningless.
+/// Upper bound on the configurable minimum anchor interval (24 h).
+const MAX_ANCHOR_INTERVAL: u32 = 86_400;
+
 const MAX_RATE_BURST: u32 = 1000;
 
 /// Maximum allowed refill interval for the anchor rate limiter (24 hours in
@@ -577,6 +583,35 @@ impl ReceiptAnchor {
             .instance()
             .set(&DataKey::RateLimitConfig, &config);
         Ok(())
+    }
+
+    /// Sets the minimum interval (in seconds) between consecutive anchors.
+    /// Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables
+    /// rate-limiting entirely.
+    pub fn set_min_anchor_interval(env: Env, interval: u32) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        if interval > MAX_ANCHOR_INTERVAL {
+            return Err(Error::BatchTooLarge);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinAnchorInterval, &interval);
+        Ok(())
+    }
+
+    /// Returns the current minimum anchor interval in seconds (read-only).
+    pub fn get_min_anchor_interval(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinAnchorInterval)
+            .unwrap_or(0)
     }
 
     pub fn get_shard_capacity(_env: Env) -> u64 {

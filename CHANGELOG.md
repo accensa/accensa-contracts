@@ -10,6 +10,55 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Fixed
 
+- **Repaired source corruption that left `main` unable to compile.** Two bad
+  merges (`a6e234b`, then `8eb4fa6` "Resolve conflicts in PR 263") committed
+  literal conflict markers into `receipt-anchor/src/lib.rs` and spliced
+  function bodies into the wrong signatures across `refund-vault/src/lib.rs`,
+  `src/fuzz_test.rs` and `src/test.rs`. Nothing in the workspace built, so
+  every check on every branch had been failing. Specifically:
+  - `receipt-anchor`: removed the committed `<<<<<<< ours` markers; restored
+    `get_shard_capacity`, `get_shard_count`, `get_shard_address` and
+    `set_min_anchor_interval`, whose bodies the bad resolution had swallowed
+    into `set_anchor_rate_limit`; restored `get_min_anchor_interval` and the
+    `MinAnchorInterval` key and `MAX_ANCHOR_INTERVAL` cap they need (the
+    governance suite drives this pair end to end).
+  - `refund-vault`: rebuilt `__constructor` (it had been left half-merged with
+    the removed `initialize` signature), and restored `set_reserve_ratio`,
+    `set_max_deploy_ratio`, `deploy_to_yield`, `withdraw_from_yield`,
+    `harvest_yield`, `pause`, `set_fee_bps`, `set_fee_recipient`,
+    `set_oracle_policy` and `clear_oracle_policy`, each of which had been
+    carrying a neighbouring function's body.
+  - `fuzz_test.rs`: dropped a dead second op-model (`arb_op`, `execute_op`,
+    referencing `Op` variants that no longer exist) that the merge had left
+    interleaved with the live one, and restored the `execute` driver and
+    `amount_strategy` the live tests call.
+- **`Error::InvalidRateLimitConfig` (204)** was referenced by
+  `ReceiptAnchor::set_anchor_rate_limit` and its tests but never existed on the
+  shared `Error` enum. Added.
+- **`test_extend_refund_ttl_fails_if_missing`** called `get_refund` (which
+  returns `Option` and cannot yield `RefundNotFound`) instead of
+  `extend_refund_ttl`, so it never tested what it was named for.
+- **`test_nonce_does_not_increment_on_failed_operation`** called the removed
+  `set_refund_window`, and with a window that contradicted its own
+  `WindowExpired` assertion. Removed the stale call.
+
+### Changed
+
+- **`receipt_anchor` WASM budget raised 48000 -> 59000 bytes.** The 48000 figure
+  was set before sharding, the token-bucket rate limiter and the zk verifier
+  landed, and was never re-validated because the contract had not compiled
+  since. 59000 reflects the contract as actually built (58847 bytes).
+
+### Removed
+
+- **`RefundVault::test_uninitialized_calls_fail`** and
+  **`test_set_yield_strategy_uninitialized_fails`** asserted `NotInitialized`
+  on a vault registered without arguments. Issue #129 moved initialization into
+  `__constructor`, so that state is now unreachable — registration itself
+  fails. Replaced by `test_vault_cannot_be_deployed_without_config`, which
+  asserts the stronger constructor-level property; the auth path stays covered
+  by `test_set_yield_strategy_requires_auth`.
+
 - **CI and Toolchain Configuration**: updated `.github/workflows/ci.yml` to use stable `dtolnay/rust-toolchain` action references and synchronized `Cargo.lock` with dependency changes.
 
 ### Added

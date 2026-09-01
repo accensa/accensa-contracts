@@ -86,6 +86,11 @@ pub enum Error {
     AnchorRateLimited = 202,
     /// The supplied zero-knowledge validity proof is invalid or malformed.
     InvalidProof = 203,
+    /// A token-bucket rate-limit config was rejected: exactly one of
+    /// `burst_capacity` / `refill_interval_secs` was zero, or either exceeded
+    /// its cap (`MAX_RATE_BURST` / `MAX_RATE_REFILL_INTERVAL`). `{0, 0}`
+    /// disables rate limiting and is accepted.
+    InvalidRateLimitConfig = 204,
     /// No pending policy change exists to execute.
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
@@ -161,9 +166,6 @@ pub enum Error {
     /// policy's schema (`TimePolicyParams` / `VdfPolicyParams`). Indicates a
     /// vault configured a policy entry against the wrong contract.
     InvalidPolicyParams = 318,
-    /// An anchor rate-limit configuration was rejected (non-positive burst
-    /// capacity or refill interval). Raised by `set_anchor_rate_limit`.
-    InvalidRateLimitConfig = 319,
     /// A refund/claim was submitted before the minimum cooldown elapsed.
     ClaimCooldownNotElapsed = 320,
 }
