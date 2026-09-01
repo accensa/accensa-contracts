@@ -164,6 +164,8 @@ pub enum Error {
     /// An anchor rate-limit configuration was rejected (non-positive burst
     /// capacity or refill interval). Raised by `set_anchor_rate_limit`.
     InvalidRateLimitConfig = 319,
+    /// A refund/claim was submitted before the minimum cooldown elapsed.
+    ClaimCooldownNotElapsed = 320,
 }
 
 /// Parameters for the stateless **time** policy contract (issue #129).

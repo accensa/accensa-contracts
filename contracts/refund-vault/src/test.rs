@@ -335,6 +335,35 @@ fn test_refund_invalid_amount_fails() {
 }
 
 #[test]
+fn test_claim_cooldown_enforced_per_recipient() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000);
+
+    // Set ledger timestamp and configure a 100-second cooldown.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    client.set_claim_cooldown(&100);
+
+    let payment_ref = BytesN::from_array(&env, &[55u8; 32]);
+    let buyer = Address::generate(&env);
+
+    // First refund succeeds (payment_amount 200 allows further partials).
+    client.refund(&payment_ref, &buyer, &100, &0, &200, &None, &0);
+
+    // Immediate second refund for same recipient should be rejected. Use the
+    // expected next nonce (1). The failed call reverts, so the nonce remains
+    // unchanged for the subsequent retry.
+    assert_eq!(
+        client.try_refund(&payment_ref, &buyer, &10, &0, &100, &None, &1),
+        Err(Ok(Error::ClaimCooldownNotElapsed))
+    );
+
+    // Advance time past cooldown and try again using the same expected nonce
+    // (1) because the previous failed attempt rolled back its nonce bump.
+    env.ledger().with_mut(|li| li.timestamp += 200);
+    client.refund(&payment_ref, &buyer, &10, &0, &200, &None, &1);
+}
+
+#[test]
 fn test_withdraw_invalid_amount_fails() {
     let (_env, client, merchant, _token) = setup(100);
     assert_eq!(

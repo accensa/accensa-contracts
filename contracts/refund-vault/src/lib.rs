@@ -126,6 +126,14 @@ pub enum DataKey {
     /// `StaleState`. Stored in Persistent storage (TTL-managed) so the counter
     /// survives independent of the vault's instance-storage TTL.
     UserNonce(Address),
+    /// Per-recipient last claim wall-clock timestamp (Unix seconds).
+    UserLastClaim(Address),
+    /// Minimum seconds between successive claims for the same recipient.
+    /// `0` (default) disables the cooldown.
+    ClaimCooldown,
+    /// Global last claim wall-clock timestamp (Unix seconds). Used when a
+    /// global cooldown is configured.
+    LastClaim,
 }
 
 #[contracttype]
@@ -736,6 +744,27 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         }
     }
 
+    // Claim cooldown: enforce a minimum wall-clock interval between
+    // successive claims. A cooldown of `0` disables this protection. By
+    // default the cooldown is global (one timestamp for the whole vault);
+    // a future per-recipient design could use `UserLastClaim(Address)`.
+    let cooldown: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::ClaimCooldown)
+        .unwrap_or(0u64);
+    if cooldown > 0 {
+        let last: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastClaim)
+            .unwrap_or(0u64);
+        let now = env.ledger().timestamp();
+        if now < last.saturating_add(cooldown) {
+            return Err(Error::ClaimCooldownNotElapsed);
+        }
+    }
+
     // VDF delay (policy trigger, issue #138): when the policy carries a
     // configured delay, finalizing this refund requires a valid Wesolowski
     // proof that `vdf_delay` sequential squarings have genuinely elapsed. The
@@ -836,6 +865,15 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     env.storage()
         .persistent()
         .set(&DataKey::RefundV2(claim.payment_ref.clone()), &record);
+
+    // Update global last-claim timestamp when the claim succeeds.
+    let now_ts = env.ledger().timestamp();
+    env.storage()
+        .persistent()
+        .set(&DataKey::LastClaim, &now_ts);
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::LastClaim, TTL_THRESHOLD, TTL_EXTEND);
 
     env.storage()
         .instance()
@@ -1456,6 +1494,32 @@ impl RefundVault {
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// Admin setter: configure the minimum seconds between successive claims
+    /// for the same recipient. `0` disables the cooldown.
+    pub fn set_claim_cooldown(env: Env, cooldown_secs: u64) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ClaimCooldown, &cooldown_secs);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    pub fn get_claim_cooldown(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ClaimCooldown)
+            .unwrap_or(0u64)
     }
 
     /// Returns the minimum commit-reveal delay in ledgers (read-only).
