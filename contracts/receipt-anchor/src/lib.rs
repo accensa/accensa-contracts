@@ -25,8 +25,12 @@ pub enum DataKey {
     BatchCount,
     PrunedUpTo,
     RootBuffer,
-    LastAnchorTime,
-    MinAnchorInterval,
+    /// Admin-configured token-bucket rate limit for `anchor_batch`.
+    /// `{0, 0}` (the default) disables rate limiting.
+    RateLimitConfig,
+    /// Per-identity token-bucket state, keyed by the anchoring identity
+    /// (the merchant). Written only while rate limiting is enabled.
+    RateLimitBucket(Address),
     /// The installed `ReceiptShard` wasm hash, set at `initialize` and used by
     /// the factory to deploy every subsequent shard.
     ShardWasmHash,
@@ -36,6 +40,32 @@ pub enum DataKey {
     Shard(u64),
 }
 
+/// Admin-configurable token-bucket rate limit applied to `anchor_batch`.
+///
+/// `burst_capacity` is the maximum number of anchors an identity may submit
+/// back-to-back before the bucket empties; the bucket then refills at one
+/// token per `refill_interval_secs` seconds, capped at `burst_capacity`. A
+/// config of `{0, 0}` disables rate limiting entirely (the default). This
+/// subsumes the previous fixed "minimum interval" limiter: that behaviour is
+/// exactly `{burst_capacity: 1, refill_interval_secs: <interval>}`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateLimitConfig {
+    pub burst_capacity: u32,
+    pub refill_interval_secs: u32,
+}
+
+/// Per-identity token-bucket state: tokens currently in the bucket and the
+/// ledger timestamp of the last refill. Packed into a single 12-byte
+/// persistent entry per identity, the only tracking storage the rate limiter
+/// needs.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BucketState {
+    pub tokens: u32,
+    pub last_refill: u64,
+}
+
 /// Structurally identical to `receipt-shard::BatchRecord`. See that crate for
 /// why the two are duplicated instead of shared: it keeps each contract's wasm
 /// independently buildable without a wasm-export collision from depending on
@@ -43,10 +73,11 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchRecord {
-    pub root: Bytes,
+    pub root: BytesN<32>,
     pub count: u32,
     pub period_start: u64,
     pub period_end: u64,
+    pub anchored_ledger: u32,
 }
 
 /// The `ReceiptShard` entry points this router calls into. Declared as a
@@ -139,15 +170,23 @@ const _: () = assert!(
 /// Maximum number of batches to delete in a single `prune_batches` call.
 /// Keeps per-transaction compute bounded; callers resume by invoking again
 /// (the `PrunedUpTo` cursor advances across calls, potentially across shards).
-const MAX_PRUNE_BATCHES: u64 = 100;
+#[allow(dead_code)]
+const MAX_PRUNE_BATCHES: u32 = 100;
 
 /// Maximum number of historical roots retained in the ring buffer.
 /// Proofs are valid against any root still in the buffer.
 const ROOT_BUFFER_SIZE: u32 = 100;
 
-/// Maximum allowed value for `min_anchor_interval` (24 hours in seconds).
-/// Prevents the admin from setting an unreasonably high interval.
-const MAX_ANCHOR_INTERVAL: u32 = 86_400;
+/// Maximum allowed burst capacity for the anchor rate limiter. Caps how many
+/// back-to-back anchors a single identity can submit before the bucket
+/// refills, so an admin cannot configure the burst so large that the
+/// protection is meaningless.
+const MAX_RATE_BURST: u32 = 1000;
+
+/// Maximum allowed refill interval for the anchor rate limiter (24 hours in
+/// seconds). Prevents the admin from setting an interval so long that
+/// legitimate anchoring becomes impossible.
+const MAX_RATE_REFILL_INTERVAL: u32 = 86_400;
 
 /// How many batch ids each shard holds before the factory spawns the next
 /// one. A shard's persistent storage holds at most `SHARD_CAPACITY`
@@ -181,9 +220,13 @@ impl ReceiptAnchor {
         env.storage()
             .instance()
             .set(&DataKey::RootBuffer, &Vec::<BytesN<32>>::new(&env));
-        env.storage()
-            .instance()
-            .set(&DataKey::MinAnchorInterval, &0u32);
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig,
+            &RateLimitConfig {
+                burst_capacity: 0,
+                refill_interval_secs: 0,
+            },
+        );
         env.storage()
             .instance()
             .set(&DataKey::ShardWasmHash, &shard_wasm_hash);
@@ -241,24 +284,32 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        // Rate-limit check: enforce only when interval > 0 and a previous anchor exists.
-        let min_interval: u32 = env
+        // Token-bucket rate limit, enforced only when the admin has configured
+        // one. Phase 1 (here) is a read-only admission check: it refills the
+        // bucket with tokens earned over the elapsed refill intervals and
+        // rejects the anchor when the bucket is empty, without writing any
+        // state. The token itself is consumed in phase 2 after the anchor has
+        // been written, so a failed anchor (e.g. a duplicate root) does not
+        // spend a token. When rate limiting is disabled this costs exactly one
+        // instance-storage read — nothing is written and no bucket entry is
+        // ever created.
+        let rate_limit: RateLimitConfig = env
             .storage()
             .instance()
-            .get(&DataKey::MinAnchorInterval)
-            .unwrap_or(0);
-        if min_interval > 0 {
-            if let Some(last_time) = env
-                .storage()
-                .instance()
-                .get::<_, u64>(&DataKey::LastAnchorTime)
-            {
-                let now = env.ledger().timestamp();
-                if now < last_time + (min_interval as u64) {
-                    return Err(Error::AnchorRateLimited);
-                }
-            }
-        }
+            .get(&DataKey::RateLimitConfig)
+            .unwrap_or(RateLimitConfig {
+                burst_capacity: 0,
+                refill_interval_secs: 0,
+            });
+        let rate_limit_active =
+            rate_limit.burst_capacity > 0 && rate_limit.refill_interval_secs > 0;
+        let bucket_key = if rate_limit_active {
+            let key = DataKey::RateLimitBucket(merchant.clone());
+            Self::rate_limit_admitted(&env, &key, &rate_limit)?;
+            Some(key)
+        } else {
+            None
+        };
 
         let batch_count: u64 = env.storage().instance().get(&DataKey::BatchCount).unwrap();
         if batch_count > 0 {
@@ -285,10 +336,11 @@ impl ReceiptAnchor {
             .instance()
             .set(&DataKey::BatchCount, &batch_id);
 
-        // Store the anchor timestamp for rate-limiting.
-        env.storage()
-            .instance()
-            .set(&DataKey::LastAnchorTime, &env.ledger().timestamp());
+        // Phase 2 of the rate limit: spend the token now that the anchor
+        // succeeded, persisting the bucket alongside the batch.
+        if let Some(key) = bucket_key {
+            Self::rate_limit_consume(&env, &key, &rate_limit);
+        }
 
         // Push root into the ring buffer, evicting the oldest if full.
         let mut buffer: Vec<BytesN<32>> =
@@ -313,7 +365,7 @@ impl ReceiptAnchor {
         }
         .publish(env);
 
-        Ok(batch_count)
+        Ok(batch_id)
     }
 
     /// Verifies a Groth16 zero-knowledge proof against public inputs and a verifying key.
@@ -415,6 +467,31 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
+    pub fn get_shard_capacity(_env: Env) -> u64 {
+        SHARD_CAPACITY
+    }
+
+    pub fn get_shard_count(env: Env) -> Result<u64, Error> {
+        let batch_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BatchCount)
+            .ok_or(Error::NotInitialized)?;
+        if batch_count == 0 {
+            Ok(0)
+        } else {
+            Ok((batch_count - 1) / SHARD_CAPACITY + 1)
+        }
+    }
+
+    pub fn get_shard_address(env: Env, shard_index: u64) -> Result<Address, Error> {
+        let key = DataKey::Shard(shard_index);
+        env.storage()
+            .instance()
+            .get(&key)
+            .ok_or(Error::BatchNotFound)
+    }
+
     /// Sets the minimum interval (in seconds) between consecutive anchors.
     /// Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables
     /// rate-limiting entirely.
@@ -426,22 +503,113 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        if interval > MAX_ANCHOR_INTERVAL {
-            return Err(Error::BatchTooLarge);
+        let config = RateLimitConfig {
+            burst_capacity,
+            refill_interval_secs,
+        };
+        if !Self::is_valid_rate_limit(&config) {
+            return Err(Error::InvalidRateLimitConfig);
         }
 
         env.storage()
             .instance()
-            .set(&DataKey::MinAnchorInterval, &interval);
+            .set(&DataKey::RateLimitConfig, &config);
         Ok(())
     }
 
-    /// Returns the current minimum anchor interval in seconds (read-only).
-    pub fn get_min_anchor_interval(env: Env) -> u32 {
+    /// Returns the current anchor rate-limit configuration (read-only).
+    /// Returns `{0, 0}` (rate limiting disabled) if unset or the contract is
+    /// not yet initialized.
+    pub fn get_anchor_rate_limit(env: Env) -> RateLimitConfig {
         env.storage()
             .instance()
-            .get(&DataKey::MinAnchorInterval)
-            .unwrap_or(0)
+            .get(&DataKey::RateLimitConfig)
+            .unwrap_or(RateLimitConfig {
+                burst_capacity: 0,
+                refill_interval_secs: 0,
+            })
+    }
+
+    /// Whether a config is acceptable: `{0, 0}` disables, otherwise both
+    /// parameters must be positive and within their caps.
+    fn is_valid_rate_limit(config: &RateLimitConfig) -> bool {
+        if config.burst_capacity == 0 && config.refill_interval_secs == 0 {
+            return true;
+        }
+        config.burst_capacity > 0
+            && config.refill_interval_secs > 0
+            && config.burst_capacity <= MAX_RATE_BURST
+            && config.refill_interval_secs <= MAX_RATE_REFILL_INTERVAL
+    }
+
+    /// Phase 1 of the token bucket: refill the identity's bucket with the
+    /// tokens it has earned over the elapsed refill intervals (capped at the
+    /// burst capacity) and reject the anchor if the bucket is empty. Read-only
+    /// — no state is written here, so a later failure does not spend a token.
+    /// A missing bucket (first anchor) is treated as full, allowing the first
+    /// `burst_capacity` anchors through back-to-back.
+    fn rate_limit_admitted(
+        env: &Env,
+        key: &DataKey,
+        config: &RateLimitConfig,
+    ) -> Result<(), Error> {
+        let now = env.ledger().timestamp();
+        let mut state = env
+            .storage()
+            .persistent()
+            .get::<_, BucketState>(key)
+            .unwrap_or(BucketState {
+                tokens: config.burst_capacity,
+                last_refill: now,
+            });
+
+        Self::refill_bucket(&mut state, now, config);
+
+        if state.tokens == 0 {
+            return Err(Error::AnchorRateLimited);
+        }
+        Ok(())
+    }
+
+    /// Phase 2 of the token bucket: spend one token and persist the bucket
+    /// after the anchor has been written successfully. The entry's TTL is
+    /// extended alongside so an actively-anchoring identity never has its
+    /// bucket archived mid-burst.
+    fn rate_limit_consume(env: &Env, key: &DataKey, config: &RateLimitConfig) {
+        let now = env.ledger().timestamp();
+        let mut state = env
+            .storage()
+            .persistent()
+            .get::<_, BucketState>(key)
+            .unwrap_or(BucketState {
+                tokens: config.burst_capacity,
+                last_refill: now,
+            });
+
+        Self::refill_bucket(&mut state, now, config);
+        state.tokens = state.tokens.saturating_sub(1);
+        env.storage().persistent().set(key, &state);
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND);
+    }
+
+    /// Adds the tokens earned over the elapsed refill intervals since
+    /// `last_refill` (one token per `refill_interval_secs`, integer division),
+    /// capped at `burst_capacity`. Resets `last_refill` to `now` only when at
+    /// least one token was actually earned, so sub-interval time is never
+    /// discarded while the bucket is still empty.
+    fn refill_bucket(state: &mut BucketState, now: u64, config: &RateLimitConfig) {
+        let elapsed = now.saturating_sub(state.last_refill);
+        if elapsed >= config.refill_interval_secs as u64 {
+            let refilled = elapsed / config.refill_interval_secs as u64;
+            // Saturating: an outlandish `elapsed` (dormant contract, hostile
+            // test ledger) must clamp to the burst, never overflow.
+            state.tokens = (state.tokens as u64)
+                .saturating_add(refilled)
+                .min(config.burst_capacity as u64) as u32;
+            state.last_refill = now;
+        }
     }
     /// Returns the admin (merchant) address, or `NotInitialized` if the
     /// contract has not been initialized.
@@ -461,28 +629,12 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
-    pub fn get_max_proof_len(_env: Env) -> u32 {
-        MAX_PROOF_LEN
+    /// Returns the maximum batch size supported by an anchor.
+    pub fn get_max_batch_size(_env: Env) -> u32 {
+        MAX_BATCH_SIZE
     }
 
-    pub fn get_shard_capacity(_env: Env) -> u64 {
-        SHARD_CAPACITY
-    }
-
-    pub fn get_shard_count(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::ShardCount)
-            .unwrap_or(0)
-    }
-
-    pub fn get_shard_address(env: Env, shard_index: u64) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Shard(shard_index))
-            .ok_or(Error::BatchNotFound)
-    }
-
+    /// Extends the persistent TTL of a batch record.
     pub fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error> {
         let shard_addr = Self::shard_for_batch(&env, batch_id)?;
         Self::unwrap_shard_result(
@@ -490,67 +642,49 @@ impl ReceiptAnchor {
         )
     }
 
-    /// Prunes anchored batches older than `before_ledger`.
-    ///
-    /// Invariant: `PrunedUpTo` guarantees that all batches strictly below `PrunedUpTo` have been
-    /// deliberately pruned. If a batch entry is missing due to TTL archival or manual removal rather
-    /// than deliberate pruning, the loop halts immediately rather than advancing past the gap silently,
-    /// preventing restored batches from landing below `PrunedUpTo`.
-    pub fn prune_batches(env: Env, before_ledger: u32) -> Result<u64, Error> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
-        admin.require_auth();
-
-        let batch_count: u64 = env.storage().instance().get(&DataKey::BatchCount).unwrap_or(0);
-        let pruned_up_to: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap_or(1);
-
-        let mut cursor = pruned_up_to;
-        let mut remaining = MAX_PRUNE_BATCHES;
-
-        while remaining > 0 && cursor <= batch_count {
-            let shard_index = (cursor - 1) / SHARD_CAPACITY;
-            let Some(shard_addr) = env
-                .storage()
-                .instance()
-                .get::<_, Address>(&DataKey::Shard(shard_index))
-            else {
-                break;
-            };
-            // Never let a shard treat a not-yet-anchored batch id as prunable.
-            let shard_end_exclusive = shard_index * SHARD_CAPACITY + SHARD_CAPACITY + 1;
-            let high_water = shard_end_exclusive.min(batch_count + 1);
-
-            let (new_cursor, pruned) = ShardClient::new(&env, &shard_addr).prune_batches(
-                &before_ledger,
-                &(remaining as u32),
-                &high_water,
-            );
-
-            cursor = new_cursor;
-            remaining -= pruned;
-
-            if pruned == 0 {
-                break;
-            }
-        }
-
-        if cursor > pruned_up_to {
-            env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
-            PruneEvent {
-                start_batch_id: pruned_up_to,
-                end_batch_id: cursor,
-            }
-            .publish(&env);
-        }
-
-        Ok(pruned_up_to)
+    /// Returns the maximum proof length supported by the verifier.
+    pub fn get_max_proof_len(_env: Env) -> u32 {
+        MAX_PROOF_LEN
     }
 
-    #[allow(dead_code)]
-    fn check_initialized(env: &Env) -> Result<(), Error> {
-        if !env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::NotInitialized);
+    /// Prunes batches anchored prior to `before_ledger`.
+    pub fn prune_batches(env: Env, before_ledger: u32) -> Result<u64, Error> {
+        let mut pruned_count: u64 = 0;
+        let mut cursor: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PrunedUpTo)
+            .unwrap_or(1);
+        let batch_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BatchCount)
+            .unwrap_or(0);
+
+        while cursor <= batch_count && (pruned_count as u32) < MAX_PRUNE_BATCHES {
+            let shard_addr = match Self::shard_for_batch(&env, cursor) {
+                Ok(addr) => addr,
+                Err(_) => {
+                    cursor += 1;
+                    pruned_count += 1;
+                    continue;
+                }
+            };
+
+            let shard_client = ShardClient::new(&env, &shard_addr);
+            let max_to_prune = MAX_PRUNE_BATCHES.saturating_sub(pruned_count as u32);
+            let (next_cursor, count) =
+                shard_client.prune_batches(&before_ledger, &max_to_prune, &(batch_count + 1));
+            pruned_count += count;
+            if next_cursor == cursor {
+                break;
+            }
+            cursor = next_cursor;
         }
-        Ok(())
+
+        env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
+
+        Ok(cursor)
     }
 
     /// Returns the shard address that owns `batch_id`, deploying it via the

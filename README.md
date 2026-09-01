@@ -4,7 +4,7 @@
   <p>
     <img src="https://img.shields.io/github/actions/workflow/status/accensa/accensa-contracts/ci.yml?branch=main" alt="CI Status" />
     <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
-    <img src="https://img.shields.io/badge/soroban--sdk-27.0.4-orange.svg" alt="soroban-sdk 27" />
+    <img src="https://img.shields.io/badge/soroban--sdk-27.0.4-orange.svg" alt="soroban--sdk 27" />
     <img src="https://img.shields.io/badge/testnet-deployed-success.svg" alt="Deployed on testnet" />
   </p>
   <p>
@@ -27,28 +27,33 @@ x402 turns any HTTP endpoint into a paid resource: an AI agent hits your API, ge
 without recourse.
 
 **The agent cannot prove it was charged correctly.** Its receipt comes from the
-seller's own API, attesting to the seller's own behaviour. When an autonomous agent
-makes thousands of sub-cent calls a day across dozens of vendors, "trust the seller's
-dashboard" is not an auditing story. Any disagreement is unresolvable, because the
-only record is held by the party with an interest in it.
+seller's own API, attesting to payment without ledger backing. If the seller goes
+offline, ghosts a refund, or double-bills, the agent has no recourse.
 
-**The merchant cannot offer refunds without becoming a custodian.** Manual refunds
-don't scale to per-request payments, and an unbounded refund key over merchant float
-is exactly the thing a seller does not want sitting in a web backend.
+**The merchant has no liability cap.** Holding user float directly invites hacks
+and disputes.
 
-`accensa-contracts` fixes both on-chain. Receipts are anchored in Merkle batches that
-anyone can verify without asking the merchant. Refunds run through a vault with an
-enforced time window and double-refund protection, so the policy lives in the contract
-rather than in a support inbox.
+## The Solution
 
-Both contracts are **immutable**: they ship with no upgrade entry point and no
-`update_current_contract_wasm`, so once deployed, nobody — not even the merchant —
-can change the refund policy or how receipts verify. This is a deliberate security
-property (see [ADR 003](docs/ADR-003-upgradeability.md)); a logic change means a
-new contract ID and the migration procedure documented there.
+Accensa bridges x402 to Stellar via two Soroban smart contracts:
 
-## Why Stellar
+1. **ReceiptAnchor** — Merchants batch and anchor payment receipt roots on-chain using Merkle trees, giving agents verifiable proof of payment that survives server loss.
+2. **RefundVault** — A policy-bounded vault holding merchant float for automated refunds, restricted by time windows, balance limits, and merchant authorization.
 
+## Enforced Invariants & Test Coverage Mapping
+
+Enforced invariants, each covered by a test:
+
+- **No double refunds** — a `payment_ref` can only be refunded once (`AlreadyRefunded`).
+  *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_double_refund_same_payment_ref_fails`
+- **Time-bounded** — refunds past `refund_window_ledgers` are rejected (`WindowExpired`).
+  *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_outside_window_fails`, `test_refund_at_window_boundary_succeeds`
+- **Float-bounded** — a refund can never exceed vault balance (`InsufficientFloat`).
+  *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_exceeding_float_fails`, `test_withdraw_exceeding_float_fails`
+- **Merchant-only** — every state-changing call requires merchant/admin auth (`Unauthorized`), with the explicit exception of `initialize` (which initializes the contract instance and does not require prior auth, see #145).
+  *Mapped Tests:* `contracts/refund-vault/src/test.rs` -> `test_refund_requires_merchant_auth`, `test_deposit_from_non_merchant_fails`, `test_pause_requires_merchant_auth`, `test_unpause_requires_merchant_auth`, `test_transfer_admin_requires_auth`, `test_cancel_admin_transfer_requires_auth`, `test_accept_admin_requires_pending_auth`; `contracts/receipt-anchor/src/test.rs` -> `test_anchor_batch_requires_merchant_auth`, `test_prune_batches_requires_admin_auth`
+- **Pausable** — operations are halted if the vault is paused (`Paused`).
+  *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_when_paused_fails`, `test_deposit_when_paused_fails`, `test_withdraw_when_paused_fails`
 This design is only economical on Stellar:
 
 - **Sub-cent fees make per-request payments viable at all.** x402 is about
@@ -116,7 +121,7 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 
 | Function | Purpose |
 |---|---|
-| `initialize(merchant, token, refund_window_ledgers)` | Sets admin, settlement token, and refund window. |
+| `__constructor(VaultInit)` / `initialize(VaultInit)` | Constructor-wired initialization: sets admin (merchant), settlement token, policy addresses, fee, refund window, deadline, and VDF delay in one call. There is no post-deployment `initialize` window. |
 | `deposit(from, amount)` | Merchant tops up float. |
 | `refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount, vdf_proof)` | Refunds part or all of a payment, subject to policy. `amount` is added to the cumulative total for `payment_ref`; `payment_amount` is the original payment amount and the hard ceiling on cumulative refunds. A configured fee (if any) is deducted before the payout. `vdf_proof` is `Option<BytesN<256>>` — the 128-byte output `x^(2^T) mod N` concatenated with the 128-byte Wesolowski witness — required only when the policy carries a VDF delay (see below). |
 | `claim_batch(claims)` | Refunds multiple claims in one transaction (`Vec<RefundClaim>`, one struct per `refund` call). Atomic: one failing claim reverts the whole batch. One merchant signature, one reentrancy lock, and a `RefundEvent` per claim. Per-element float checks mean it can never overdraw the vault. |
@@ -134,6 +139,9 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 | `get_fee_bps()` | Returns the configured fee rate in basis points (read-only). |
 | `get_fee_recipient()` | Returns the configured fee recipient, if any (read-only; falls back to the merchant at claim time). |
 | `get_refund(payment_ref) -> Option<RefundRecord>` | Looks up a refund. |
+| `set_time_policy_contract(address)` | Wires (or clears) the stateless time-policy contract the vault delegates its window/deadline gate to. Merchant auth. |
+| `set_vdf_policy_contract(address)` | Wires (or clears) the stateless VDF-policy contract the vault delegates its proof gate to. Merchant auth. |
+| `get_time_policy_contract() / get_vdf_policy_contract() -> Option<Address>` | Returns the delegated policy contract addresses, if any. A `None` on an active gate means claims fail closed with `PolicyContractsNotConfigured`. |
 | `add_oracle(oracle)` | Whitelists an oracle contract implementing the standard `Oracle` interface (`get_price` + `get_last_update_ledger`); merchant auth required. |
 | `remove_oracle(oracle)` | Removes an oracle from the whitelist; merchant auth required. |
 | `get_oracles() -> Vec<Address>` | Returns the oracle whitelist, in insertion order (read-only). |
@@ -229,6 +237,7 @@ Enforced invariants, each covered by a test:
   (`Unauthorized`); the admin may be a contract account (see
   [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)).
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
+- **Refund ceiling** — a refund for an `upto` payment cannot exceed the amount actually settled. Authorization caps are not refundable balances. Unsettled or expired authorizations cannot be refunded.
 
 **Dynamic (oracle-gated) policies** — beyond the static refund window, the
 merchant can install an `OraclePolicy` so refunds are only paid out while an
@@ -244,6 +253,51 @@ rejected by the condition returns `OraclePolicyDenied`. The gate applies to
 both `refund` and every item of `process_batch`. See
 [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#6-the-oracle-aggregator-optional)
 for the trust model.
+
+### `RefundVaultFactory`
+
+Deploys constructor-wired `RefundVault` instances for many merchants off a
+single factory. The factory owns the inputs a merchant must not pick —
+the vault `wasm_hash` and the addresses of the stateless policy contracts —
+and binds each deployment to the merchant via `require_auth`, so a merchant
+cannot grief another's deterministic salt family.
+
+| Function | Purpose |
+|---|---|
+| `deploy_vault(VaultInit)` -> Address | Deploys a vault configured by the init struct. Requires the merchant's auth. Returns the vault address deterministically (salt = `sha256(merchant ‖ counter)`). |
+| `__constructor(admin, vault_wasm_hash, time_policy, vdf_policy)` | Sets the factory admin, the vault wasm hash the factory may deploy, and the default policy addresses. |
+| `set_vault_wasm(hash)` | Swaps the vault `wasm_hash` used for future deployments (admin only). |
+| `set_time_policy_contract(address)` / `set_vdf_policy_contract(address)` | Rotates the default policy addresses future vaults fall back to (admin only). |
+| `get_vaults() / get_next_salt()` | Operator inspection: deployed vaults and the per-merchant salt counter. |
+
+Policy resolution: a policy set on the merchant's `VaultInit` wins; `None`
+falls back to the factory's global policy address. A vault deployed with a
+`None` policy on an active gate is nevertheless created and refuses that gate
+at claim time with `PolicyContractsNotConfigured` (317) — the factory
+operator's job is to never let that happen. See the
+[Mainnet Deployment Guide](docs/MAINNET_DEPLOYMENT.md) for the factory
+deployment and configuration steps.
+
+### `RefundPolicy` (time and VDF)
+
+Stateless policy contracts that evaluate a single claim and return `Ok(())` or
+an error — kept outside the vault so per-vault storage and upgrade surface stay
+small, and so operators can adjust claim gating for every vault at once by
+repointing the factory default.
+
+- **`TimePolicy`** (`contracts/refund-policy-time`): rejects a claim outside
+  the configured refund window or past the configured wall-clock deadline.
+- **`VdfPolicy`** (`contracts/refund-policy-vdf`): requires a valid Wesolowski
+  VDF proof bound to the payment (`challenge = sha256(payment_ref)`), enforcing
+  a *computational* delay a validator cannot shorten.
+
+Both implement the same minimal interface an arbitrary custom policy can
+implement: `evaluate(params: Bytes, ctx: PolicyContext) -> Result<(), Error>`.
+
+> **Storage note:** neither the vault nor the factory ever persists an
+> `Option::None` (a `Void` value). A cleared key is *absent* from the ledger; a
+> `Void` is not legal contract-storage data and broke reads in the wasm
+> constructor path in earlier builds.
 
 ## Error Codes
 
@@ -307,8 +361,12 @@ Note that `10`/`11` are deliberately unassigned (`MetadataTooLong` and
 (`AlreadyRefunded`) is reserved after the `RefundV2` migration — surviving codes
 keep their published values.
 
-## Storage Archival
+## Documentation
 
+- [Architecture Overview](docs/ARCHITECTURE.md)
+- [Security Model](docs/SECURITY_MODEL.md)
+- [Merkle Tree Structure](docs/ADR-001-merkle-structure.md)
+- [Deployments](DEPLOYMENTS.md)
 Soroban uses state archival to manage ledger bloat. The contracts are configured with a Time-To-Live (TTL) strategy that ensures active records remain in persistent storage for approximately 30 days (~518,400 ledgers) before they become eligible for archival.
 
 If a `BatchRecord` or `RefundRecord` is archived, it must be restored by submitting a restore transaction before it can be read again. Anyone can proactively prevent archival and reset the 30-day window by calling the public TTL extension functions:
@@ -464,4 +522,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Security policy in [SECURITY.md](SECURIT
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE) for details.

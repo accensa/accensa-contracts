@@ -5,8 +5,26 @@ members = [
     "contracts/multisig-account",
     "contracts/receipt-anchor",
     "contracts/receipt-shard",
+    "contracts/refund-policy-time",
+    "contracts/refund-policy-vdf",
     "contracts/refund-vault",
+    "contracts/state-channel",
+    "contracts/refund-vault-factory",
     "contracts/testutils",
+    "contracts/upto-authorization",
+]
+# `testutils` is a test-support crate (publish = false) whose only dependency
+# is soroban-sdk with the `testutils` feature enabled — a feature soroban-sdk
+# refuses to compile on wasm targets. Excluding it from the default build keeps
+# `cargo build --target wasm32v1-none --release` (the CI wasm gate) building
+# only the deployable contracts; it is still compiled by `cargo test
+# --workspace` and `cargo clippy --workspace`.
+default-members = [
+    "contracts/common",
+    "contracts/multisig-account",
+    "contracts/receipt-anchor",
+    "contracts/receipt-shard",
+    "contracts/refund-vault",
 ]
 resolver = "2"
 

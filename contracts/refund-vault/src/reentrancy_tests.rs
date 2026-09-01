@@ -53,6 +53,7 @@ use soroban_sdk::{
     BytesN, Env,
 };
 
+use crate::test_helpers::vault_init;
 use crate::{DataKey, Error, RefundVault, RefundVaultClient};
 
 const FLOAT: i128 = 1_000_000;
@@ -315,14 +316,13 @@ fn setup_with_malicious_token() -> MaliciousTokenVault {
     env.mock_all_auths();
 
     let merchant = Address::generate(&env);
-    let vault_id = env.register(RefundVault, ());
+    let token_id = env.register(MaliciousToken, ());
+
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token_id, 100),));
     let client = RefundVaultClient::new(&env, &vault_id);
 
-    let token_id = env.register(MaliciousToken, ());
     MaliciousTokenClient::new(&env, &token_id).initialize(&merchant, &vault_id);
     MaliciousTokenClient::new(&env, &token_id).mint(&merchant, &FLOAT);
-
-    client.initialize(&merchant, &token_id, &100);
     client.deposit(&merchant, &FLOAT);
 
     MaliciousTokenVault {
@@ -711,9 +711,8 @@ fn setup_with_malicious_strategy(
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &YIELD_FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 17_280),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.initialize(&merchant, &token, &17_280);
 
     let strategy_id = env.register(MaliciousYieldStrategy, ());
     MaliciousYieldStrategyClient::new(&env, &strategy_id).initialize(&token, &vault_id);
@@ -816,9 +815,8 @@ fn setup_plain_vault() -> (Env, RefundVaultClient<'static>, Address, Address) {
     let token = sac.address();
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let client = RefundVaultClient::new(&env, &vault_id);
-    client.initialize(&merchant, &token, &100);
     client.deposit(&merchant, &FLOAT);
 
     (env, client, merchant, token)

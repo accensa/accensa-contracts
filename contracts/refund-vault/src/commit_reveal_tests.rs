@@ -21,6 +21,7 @@
 //!    surface a commitment.
 
 use super::*;
+use crate::test_helpers::vault_init;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Bytes, BytesN, Env, Symbol,
@@ -40,9 +41,8 @@ fn setup() -> (Env, RefundVaultClient<'static>, Address) {
     env.mock_all_auths();
     let merchant = Address::generate(&env);
     let token = Address::generate(&env);
-    let id = env.register(RefundVault, ());
+    let id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let client = RefundVaultClient::new(&env, &id);
-    client.initialize(&merchant, &token, &100);
     (env, client, merchant)
 }
 
