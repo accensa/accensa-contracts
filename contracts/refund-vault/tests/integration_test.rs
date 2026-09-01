@@ -14,6 +14,9 @@ use soroban_sdk::{
 const FLOAT: i128 = 1_000_000;
 const WINDOW: u32 = 100;
 
+/// Logical shard used by these receipt integration tests (single-stream).
+const DEFAULT_SHARD: u64 = 0;
+
 /// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
 /// wasm32v1-none --release` before these tests run (see
 /// `.github/workflows/ci.yml` and the README's "Build and test" section).
@@ -109,18 +112,21 @@ fn readme_claim_refunds_outlive_pruned_batches() {
     // Anchor a single-leaf batch.
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let leaf = payment_ref.clone();
-    anchor.anchor_batch(&leaf.clone(), &1, &0, &100);
+    anchor.anchor_batch(&DEFAULT_SHARD, &leaf.clone(), &1, &0, &100);
 
     // Fast-forward and prune the batch (anchored at ledger 10, so prune < 150).
     env.ledger().with_mut(|li| li.sequence_number = 200);
-    anchor.prune_batches(&150);
-    assert!(anchor.try_get_batch(&1).is_err(), "batch should be pruned");
+    anchor.prune_batches(&DEFAULT_SHARD, &150);
+    assert!(
+        anchor.try_get_batch(&DEFAULT_SHARD, &1).is_err(),
+        "batch should be pruned"
+    );
 
     // The vault is unaffected: refunding the same payment_ref still works,
     // provided it falls within the refund window (paid_at_ledger >= 100 here).
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &150, &100, &None);
+    vault.refund(&payment_ref, &buyer, &100, &150, &100, &None, &0);
 
     let record = vault.get_refund(&payment_ref).unwrap();
     assert_eq!(record.amount_refunded, 100);
@@ -145,17 +151,17 @@ fn readme_claim_payment_ref_is_receipt_leaf() {
     let sibling = BytesN::from_array(&env, &[10u8; 32]);
     let root = hash_pair(&env, &leaf, &sibling);
 
-    anchor.anchor_batch(&root, &2, &0, &100);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
     let proof = vec![&env, sibling.clone()];
-    assert!(anchor.verify_receipt(&1, &leaf, &proof));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &leaf, &proof));
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
 
     // Both contracts agree: verify_receipt accepts the leaf and get_refund
     // returns a record keyed by the same bytes.
-    assert!(anchor.verify_receipt(&1, &leaf, &proof));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &leaf, &proof));
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }
 
@@ -178,15 +184,15 @@ fn test_happy_path_and_payment_ref_correspondence() {
     let sibling = BytesN::from_array(&env, &[8u8; 32]);
     let root = hash_pair(&env, &leaf, &sibling);
 
-    anchor.anchor_batch(&root, &2, &0, &100);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
     let proof = vec![&env, sibling.clone()];
-    assert!(anchor.verify_receipt(&1, &leaf, &proof));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &leaf, &proof));
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
 
-    assert!(anchor.verify_receipt(&1, &leaf, &proof));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &leaf, &proof));
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }
 
@@ -204,15 +210,15 @@ fn test_refund_of_payment_in_pruned_batch() {
     let leaf = payment_ref.clone();
 
     let root = leaf.clone();
-    anchor.anchor_batch(&root, &1, &0, &100);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &100);
 
     env.ledger().with_mut(|li| li.sequence_number = 200);
-    anchor.prune_batches(&150);
-    assert!(anchor.try_get_batch(&1).is_err());
+    anchor.prune_batches(&DEFAULT_SHARD, &150);
+    assert!(anchor.try_get_batch(&DEFAULT_SHARD, &1).is_err());
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &150, &100, &None);
+    vault.refund(&payment_ref, &buyer, &100, &150, &100, &None, &0);
 
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }
@@ -232,17 +238,17 @@ fn test_full_refund_then_exceed_payment() {
     let leaf = payment_ref.clone();
 
     let root = leaf.clone();
-    anchor.anchor_batch(&root, &1, &0, &100);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &100);
 
     vault.deposit(&merchant, &500_000);
     let buyer = Address::generate(&env);
 
     // First refund takes a partial; a second past the ceiling is rejected.
-    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 
     // Over the ceiling -> Error(Contract, #19) ExceedsPayment.
-    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None, &1);
 }
 
 #[test]
@@ -260,14 +266,14 @@ fn test_pause_interaction() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
     assert!(vault
-        .try_refund(&payment_ref, &buyer, &100, &0, &100, &None)
+        .try_refund(&payment_ref, &buyer, &100, &0, &100, &None, &0)
         .is_err());
 
     let root = payment_ref.clone();
-    anchor.anchor_batch(&root, &1, &0, &100);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &100);
 
     let proof = vec![&env];
-    assert!(anchor.verify_receipt(&1, &payment_ref, &proof));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &payment_ref, &proof));
 }
 
 #[test]
@@ -283,15 +289,15 @@ fn test_ttl_archival_across_both() {
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let root = payment_ref.clone();
 
-    anchor.anchor_batch(&root, &1, &0, &100);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &100);
     vault.deposit(&merchant, &500_000);
 
     let buyer = Address::generate(&env);
-    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None);
+    vault.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
 
-    anchor.extend_batch_ttl(&1);
+    anchor.extend_batch_ttl(&DEFAULT_SHARD, &1);
     vault.extend_refund_ttl(&payment_ref);
 
-    assert!(anchor.verify_receipt(&1, &payment_ref, &vec![&env]));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &payment_ref, &vec![&env]));
     assert_eq!(vault.get_refund(&payment_ref).unwrap().amount_refunded, 100);
 }

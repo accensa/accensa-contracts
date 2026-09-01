@@ -4,6 +4,10 @@ use soroban_sdk::{
     vec, Address, Bytes, BytesN, Env,
 };
 
+/// Logical shard used by the legacy single-stream tests. Multi-shard
+/// independence is covered by dedicated cross-shard test functions.
+const DEFAULT_SHARD: u64 = 0;
+
 /// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
 /// wasm32v1-none --release` before these tests run (CI does this in the same
 /// step that installs the wasm32v1-none target; see `.github/workflows/ci.yml`
@@ -67,7 +71,7 @@ fn test_anchor_batch_before_initialize_fails() {
     let (env, client, _merchant) = setup();
     let root = BytesN::from_array(&env, &[1u8; 32]);
     assert_eq!(
-        client.try_anchor_batch(&root, &10, &0, &100),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root, &10, &0, &100),
         Err(Ok(Error::NotInitialized))
     );
 }
@@ -80,8 +84,8 @@ fn test_anchor_batch_assigns_sequential_ids() {
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
 
-    assert_eq!(client.anchor_batch(&root1, &5, &0, &50), 1);
-    assert_eq!(client.anchor_batch(&root2, &7, &51, &99), 2);
+    assert_eq!(client.anchor_batch(&DEFAULT_SHARD, &root1, &5, &0, &50), 1);
+    assert_eq!(client.anchor_batch(&DEFAULT_SHARD, &root2, &7, &51, &99), 2);
 }
 
 #[test]
@@ -90,11 +94,11 @@ fn test_duplicate_root_anchoring_fails() {
     init(&env, &client, &merchant);
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
-    assert_eq!(client.anchor_batch(&root, &5, &0, &50), 1);
+    assert_eq!(client.anchor_batch(&DEFAULT_SHARD, &root, &5, &0, &50), 1);
 
     // Submitting the exact same root again should fail with DuplicateRoot
     assert_eq!(
-        client.try_anchor_batch(&root, &5, &51, &100),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root, &5, &51, &100),
         Err(Ok(Error::DuplicateRoot))
     );
 }
@@ -107,8 +111,11 @@ fn test_distinct_root_anchoring_succeeds() {
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
 
-    assert_eq!(client.anchor_batch(&root1, &5, &0, &50), 1);
-    assert_eq!(client.anchor_batch(&root2, &5, &51, &100), 2);
+    assert_eq!(client.anchor_batch(&DEFAULT_SHARD, &root1, &5, &0, &50), 1);
+    assert_eq!(
+        client.anchor_batch(&DEFAULT_SHARD, &root2, &5, &51, &100),
+        2
+    );
 }
 
 #[test]
@@ -117,9 +124,9 @@ fn test_get_batch_returns_stored_record() {
     init(&env, &client, &merchant);
 
     let root = BytesN::from_array(&env, &[9u8; 32]);
-    let batch_id = client.anchor_batch(&root, &42, &1000, &2000);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &42, &1000, &2000);
 
-    let record = client.get_batch(&batch_id);
+    let record = client.get_batch(&DEFAULT_SHARD, &batch_id);
     assert_eq!(record.root, root);
     assert_eq!(record.count, 42);
     assert_eq!(record.period_start, 1000);
@@ -130,14 +137,20 @@ fn test_get_batch_returns_stored_record() {
 fn test_get_batch_missing_fails() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
-    assert_eq!(client.try_get_batch(&99), Err(Ok(Error::BatchNotFound)));
+    assert_eq!(
+        client.try_get_batch(&DEFAULT_SHARD, &99),
+        Err(Ok(Error::BatchNotFound))
+    );
 }
 
 #[test]
 fn test_get_batch_zero_fails() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
-    assert_eq!(client.try_get_batch(&0), Err(Ok(Error::BatchNotFound)));
+    assert_eq!(
+        client.try_get_batch(&DEFAULT_SHARD, &0),
+        Err(Ok(Error::BatchNotFound))
+    );
 }
 
 #[test]
@@ -155,7 +168,7 @@ fn test_anchor_batch_requires_merchant_auth() {
     // Enforcing mode with no signatures: merchant.require_auth() must abort.
     env.set_auths(&[]);
     let root = BytesN::from_array(&env, &[1u8; 32]);
-    client.anchor_batch(&root, &1, &0, &1);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &1);
 }
 
 #[test]
@@ -165,9 +178,9 @@ fn test_verify_receipt_single_leaf_tree() {
 
     // A one-receipt batch: the root is the leaf itself, proof is empty.
     let leaf = BytesN::from_array(&env, &[7u8; 32]);
-    let batch_id = client.anchor_batch(&leaf, &1, &0, &10);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &leaf, &1, &0, &10);
 
-    assert!(client.verify_receipt(&batch_id, &leaf, &vec![&env]));
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &vec![&env]));
 }
 
 #[test]
@@ -184,13 +197,33 @@ fn test_verify_receipt_four_leaf_tree() {
     let n34 = hash_pair(&env, &l3, &l4);
     let root = hash_pair(&env, &n12, &n34);
 
-    let batch_id = client.anchor_batch(&root, &4, &0, &100);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &4, &0, &100);
 
     // Every leaf must verify with its sibling path.
-    assert!(client.verify_receipt(&batch_id, &l1, &vec![&env, l2.clone(), n34.clone()]));
-    assert!(client.verify_receipt(&batch_id, &l2, &vec![&env, l1.clone(), n34.clone()]));
-    assert!(client.verify_receipt(&batch_id, &l3, &vec![&env, l4.clone(), n12.clone()]));
-    assert!(client.verify_receipt(&batch_id, &l4, &vec![&env, l3.clone(), n12.clone()]));
+    assert!(client.verify_receipt(
+        &DEFAULT_SHARD,
+        &batch_id,
+        &l1,
+        &vec![&env, l2.clone(), n34.clone()]
+    ));
+    assert!(client.verify_receipt(
+        &DEFAULT_SHARD,
+        &batch_id,
+        &l2,
+        &vec![&env, l1.clone(), n34.clone()]
+    ));
+    assert!(client.verify_receipt(
+        &DEFAULT_SHARD,
+        &batch_id,
+        &l3,
+        &vec![&env, l4.clone(), n12.clone()]
+    ));
+    assert!(client.verify_receipt(
+        &DEFAULT_SHARD,
+        &batch_id,
+        &l4,
+        &vec![&env, l3.clone(), n12.clone()]
+    ));
 }
 
 #[test]
@@ -201,13 +234,18 @@ fn test_verify_receipt_rejects_wrong_leaf_and_proof() {
     let l1 = BytesN::from_array(&env, &[1u8; 32]);
     let l2 = BytesN::from_array(&env, &[2u8; 32]);
     let root = hash_pair(&env, &l1, &l2);
-    let batch_id = client.anchor_batch(&root, &2, &0, &100);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
 
     let forged_leaf = BytesN::from_array(&env, &[99u8; 32]);
-    assert!(!client.verify_receipt(&batch_id, &forged_leaf, &vec![&env, l2.clone()]));
+    assert!(!client.verify_receipt(
+        &DEFAULT_SHARD,
+        &batch_id,
+        &forged_leaf,
+        &vec![&env, l2.clone()]
+    ));
 
     let wrong_sibling = BytesN::from_array(&env, &[88u8; 32]);
-    assert!(!client.verify_receipt(&batch_id, &l1, &vec![&env, wrong_sibling]));
+    assert!(!client.verify_receipt(&DEFAULT_SHARD, &batch_id, &l1, &vec![&env, wrong_sibling]));
 }
 
 #[test]
@@ -216,7 +254,7 @@ fn test_verify_receipt_missing_batch_fails() {
     init(&env, &client, &merchant);
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
     assert_eq!(
-        client.try_verify_receipt(&5, &leaf, &vec![&env]),
+        client.try_verify_receipt(&DEFAULT_SHARD, &5, &leaf, &vec![&env]),
         Err(Ok(Error::BatchNotFound))
     );
 }
@@ -226,22 +264,25 @@ fn test_get_batch_count_tracks_anchors() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
 
-    assert_eq!(client.get_batch_count(), 0);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), 0);
 
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
 
-    client.anchor_batch(&root1, &5, &0, &50);
-    assert_eq!(client.get_batch_count(), 1);
+    client.anchor_batch(&DEFAULT_SHARD, &root1, &5, &0, &50);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), 1);
 
-    client.anchor_batch(&root2, &7, &51, &99);
-    assert_eq!(client.get_batch_count(), 2);
+    client.anchor_batch(&DEFAULT_SHARD, &root2, &7, &51, &99);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), 2);
 }
 
 #[test]
 fn test_get_batch_count_before_initialize_fails() {
     let (_env, client, _merchant) = setup();
-    assert_eq!(client.try_get_batch_count(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_get_batch_count(&DEFAULT_SHARD),
+        Err(Ok(Error::NotInitialized))
+    );
 }
 
 #[test]
@@ -257,9 +298,9 @@ fn test_anchor_batch_at_max_size_succeeds() {
     init(&env, &client, &merchant);
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
-    let batch_id = client.anchor_batch(&root, &MAX_BATCH_SIZE, &0, &50);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &MAX_BATCH_SIZE, &0, &50);
     assert_eq!(batch_id, 1);
-    let record = client.get_batch(&batch_id);
+    let record = client.get_batch(&DEFAULT_SHARD, &batch_id);
     assert_eq!(record.count, MAX_BATCH_SIZE);
 }
 
@@ -270,7 +311,7 @@ fn test_anchor_batch_enforces_max_size() {
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
     assert_eq!(
-        client.try_anchor_batch(&root, &(MAX_BATCH_SIZE + 1), &0, &50),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root, &(MAX_BATCH_SIZE + 1), &0, &50),
         Err(Ok(Error::BatchTooLarge))
     );
 }
@@ -280,7 +321,7 @@ fn test_extend_batch_ttl_fails_if_missing() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
     assert_eq!(
-        client.try_extend_batch_ttl(&99),
+        client.try_extend_batch_ttl(&DEFAULT_SHARD, &99),
         Err(Ok(Error::BatchNotFound))
     );
 }
@@ -291,10 +332,10 @@ fn test_extend_batch_ttl_succeeds() {
     init(&env, &client, &merchant);
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
-    let batch_id = client.anchor_batch(&root, &5, &0, &50);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &5, &0, &50);
 
     // This won't fail since the batch exists. (TTL updates aren't observable from the contract API, but it shouldn't revert)
-    client.extend_batch_ttl(&batch_id);
+    client.extend_batch_ttl(&DEFAULT_SHARD, &batch_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -311,14 +352,14 @@ fn test_get_shard_capacity() {
 fn test_first_anchor_creates_one_shard() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
-    assert_eq!(client.get_shard_count(), 0);
+    assert_eq!(client.get_shard_count(&DEFAULT_SHARD), 0);
 
     let root = BytesN::from_array(&env, &[1u8; 32]);
-    client.anchor_batch(&root, &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &10);
 
-    assert_eq!(client.get_shard_count(), 1);
+    assert_eq!(client.get_shard_count(&DEFAULT_SHARD), 1);
     // The shard exists and is addressable.
-    client.get_shard_address(&0);
+    client.get_shard_address(&DEFAULT_SHARD, &0);
 }
 
 #[test]
@@ -326,7 +367,7 @@ fn test_get_shard_address_missing_fails() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
     assert_eq!(
-        client.try_get_shard_address(&0),
+        client.try_get_shard_address(&DEFAULT_SHARD, &0),
         Err(Ok(Error::BatchNotFound))
     );
 }
@@ -340,25 +381,28 @@ fn test_anchor_batch_crosses_shard_boundary() {
         let mut b = [0u8; 32];
         b[..4].copy_from_slice(&(i as u32 + 1).to_be_bytes());
         let root = BytesN::from_array(&env, &b);
-        client.anchor_batch(&root, &1, &0, &1);
+        client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &1);
     }
-    assert_eq!(client.get_batch_count(), SHARD_CAPACITY);
-    assert_eq!(client.get_shard_count(), 1);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), SHARD_CAPACITY);
+    assert_eq!(client.get_shard_count(&DEFAULT_SHARD), 1);
 
     // Batch SHARD_CAPACITY + 1 is the first id in the second shard.
     let mut b = [0u8; 32];
     b[..4].copy_from_slice(&((SHARD_CAPACITY + 1) as u32).to_be_bytes());
     let overflow_root = BytesN::from_array(&env, &b);
-    let overflow_id = client.anchor_batch(&overflow_root, &1, &0, &1);
+    let overflow_id = client.anchor_batch(&DEFAULT_SHARD, &overflow_root, &1, &0, &1);
     assert_eq!(overflow_id, SHARD_CAPACITY + 1);
-    assert_eq!(client.get_shard_count(), 2);
+    assert_eq!(client.get_shard_count(&DEFAULT_SHARD), 2);
 
     // Both the last batch of shard 0 and the first batch of shard 1 read back correctly.
-    assert_eq!(client.get_batch(&SHARD_CAPACITY).period_end, 1);
-    assert_eq!(client.get_batch(&overflow_id).period_end, 1);
+    assert_eq!(
+        client.get_batch(&DEFAULT_SHARD, &SHARD_CAPACITY).period_end,
+        1
+    );
+    assert_eq!(client.get_batch(&DEFAULT_SHARD, &overflow_id).period_end, 1);
 
-    let shard0 = client.get_shard_address(&0);
-    let shard1 = client.get_shard_address(&1);
+    let shard0 = client.get_shard_address(&DEFAULT_SHARD, &0);
+    let shard1 = client.get_shard_address(&DEFAULT_SHARD, &1);
     assert_ne!(shard0, shard1);
 }
 
@@ -369,7 +413,7 @@ fn test_shard_created_event_emitted_once_per_shard() {
     init(&env, &client, &merchant);
 
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    client.anchor_batch(&root1, &1, &0, &1);
+    client.anchor_batch(&DEFAULT_SHARD, &root1, &1, &0, &1);
     let after_first = env
         .events()
         .all()
@@ -382,7 +426,7 @@ fn test_shard_created_event_emitted_once_per_shard() {
     // a second anchor into the same shard should show just its own
     // AnchorEvent (1), not a repeated ShardCreatedEvent.
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
-    client.anchor_batch(&root2, &1, &0, &1);
+    client.anchor_batch(&DEFAULT_SHARD, &root2, &1, &0, &1);
     let after_second = env
         .events()
         .all()
@@ -390,6 +434,133 @@ fn test_shard_created_event_emitted_once_per_shard() {
         .events()
         .len();
     assert_eq!(after_second, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Multiple concurrent shards
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_shards_have_independent_batch_ids() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root_a0 = BytesN::from_array(&env, &[0xA0; 32]);
+    let root_a1 = BytesN::from_array(&env, &[0xA1; 32]);
+    let root_b0 = BytesN::from_array(&env, &[0xB0; 32]);
+    let root_b1 = BytesN::from_array(&env, &[0xB1; 32]);
+
+    assert_eq!(client.anchor_batch(&1, &root_a0, &1, &0, &1), 1);
+    assert_eq!(client.anchor_batch(&2, &root_b0, &1, &0, &1), 1);
+    assert_eq!(client.anchor_batch(&1, &root_a1, &1, &0, &1), 2);
+    assert_eq!(client.anchor_batch(&2, &root_b1, &1, &0, &1), 2);
+
+    assert_eq!(client.get_batch_count(&1), 2);
+    assert_eq!(client.get_batch_count(&2), 2);
+    // A third shard that has never anchored anything is 0, not an error.
+    assert_eq!(client.get_batch_count(&3), 0);
+}
+
+#[test]
+fn test_shards_have_independent_storage_addresses() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    // Same capacity index (0) in two different logical shards must map to two
+    // distinct storage-shard contracts, thanks to the composed salt.
+    let root_a = BytesN::from_array(&env, &[1u8; 32]);
+    let root_b = BytesN::from_array(&env, &[2u8; 32]);
+    client.anchor_batch(&1, &root_a, &1, &0, &1);
+    client.anchor_batch(&2, &root_b, &1, &0, &1);
+
+    let a0 = client.get_shard_address(&1, &0);
+    let b0 = client.get_shard_address(&2, &0);
+    assert_ne!(
+        a0, b0,
+        "same index, different shard -> distinct shard contracts"
+    );
+}
+
+#[test]
+fn test_duplicate_root_check_is_per_shard() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root = BytesN::from_array(&env, &[9u8; 32]);
+
+    // Anchoring the same root across different shards is allowed.
+    assert_eq!(client.anchor_batch(&1, &root, &1, &0, &1), 1);
+    assert_eq!(client.anchor_batch(&2, &root, &1, &0, &1), 1);
+
+    // But the same root repeated in the *same* shard is rejected.
+    assert_eq!(
+        client.try_anchor_batch(&1, &root, &1, &0, &1),
+        Err(Ok(Error::DuplicateRoot))
+    );
+}
+
+#[test]
+fn test_root_history_is_per_shard() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root = BytesN::from_array(&env, &[7u8; 32]);
+
+    // A root anchored only in shard A is not verifiable by root in shard B.
+    client.anchor_batch(&1, &root, &1, &0, &1);
+    assert_eq!(
+        client.try_verify_receipt_by_root(&2, &root, &root, &vec![&env]),
+        Err(Ok(Error::RootNotFound))
+    );
+    assert!(client.verify_receipt_by_root(&1, &root, &root, &vec![&env]));
+}
+
+#[test]
+fn test_get_shard_root_and_ids() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    // No batches yet: get_shard_root yields BatchNotFound; no shard ids.
+    assert_eq!(client.try_get_shard_root(&1), Err(Ok(Error::BatchNotFound)));
+    assert_eq!(client.get_shard_ids().len(), 0);
+
+    let root_a = BytesN::from_array(&env, &[1u8; 32]);
+    let root_b = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.anchor_batch(&5, &root_a, &1, &0, &1);
+    client.anchor_batch(&9, &root_b, &1, &0, &1);
+
+    assert_eq!(client.get_shard_root(&5), root_a);
+    assert_eq!(client.get_shard_root(&9), root_b);
+    assert_eq!(client.try_get_shard_root(&3), Err(Ok(Error::BatchNotFound)));
+
+    // First-use order is preserved: 5 then 9.
+    let ids = client.get_shard_ids();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.get(0).unwrap(), 5);
+    assert_eq!(ids.get(1).unwrap(), 9);
+}
+
+#[test]
+fn test_prune_isolated_per_shard() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root = BytesN::from_array(&env, &[3u8; 32]);
+    client.anchor_batch(&1, &root, &1, &0, &1);
+
+    // Advance the ledger so the batch is prunable, then prune shard 1.
+    env.ledger().with_mut(|li| li.sequence_number = 100_000);
+    client.prune_batches(&1, &100_000);
+
+    assert!(client.try_get_batch(&1, &1).is_err(), "batch pruned");
+    // Shard 2 never anchored; prune is a no-op and returns its default cursor.
+    assert_eq!(client.get_pruned_up_to(&2), 1);
+    assert_eq!(
+        client.get_batch_count(&1),
+        1,
+        "count reflects anchored but pruned batches"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -419,11 +590,11 @@ fn test_shared_vectors_match_typescript_sdk() {
         }
 
         let batch_id = client
-            .try_anchor_batch(&root, &(v.proof.len() as u32), &0, &100)
+            .try_anchor_batch(&DEFAULT_SHARD, &root, &(v.proof.len() as u32), &0, &100)
             .ok()
             .and_then(|r| r.ok())
-            .unwrap_or_else(|| client.get_batch_count());
-        let got = client.verify_receipt(&batch_id, &leaf, &proof);
+            .unwrap_or_else(|| client.get_batch_count(&DEFAULT_SHARD));
+        let got = client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof);
 
         assert_eq!(
             got, v.expected,
@@ -490,28 +661,37 @@ fn test_prune_batches_deletes_old_records() {
 
     env.ledger().with_mut(|li| li.sequence_number = 100);
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
-    let b1 = client.anchor_batch(&root1, &10, &0, &10);
+    let b1 = client.anchor_batch(&DEFAULT_SHARD, &root1, &10, &0, &10);
 
     env.ledger().with_mut(|li| li.sequence_number = 200);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
-    let b2 = client.anchor_batch(&root2, &10, &11, &20);
+    let b2 = client.anchor_batch(&DEFAULT_SHARD, &root2, &10, &11, &20);
 
     env.ledger().with_mut(|li| li.sequence_number = 300);
     let root3 = BytesN::from_array(&env, &[3u8; 32]);
-    let b3 = client.anchor_batch(&root3, &10, &21, &30);
+    let b3 = client.anchor_batch(&DEFAULT_SHARD, &root3, &10, &21, &30);
 
     // Prune before ledger 200 (should delete b1 only)
-    client.prune_batches(&200);
+    client.prune_batches(&DEFAULT_SHARD, &200);
 
-    assert_eq!(client.try_get_batch(&b1), Err(Ok(Error::BatchNotFound)));
-    assert!(client.get_batch(&b2).period_end == 20);
-    assert!(client.get_batch(&b3).period_end == 30);
+    assert_eq!(
+        client.try_get_batch(&DEFAULT_SHARD, &b1),
+        Err(Ok(Error::BatchNotFound))
+    );
+    assert!(client.get_batch(&DEFAULT_SHARD, &b2).period_end == 20);
+    assert!(client.get_batch(&DEFAULT_SHARD, &b3).period_end == 30);
 
     // Prune before ledger 400 (should delete b2 and b3)
-    client.prune_batches(&400);
+    client.prune_batches(&DEFAULT_SHARD, &400);
 
-    assert_eq!(client.try_get_batch(&b2), Err(Ok(Error::BatchNotFound)));
-    assert_eq!(client.try_get_batch(&b3), Err(Ok(Error::BatchNotFound)));
+    assert_eq!(
+        client.try_get_batch(&DEFAULT_SHARD, &b2),
+        Err(Ok(Error::BatchNotFound))
+    );
+    assert_eq!(
+        client.try_get_batch(&DEFAULT_SHARD, &b3),
+        Err(Ok(Error::BatchNotFound))
+    );
 }
 
 #[test]
@@ -525,29 +705,34 @@ fn test_prune_batches_crosses_shard_boundary() {
         let mut b = [0u8; 32];
         b[..4].copy_from_slice(&(i as u32 + 1).to_be_bytes());
         let root = BytesN::from_array(&env, &b);
-        client.anchor_batch(&root, &1, &0, &1);
+        client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &1);
     }
-    assert_eq!(client.get_shard_count(), 2);
+    assert_eq!(client.get_shard_count(&DEFAULT_SHARD), 2);
 
     env.ledger().with_mut(|li| li.sequence_number = 1_000_000);
 
     // MAX_PRUNE_BATCHES caps each call at 100 deletions, so draining shard 0
     // (SHARD_CAPACITY = 1000 batches) takes 10 calls.
     for _ in 0..(SHARD_CAPACITY / (MAX_PRUNE_BATCHES as u64)) {
-        client.prune_batches(&1_000_000);
+        client.prune_batches(&DEFAULT_SHARD, &1_000_000);
     }
     assert_eq!(
-        client.try_get_batch(&SHARD_CAPACITY),
+        client.try_get_batch(&DEFAULT_SHARD, &SHARD_CAPACITY),
         Err(Ok(Error::BatchNotFound))
     );
     // Shard 1's batches must survive until the cursor actually reaches them.
-    assert!(client.get_batch(&(SHARD_CAPACITY + 1)).period_end == 1);
+    assert!(
+        client
+            .get_batch(&DEFAULT_SHARD, &(SHARD_CAPACITY + 1))
+            .period_end
+            == 1
+    );
 
     // One more call crosses into shard 1 and prunes the remaining 5 batches.
-    client.prune_batches(&1_000_000);
+    client.prune_batches(&DEFAULT_SHARD, &1_000_000);
     for offset in 1..=5u64 {
         assert_eq!(
-            client.try_get_batch(&(SHARD_CAPACITY + offset)),
+            client.try_get_batch(&DEFAULT_SHARD, &(SHARD_CAPACITY + offset)),
             Err(Ok(Error::BatchNotFound))
         );
     }
@@ -562,14 +747,14 @@ fn test_anchor_and_prune_events_emitted() {
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
     let root3 = BytesN::from_array(&env, &[3u8; 32]);
 
-    client.anchor_batch(&root1, &10, &0, &10);
-    client.anchor_batch(&root2, &10, &11, &20);
-    client.anchor_batch(&root3, &10, &21, &30);
+    client.anchor_batch(&DEFAULT_SHARD, &root1, &10, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root2, &10, &11, &20);
+    client.anchor_batch(&DEFAULT_SHARD, &root3, &10, &21, &30);
 
-    assert_eq!(client.get_batch_count(), 3);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), 3);
 
     env.ledger().set_sequence_number(300);
-    let pruned = client.prune_batches(&400);
+    let pruned = client.prune_batches(&DEFAULT_SHARD, &400);
     assert_eq!(pruned, 4);
 }
 
@@ -582,7 +767,7 @@ fn test_root_buffer_starts_empty() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);
 
-    let buffer = client.get_root_buffer();
+    let buffer = client.get_root_buffer(&DEFAULT_SHARD);
     assert_eq!(buffer.len(), 0);
 }
 
@@ -593,10 +778,10 @@ fn test_root_buffer_grows_with_anchors() {
 
     let r1 = BytesN::from_array(&env, &[1u8; 32]);
     let r2 = BytesN::from_array(&env, &[2u8; 32]);
-    client.anchor_batch(&r1, &1, &0, &10);
-    client.anchor_batch(&r2, &1, &11, &20);
+    client.anchor_batch(&DEFAULT_SHARD, &r1, &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &r2, &1, &11, &20);
 
-    let buffer = client.get_root_buffer();
+    let buffer = client.get_root_buffer(&DEFAULT_SHARD);
     assert_eq!(buffer.len(), 2);
     assert_eq!(buffer.get(0).unwrap(), r1);
     assert_eq!(buffer.get(1).unwrap(), r2);
@@ -608,10 +793,10 @@ fn test_verify_receipt_by_root_succeeds() {
     init(&env, &client, &merchant);
 
     let leaf = BytesN::from_array(&env, &[7u8; 32]);
-    let _batch_id = client.anchor_batch(&leaf, &1, &0, &10);
+    let _batch_id = client.anchor_batch(&DEFAULT_SHARD, &leaf, &1, &0, &10);
 
     // Single-leaf tree: root == leaf, empty proof.
-    assert!(client.verify_receipt_by_root(&leaf, &leaf, &vec![&env]));
+    assert!(client.verify_receipt_by_root(&DEFAULT_SHARD, &leaf, &leaf, &vec![&env]));
 }
 
 #[test]
@@ -623,11 +808,11 @@ fn test_verify_receipt_by_root_with_merkle_proof() {
     let l2 = BytesN::from_array(&env, &[2u8; 32]);
     let n12 = hash_pair(&env, &l1, &l2);
 
-    let _batch_id = client.anchor_batch(&n12, &2, &0, &100);
+    let _batch_id = client.anchor_batch(&DEFAULT_SHARD, &n12, &2, &0, &100);
 
     // Verify l1 against the root n12.
-    assert!(client.verify_receipt_by_root(&n12, &l1, &vec![&env, l2.clone()]));
-    assert!(client.verify_receipt_by_root(&n12, &l2, &vec![&env, l1.clone()]));
+    assert!(client.verify_receipt_by_root(&DEFAULT_SHARD, &n12, &l1, &vec![&env, l2.clone()]));
+    assert!(client.verify_receipt_by_root(&DEFAULT_SHARD, &n12, &l2, &vec![&env, l1.clone()]));
 }
 
 #[test]
@@ -636,11 +821,11 @@ fn test_verify_receipt_by_root_rejects_unknown_root() {
     init(&env, &client, &merchant);
 
     let r1 = BytesN::from_array(&env, &[1u8; 32]);
-    client.anchor_batch(&r1, &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &r1, &1, &0, &10);
 
     let unknown = BytesN::from_array(&env, &[99u8; 32]);
     assert_eq!(
-        client.try_verify_receipt_by_root(&unknown, &r1, &vec![&env]),
+        client.try_verify_receipt_by_root(&DEFAULT_SHARD, &unknown, &r1, &vec![&env]),
         Err(Ok(Error::RootNotFound))
     );
 }
@@ -653,10 +838,15 @@ fn test_verify_receipt_by_root_rejects_wrong_proof() {
     let l1 = BytesN::from_array(&env, &[1u8; 32]);
     let l2 = BytesN::from_array(&env, &[2u8; 32]);
     let root = hash_pair(&env, &l1, &l2);
-    client.anchor_batch(&root, &2, &0, &100);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
 
     let forged = BytesN::from_array(&env, &[99u8; 32]);
-    assert!(!client.verify_receipt_by_root(&root, &forged, &vec![&env, l2.clone()]));
+    assert!(!client.verify_receipt_by_root(
+        &DEFAULT_SHARD,
+        &root,
+        &forged,
+        &vec![&env, l2.clone()]
+    ));
 }
 
 #[test]
@@ -667,11 +857,11 @@ fn test_verify_receipt_by_root_rejects_swapped_proof() {
     let l1 = BytesN::from_array(&env, &[1u8; 32]);
     let l2 = BytesN::from_array(&env, &[2u8; 32]);
     let root = hash_pair(&env, &l1, &l2);
-    client.anchor_batch(&root, &2, &0, &100);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
 
     // Use wrong sibling.
     let wrong = BytesN::from_array(&env, &[88u8; 32]);
-    assert!(!client.verify_receipt_by_root(&root, &l1, &vec![&env, wrong]));
+    assert!(!client.verify_receipt_by_root(&DEFAULT_SHARD, &root, &l1, &vec![&env, wrong]));
 }
 
 #[test]
@@ -684,18 +874,18 @@ fn test_root_buffer_evicts_oldest_when_full() {
     for i in 0..ROOT_BUFFER_SIZE {
         let root = BytesN::from_array(&env, &[i as u8; 32]);
         roots.push_back(root.clone());
-        client.anchor_batch(&root, &1, &0, &1);
+        client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &1);
     }
 
-    let buffer = client.get_root_buffer();
+    let buffer = client.get_root_buffer(&DEFAULT_SHARD);
     assert_eq!(buffer.len(), ROOT_BUFFER_SIZE);
     assert_eq!(buffer.get(0).unwrap(), BytesN::from_array(&env, &[0u8; 32]));
 
     // Anchor one more — oldest (index 0) should be evicted.
     let new_root = BytesN::from_array(&env, &[255u8; 32]);
-    client.anchor_batch(&new_root, &1, &0, &1);
+    client.anchor_batch(&DEFAULT_SHARD, &new_root, &1, &0, &1);
 
-    let buffer = client.get_root_buffer();
+    let buffer = client.get_root_buffer(&DEFAULT_SHARD);
     assert_eq!(buffer.len(), ROOT_BUFFER_SIZE);
     // First entry is now [1u8; 32] (the second root we anchored).
     assert_eq!(buffer.get(0).unwrap(), BytesN::from_array(&env, &[1u8; 32]));
@@ -713,12 +903,13 @@ fn test_verify_receipt_by_root_works_for_eviction_boundary() {
     for i in 0..=ROOT_BUFFER_SIZE {
         let root = BytesN::from_array(&env, &[i as u8; 32]);
         roots.push_back(root.clone());
-        client.anchor_batch(&root, &1, &0, &1);
+        client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &1);
     }
 
     // The first root (index 0) was evicted — verification should fail.
     assert_eq!(
         client.try_verify_receipt_by_root(
+            &DEFAULT_SHARD,
             &roots.get(0).unwrap(),
             &roots.get(0).unwrap(),
             &vec![&env]
@@ -728,6 +919,7 @@ fn test_verify_receipt_by_root_works_for_eviction_boundary() {
 
     // The second root (index 1) is still in the buffer — should succeed.
     assert!(client.verify_receipt_by_root(
+        &DEFAULT_SHARD,
         &roots.get(1).unwrap(),
         &roots.get(1).unwrap(),
         &vec![&env]
@@ -735,7 +927,7 @@ fn test_verify_receipt_by_root_works_for_eviction_boundary() {
 
     // The last root (index ROOT_BUFFER_SIZE) should also succeed.
     let last = roots.get(ROOT_BUFFER_SIZE).unwrap();
-    assert!(client.verify_receipt_by_root(&last, &last, &vec![&env]));
+    assert!(client.verify_receipt_by_root(&DEFAULT_SHARD, &last, &last, &vec![&env]));
 }
 
 #[test]
@@ -750,7 +942,7 @@ fn test_verify_receipt_by_root_before_init_fails() {
     let (env, client, _merchant) = setup();
     let root = BytesN::from_array(&env, &[1u8; 32]);
     assert_eq!(
-        client.try_verify_receipt_by_root(&root, &root, &vec![&env]),
+        client.try_verify_receipt_by_root(&DEFAULT_SHARD, &root, &root, &vec![&env]),
         Err(Ok(Error::NotInitialized))
     );
 }
@@ -763,11 +955,11 @@ fn test_existing_verify_receipt_still_works_with_buffer() {
     let l1 = BytesN::from_array(&env, &[1u8; 32]);
     let l2 = BytesN::from_array(&env, &[2u8; 32]);
     let root = hash_pair(&env, &l1, &l2);
-    let batch_id = client.anchor_batch(&root, &2, &0, &100);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
 
     // The original batch_id-based verification still works.
-    assert!(client.verify_receipt(&batch_id, &l1, &vec![&env, l2.clone()]));
-    assert!(client.verify_receipt(&batch_id, &l2, &vec![&env, l1.clone()]));
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &l1, &vec![&env, l2.clone()]));
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &l2, &vec![&env, l1.clone()]));
 }
 
 // ---------------------------------------------------------------------------
@@ -797,8 +989,8 @@ fn test_verify_receipt_empty_proof_succeeds() {
 
     // Single-leaf batch: root == leaf, empty proof.
     let leaf = BytesN::from_array(&env, &[42u8; 32]);
-    let batch_id = client.anchor_batch(&leaf, &1, &0, &10);
-    assert!(client.verify_receipt(&batch_id, &leaf, &vec![&env]));
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &leaf, &1, &0, &10);
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &vec![&env]));
 }
 
 #[test]
@@ -810,8 +1002,8 @@ fn test_verify_receipt_at_bound_succeeds() {
     let (root, proof) = build_chain_proof(&env, &leaf, MAX_PROOF_LEN);
 
     assert_eq!(proof.len(), MAX_PROOF_LEN);
-    let batch_id = client.anchor_batch(&root, &1000, &0, &1000);
-    assert!(client.verify_receipt(&batch_id, &leaf, &proof));
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &1000, &0, &1000);
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof));
 }
 
 #[test]
@@ -823,9 +1015,9 @@ fn test_verify_receipt_one_over_bound_fails() {
     let (root, proof) = build_chain_proof(&env, &leaf, MAX_PROOF_LEN + 1);
 
     assert_eq!(proof.len(), MAX_PROOF_LEN + 1);
-    let batch_id = client.anchor_batch(&root, &1000, &0, &1000);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &1000, &0, &1000);
     assert_eq!(
-        client.try_verify_receipt(&batch_id, &leaf, &proof),
+        client.try_verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof),
         Err(Ok(Error::ProofTooLong))
     );
 }
@@ -838,8 +1030,8 @@ fn test_verify_receipt_by_root_at_bound_succeeds() {
     let leaf = BytesN::from_array(&env, &[7u8; 32]);
     let (root, proof) = build_chain_proof(&env, &leaf, MAX_PROOF_LEN);
 
-    client.anchor_batch(&root, &1000, &0, &1000);
-    assert!(client.verify_receipt_by_root(&root, &leaf, &proof));
+    client.anchor_batch(&DEFAULT_SHARD, &root, &1000, &0, &1000);
+    assert!(client.verify_receipt_by_root(&DEFAULT_SHARD, &root, &leaf, &proof));
 }
 
 #[test]
@@ -850,9 +1042,9 @@ fn test_verify_receipt_by_root_one_over_bound_fails() {
     let leaf = BytesN::from_array(&env, &[7u8; 32]);
     let (root, proof) = build_chain_proof(&env, &leaf, MAX_PROOF_LEN + 1);
 
-    client.anchor_batch(&root, &1000, &0, &1000);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &1000, &0, &1000);
     assert_eq!(
-        client.try_verify_receipt_by_root(&root, &leaf, &proof),
+        client.try_verify_receipt_by_root(&DEFAULT_SHARD, &root, &leaf, &proof),
         Err(Ok(Error::ProofTooLong))
     );
 }
@@ -867,9 +1059,9 @@ fn test_verify_receipt_valid_deep_proof() {
     let (root, proof) = build_chain_proof(&env, &leaf, 5);
 
     assert_eq!(proof.len(), 5);
-    let batch_id = client.anchor_batch(&root, &32, &0, &32);
-    assert!(client.verify_receipt(&batch_id, &leaf, &proof));
-    assert!(client.verify_receipt_by_root(&root, &leaf, &proof));
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &32, &0, &32);
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof));
+    assert!(client.verify_receipt_by_root(&DEFAULT_SHARD, &root, &leaf, &proof));
 }
 
 #[test]
@@ -909,9 +1101,9 @@ fn test_rate_limit_disabled_by_default() {
 
     // Unlimited back-to-back anchors at the same timestamp pass.
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
-    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
-    assert_eq!(client.get_batch_count(), 2);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), 2);
 }
 
 #[test]
@@ -999,10 +1191,10 @@ fn test_burst_allows_back_to_back_anchors() {
     client.set_anchor_rate_limit(&3, &60);
 
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
-    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
-    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
-    assert_eq!(client.get_batch_count(), 3);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 3), &1, &21, &30);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), 3);
 }
 
 #[test]
@@ -1012,17 +1204,17 @@ fn test_spam_beyond_burst_rejected() {
     client.set_anchor_rate_limit(&3, &60);
 
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
-    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
-    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 3), &1, &21, &30);
 
     // Fourth anchor at the same timestamp: the bucket is empty.
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 4), &1, &31, &40),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 4), &1, &31, &40),
         Err(Ok(Error::AnchorRateLimited))
     );
     assert_eq!(
-        client.get_batch_count(),
+        client.get_batch_count(&DEFAULT_SHARD),
         3,
         "rejected spam must not anchor a batch"
     );
@@ -1038,7 +1230,7 @@ fn test_tokens_refill_after_interval() {
         li.sequence_number = 10;
         li.timestamp = 1000;
     });
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
 
     // One second before the refill boundary — still rejected.
     env.ledger().with_mut(|li| {
@@ -1046,7 +1238,7 @@ fn test_tokens_refill_after_interval() {
         li.timestamp = 1059;
     });
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 2), &1, &11, &20),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20),
         Err(Ok(Error::AnchorRateLimited))
     );
 
@@ -1055,7 +1247,10 @@ fn test_tokens_refill_after_interval() {
         li.sequence_number = 21;
         li.timestamp = 1060;
     });
-    assert_eq!(client.anchor_batch(&root_of(&env, 3), &1, &21, &30), 2);
+    assert_eq!(
+        client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 3), &1, &21, &30),
+        2
+    );
 }
 
 #[test]
@@ -1065,20 +1260,20 @@ fn test_bucket_partially_refills() {
     client.set_anchor_rate_limit(&3, &60);
 
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
-    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
-    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 3), &1, &21, &30);
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 4), &1, &31, &40),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 4), &1, &31, &40),
         Err(Ok(Error::AnchorRateLimited))
     );
 
     // Two full refill intervals later: exactly two tokens have come back.
     env.ledger().with_mut(|li| li.timestamp = 1120);
-    client.anchor_batch(&root_of(&env, 4), &1, &31, &40);
-    client.anchor_batch(&root_of(&env, 5), &1, &41, &50);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 4), &1, &31, &40);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 5), &1, &41, &50);
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 6), &1, &51, &60),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 6), &1, &51, &60),
         Err(Ok(Error::AnchorRateLimited))
     );
 }
@@ -1090,16 +1285,16 @@ fn test_refill_caps_at_burst() {
     client.set_anchor_rate_limit(&2, &60);
 
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
-    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20);
 
     // Idle for a very long time: the bucket caps at the burst instead of
     // accumulating unboundedly (no overflow, no runaway allowance).
     env.ledger().with_mut(|li| li.timestamp = 100_000);
-    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
-    client.anchor_batch(&root_of(&env, 4), &1, &31, &40);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 3), &1, &21, &30);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 4), &1, &31, &40);
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 5), &1, &41, &50),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 5), &1, &41, &50),
         Err(Ok(Error::AnchorRateLimited))
     );
 }
@@ -1111,16 +1306,16 @@ fn test_zero_config_disables_rate_limit() {
     client.set_anchor_rate_limit(&1, &60);
 
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 2), &1, &11, &20),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20),
         Err(Ok(Error::AnchorRateLimited))
     );
 
     // Disable: the same back-to-back anchor now passes.
     client.set_anchor_rate_limit(&0, &0);
-    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
-    assert_eq!(client.get_batch_count(), 2);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), 2);
 }
 
 #[test]
@@ -1129,21 +1324,21 @@ fn test_changing_config_takes_effect() {
     init(&env, &client, &merchant);
 
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
 
     // Enabling the limiter creates a fresh, full bucket: the next anchor
     // passes, and the one after is rejected until a refill interval elapses.
     client.set_anchor_rate_limit(&1, &60);
-    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20);
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 3), &1, &21, &30),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 3), &1, &21, &30),
         Err(Ok(Error::AnchorRateLimited))
     );
 
     // After the refill interval the anchor passes again.
     env.ledger().with_mut(|li| li.timestamp = 1060);
-    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
-    assert_eq!(client.get_batch_count(), 3);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 3), &1, &21, &30);
+    assert_eq!(client.get_batch_count(&DEFAULT_SHARD), 3);
 }
 
 #[test]
@@ -1155,11 +1350,11 @@ fn test_rejected_anchor_does_not_consume_token() {
     client.set_anchor_rate_limit(&2, &60);
 
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
 
     // Duplicate root: rejected by the duplicate check, no token consumed.
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 1), &1, &11, &20),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &11, &20),
         Err(Ok(Error::DuplicateRoot))
     );
 
@@ -1167,10 +1362,10 @@ fn test_rejected_anchor_does_not_consume_token() {
     // more anchors pass and a third is rejected. Had the duplicate consumed a
     // token, only one would have passed.
     env.ledger().with_mut(|li| li.timestamp = 1060);
-    client.anchor_batch(&root_of(&env, 2), &1, &11, &20);
-    client.anchor_batch(&root_of(&env, 3), &1, &21, &30);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 2), &1, &11, &20);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 3), &1, &21, &30);
     assert_eq!(
-        client.try_anchor_batch(&root_of(&env, 4), &1, &31, &40),
+        client.try_anchor_batch(&DEFAULT_SHARD, &root_of(&env, 4), &1, &31, &40),
         Err(Ok(Error::AnchorRateLimited))
     );
 }
@@ -1182,7 +1377,7 @@ fn test_rate_limit_bucket_keyed_by_merchant_identity() {
     client.set_anchor_rate_limit(&3, &60);
 
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.anchor_batch(&root_of(&env, 1), &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 1), &1, &0, &10);
 
     // The bucket is a single persistent entry under the merchant identity,
     // holding burst-1 tokens after the first anchor.
@@ -1217,13 +1412,13 @@ fn test_rate_limit_tracking_overhead_is_bounded() {
     init(&env, &client, &merchant);
 
     // Warm up so shard 0 exists; the measured anchors are steady-state.
-    client.anchor_batch(&root_of(&env, 0), &1, &0, &1);
+    client.anchor_batch(&DEFAULT_SHARD, &root_of(&env, 0), &1, &0, &1);
 
     let steady_state_cost =
         |client: &ReceiptAnchorClient<'static>, env: &Env, seed: u8| -> (u64, u64) {
             env.cost_estimate().budget().reset_default();
             let root = root_of(env, seed);
-            client.anchor_batch(&root, &1, &0, &1);
+            client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &1);
             (
                 env.cost_estimate().budget().cpu_instruction_cost(),
                 env.cost_estimate().budget().memory_bytes_cost(),
@@ -1282,10 +1477,10 @@ fn test_verify_receipt_batch_size_instruction_benchmark() {
     for (batch_size, proof_len) in [(1u32, 0u32), (10, 4), (25, 5), (50, 6), (100, 7)] {
         let leaf = BytesN::from_array(&env, &[batch_size as u8; 32]);
         let (root, proof) = build_chain_proof(&env, &leaf, proof_len);
-        let batch_id = client.anchor_batch(&root, &batch_size, &0, &100);
+        let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &batch_size, &0, &100);
 
         env.cost_estimate().budget().reset_default();
-        assert!(client.verify_receipt(&batch_id, &leaf, &proof));
+        assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof));
         let cpu = env.cost_estimate().budget().cpu_instruction_cost();
         std::println!(
             "BENCHMARK: batch_size={batch_size} proof_len={proof_len} cpu_instructions={cpu}"
@@ -1302,7 +1497,7 @@ fn test_verify_receipt_memory_scaling_benchmark() {
 
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
     let root = BytesN::from_array(&env, &[9u8; 32]);
-    let batch_id = client.anchor_batch(&root, &42, &1000, &2000);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &42, &1000, &2000);
 
     for proof_len in [2, 4, 6, 8, 10] {
         let mut proof_vec = soroban_sdk::Vec::new(&env);
@@ -1313,7 +1508,7 @@ fn test_verify_receipt_memory_scaling_benchmark() {
         let cpu_before = env.cost_estimate().budget().cpu_instruction_cost();
         let mem_before = env.cost_estimate().budget().memory_bytes_cost();
 
-        let result = client.verify_receipt(&batch_id, &leaf, &proof_vec);
+        let result = client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof_vec);
 
         let cpu_after = env.cost_estimate().budget().cpu_instruction_cost();
         let mem_after = env.cost_estimate().budget().memory_bytes_cost();
@@ -1340,10 +1535,10 @@ fn test_anchor_batch_zk_valid_proof_succeeds() {
         c: Bytes::from_slice(&env, &[3u8; 64]),
     };
 
-    let batch_id = client.anchor_batch_zk(&state_root, &proof, &50, &100, &200);
+    let batch_id = client.anchor_batch_zk(&DEFAULT_SHARD, &state_root, &proof, &50, &100, &200);
     assert_eq!(batch_id, 1);
 
-    let record = client.get_batch(&batch_id);
+    let record = client.get_batch(&DEFAULT_SHARD, &batch_id);
     assert_eq!(record.root, state_root);
     assert_eq!(record.count, 50);
     assert_eq!(record.period_start, 100);
@@ -1365,7 +1560,7 @@ fn test_anchor_batch_zk_invalid_proof_rejected() {
     };
 
     assert_eq!(
-        client.try_anchor_batch_zk(&state_root, &invalid_proof, &50, &100, &200),
+        client.try_anchor_batch_zk(&DEFAULT_SHARD, &state_root, &invalid_proof, &50, &100, &200),
         Err(Ok(Error::InvalidProof))
     );
 
@@ -1377,7 +1572,7 @@ fn test_anchor_batch_zk_invalid_proof_rejected() {
     };
 
     assert_eq!(
-        client.try_anchor_batch_zk(&state_root, &empty_proof, &50, &100, &200),
+        client.try_anchor_batch_zk(&DEFAULT_SHARD, &state_root, &empty_proof, &50, &100, &200),
         Err(Ok(Error::InvalidProof))
     );
 }

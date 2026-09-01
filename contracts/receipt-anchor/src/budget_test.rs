@@ -28,6 +28,9 @@ use soroban_sdk::{
     vec, Address, Bytes, BytesN, Env, Vec,
 };
 
+/// Logical shard used by these budget tests (single-stream).
+const DEFAULT_SHARD: u64 = 0;
+
 fn load_wasm(env: &Env, path: &str) -> Bytes {
     let buf = std::fs::read(path).expect(
         "contract wasm not found; run `cargo build -p receipt-anchor -p receipt-shard \
@@ -111,7 +114,7 @@ fn budget_anchor_batch_count_1() {
     let (client, _) = setup_router(&env);
     let root = BytesN::from_array(&env, &[1u8; 32]);
     env.cost_estimate().budget().reset_unlimited();
-    client.anchor_batch(&root, &1, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &10);
 }
 
 #[test]
@@ -121,7 +124,7 @@ fn budget_anchor_batch_count_500() {
     let (client, _) = setup_router(&env);
     let root = BytesN::from_array(&env, &[2u8; 32]);
     env.cost_estimate().budget().reset_unlimited();
-    client.anchor_batch(&root, &500, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &500, &0, &10);
 }
 
 #[test]
@@ -131,7 +134,7 @@ fn budget_anchor_batch_count_1000() {
     let (client, _) = setup_router(&env);
     let root = BytesN::from_array(&env, &[3u8; 32]);
     env.cost_estimate().budget().reset_unlimited();
-    client.anchor_batch(&root, &MAX_BATCH_SIZE, &0, &10);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &MAX_BATCH_SIZE, &0, &10);
 }
 
 #[test]
@@ -141,9 +144,9 @@ fn budget_verify_receipt_depth_1() {
     let (client, _) = setup_router(&env);
     let (root, proof) = build_tree(&env, 1);
     let leaf = BytesN::from_array(&env, &[0u8; 32]);
-    let batch_id = client.anchor_batch(&root, &2, &0, &100);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
     env.cost_estimate().budget().reset_unlimited();
-    assert!(client.verify_receipt(&batch_id, &leaf, &proof));
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof));
 }
 
 #[test]
@@ -155,9 +158,9 @@ fn budget_verify_receipt_depth_10() {
     let leaf = BytesN::from_array(&env, &[0u8; 32]);
     // A 1024-leaf tree yields a 10-element proof; anchor it under the maximum
     // batch size to prove the worst-case `verify_receipt` path.
-    let batch_id = client.anchor_batch(&root, &MAX_BATCH_SIZE, &0, &100);
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &MAX_BATCH_SIZE, &0, &100);
     env.cost_estimate().budget().reset_unlimited();
-    assert!(client.verify_receipt(&batch_id, &leaf, &proof));
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof));
 }
 
 #[test]
@@ -169,10 +172,16 @@ fn budget_prune_batches_100() {
     // anchor needs a distinct root (DuplicateRoot = 103 otherwise).
     env.ledger().with_mut(|li| li.sequence_number = 100);
     for i in 0..100u8 {
-        client.anchor_batch(&BytesN::from_array(&env, &[i; 32]), &1, &0, &1);
+        client.anchor_batch(
+            &DEFAULT_SHARD,
+            &BytesN::from_array(&env, &[i; 32]),
+            &1,
+            &0,
+            &1,
+        );
     }
     // Jump the ledger far forward and delete up to MAX_PRUNE_BATCHES (100).
     env.ledger().with_mut(|li| li.sequence_number = 1_000_000);
     env.cost_estimate().budget().reset_unlimited();
-    client.prune_batches(&500_000);
+    client.prune_batches(&DEFAULT_SHARD, &500_000);
 }

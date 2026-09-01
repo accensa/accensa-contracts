@@ -279,7 +279,7 @@ fn deployed_vault_honors_window_via_factory_time_policy() {
         li.sequence_number = 50;
         li.timestamp = 50;
     });
-    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None, &0);
     assert!(client.get_refund(&payment_ref).is_some());
 }
 
@@ -303,7 +303,7 @@ fn deployed_vault_refuses_when_time_policy_unconfigured() {
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None),
+        client.try_refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None, &0),
         Err(Ok(CommonError::PolicyContractsNotConfigured))
     );
 }

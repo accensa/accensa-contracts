@@ -85,7 +85,7 @@ sequenceDiagram
 
     Note over RV: Merchant pre-funded:<br/>deposit(from, amount)
 
-    Agent->>RV: refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount)
+    Agent->>RV: refund(payment_ref, recipient, amount, paid_at_ledger, payment_amount, nonce)
 
     alt Valid refund
         RV->>RV: Check cumulative + amount ≤ payment ceiling

@@ -6,6 +6,9 @@ use soroban_sdk::{
     vec, Address, Bytes, BytesN, Env,
 };
 
+/// Logical shard used by these single-stream integration tests.
+const DEFAULT_SHARD: u64 = 0;
+
 struct TestEnv<'a> {
     env: Env,
     anchor: ReceiptAnchorClient<'a>,
@@ -62,18 +65,18 @@ fn test_integration_initialize_anchor_and_read_back() {
     let sibling = BytesN::from_array(&env, &[2u8; 32]);
     let root = hash_pair(&env, &leaf, &sibling);
 
-    let batch_id = anchor.anchor_batch(&root, &2, &0, &100);
+    let batch_id = anchor.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
     assert_eq!(batch_id, 1);
-    assert_eq!(anchor.get_batch_count(), 1);
+    assert_eq!(anchor.get_batch_count(&DEFAULT_SHARD), 1);
 
-    let record = anchor.get_batch(&1);
+    let record = anchor.get_batch(&DEFAULT_SHARD, &1);
     assert_eq!(record.root, root);
     assert_eq!(record.count, 2);
     assert_eq!(record.period_start, 0);
     assert_eq!(record.period_end, 100);
 
     let proof = vec![&env, sibling.clone()];
-    assert!(anchor.verify_receipt(&1, &leaf, &proof));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &leaf, &proof));
 }
 
 #[test]
@@ -84,21 +87,21 @@ fn test_integration_multiple_batches_and_count() {
         merchant: _,
     } = setup();
 
-    assert_eq!(anchor.get_batch_count(), 0);
+    assert_eq!(anchor.get_batch_count(&DEFAULT_SHARD), 0);
 
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
     let root3 = BytesN::from_array(&env, &[3u8; 32]);
 
-    assert_eq!(anchor.anchor_batch(&root1, &1, &0, &10), 1);
-    assert_eq!(anchor.anchor_batch(&root2, &1, &11, &20), 2);
-    assert_eq!(anchor.anchor_batch(&root3, &1, &21, &30), 3);
+    assert_eq!(anchor.anchor_batch(&DEFAULT_SHARD, &root1, &1, &0, &10), 1);
+    assert_eq!(anchor.anchor_batch(&DEFAULT_SHARD, &root2, &1, &11, &20), 2);
+    assert_eq!(anchor.anchor_batch(&DEFAULT_SHARD, &root3, &1, &21, &30), 3);
 
-    assert_eq!(anchor.get_batch_count(), 3);
+    assert_eq!(anchor.get_batch_count(&DEFAULT_SHARD), 3);
 
-    assert_eq!(anchor.get_batch(&1).root, root1);
-    assert_eq!(anchor.get_batch(&2).root, root2);
-    assert_eq!(anchor.get_batch(&3).root, root3);
+    assert_eq!(anchor.get_batch(&DEFAULT_SHARD, &1).root, root1);
+    assert_eq!(anchor.get_batch(&DEFAULT_SHARD, &2).root, root2);
+    assert_eq!(anchor.get_batch(&DEFAULT_SHARD, &3).root, root3);
 }
 
 #[test]
@@ -109,7 +112,7 @@ fn test_integration_batch_not_found() {
         anchor,
         merchant: _,
     } = setup();
-    let _ = anchor.get_batch(&999);
+    let _ = anchor.get_batch(&DEFAULT_SHARD, &999);
 }
 
 #[test]
@@ -130,19 +133,19 @@ fn test_integration_verify_receipt_against_external_root() {
     let h34 = hash_pair(&env, &l3, &l4);
     let root = hash_pair(&env, &h12, &h34);
 
-    anchor.anchor_batch(&root, &4, &0, &100);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root, &4, &0, &100);
 
     // Verify l1 using proof [l2, h34]
     let proof_l1 = vec![&env, l2.clone(), h34.clone()];
-    assert!(anchor.verify_receipt(&1, &l1, &proof_l1));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &l1, &proof_l1));
 
     // Verify l3 using proof [l4, h12]
     let proof_l3 = vec![&env, l4, h12];
-    assert!(anchor.verify_receipt(&1, &l3, &proof_l3));
+    assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &l3, &proof_l3));
 
     // Verify invalid proof should return false
     let bad_proof = vec![&env, l3, h34];
-    assert!(!anchor.verify_receipt(&1, &l2, &bad_proof));
+    assert!(!anchor.verify_receipt(&DEFAULT_SHARD, &1, &l2, &bad_proof));
 }
 
 #[test]
@@ -157,20 +160,20 @@ fn test_integration_prune_batches_round_trip() {
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
 
     env.ledger().with_mut(|li| li.sequence_number = 50);
-    anchor.anchor_batch(&root1, &1, &0, &40);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root1, &1, &0, &40);
 
     env.ledger().with_mut(|li| li.sequence_number = 150);
-    anchor.anchor_batch(&root2, &1, &41, &140);
+    anchor.anchor_batch(&DEFAULT_SHARD, &root2, &1, &41, &140);
 
-    assert_eq!(anchor.get_batch_count(), 2);
-    assert!(anchor.try_get_batch(&1).is_ok());
-    assert!(anchor.try_get_batch(&2).is_ok());
+    assert_eq!(anchor.get_batch_count(&DEFAULT_SHARD), 2);
+    assert!(anchor.try_get_batch(&DEFAULT_SHARD, &1).is_ok());
+    assert!(anchor.try_get_batch(&DEFAULT_SHARD, &2).is_ok());
 
     // Prune batches anchored before ledger 100
-    anchor.prune_batches(&100);
+    anchor.prune_batches(&DEFAULT_SHARD, &100);
 
     // Batch 1 should be pruned (missing), Batch 2 should remain
-    assert!(anchor.try_get_batch(&1).is_err());
-    assert!(anchor.try_get_batch(&2).is_ok());
-    assert_eq!(anchor.get_batch_count(), 2);
+    assert!(anchor.try_get_batch(&DEFAULT_SHARD, &1).is_err());
+    assert!(anchor.try_get_batch(&DEFAULT_SHARD, &2).is_ok());
+    assert_eq!(anchor.get_batch_count(&DEFAULT_SHARD), 2);
 }

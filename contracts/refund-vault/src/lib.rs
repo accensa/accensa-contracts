@@ -118,6 +118,22 @@ pub enum DataKey {
     /// commitment must survive until its reveal, which is guaranteed to be at
     /// least `COMMIT_MIN_DELAY_LEDGERS` ledgers later.
     Commit(BytesN<32>),
+    /// Replay-protection nonce for a caller (issue #122). A per-user,
+    /// sequential counter keyed by the authorized caller's address: every
+    /// `refund`, `claim_batch`, and `process_batch` invocation must supply the
+    /// caller's current nonce (starting at 0) and consumes it by incrementing
+    /// on success, so replaying a previously-signed claim reverts with
+    /// `StaleState`. Stored in Persistent storage (TTL-managed) so the counter
+    /// survives independent of the vault's instance-storage TTL.
+    UserNonce(Address),
+    /// Per-recipient last claim wall-clock timestamp (Unix seconds).
+    UserLastClaim(Address),
+    /// Minimum seconds between successive claims for the same recipient.
+    /// `0` (default) disables the cooldown.
+    ClaimCooldown,
+    /// Global last claim wall-clock timestamp (Unix seconds). Used when a
+    /// global cooldown is configured.
+    LastClaim,
 }
 
 #[contracttype]
@@ -526,6 +542,33 @@ fn increment_nonce(env: &Env) -> u64 {
     current
 }
 
+/// The caller's current replay-protection nonce (issue #122), defaulting to
+/// `0` for a caller that has never submitted a claim. Read as the "expected
+/// next nonce" for the next `refund`/`claim_batch`/`process_batch` call.
+fn current_user_nonce(env: &Env, caller: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserNonce(caller.clone()))
+        .unwrap_or(0)
+}
+
+/// Validate that `provided` equals the caller's expected next nonce and, on
+/// success, consume it by advancing the stored counter (issue #122).
+///
+/// A mismatch — whether a replay of an already-consumed nonce, or a skipped
+/// one — reverts with `Error::StaleState`, mirroring the state-channel's
+/// nonce-replay semantics.
+fn check_and_bump_user_nonce(env: &Env, caller: &Address, provided: u64) -> Result<(), Error> {
+    let expected = current_user_nonce(env, caller);
+    if provided != expected {
+        return Err(Error::StaleState);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserNonce(caller.clone()), &(expected + 1));
+    Ok(())
+}
+
 /// How many ledgers to extend a payment's `RefundV2` record's TTL by, so the
 /// double-refund guard cannot go archived while `refund` calls against that
 /// payment are still policy-valid.
@@ -647,9 +690,9 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     // Refund policy gates (issue #129). The time gate (window + wall-clock
     // deadline) and the VDF gate (Wesolowski proof verification) are delegated
     // to the configured stateless policy contracts through the shared
-    // `RefundPolicy` interface. The mirrors tell us *which* gates are active
-    // and seed the params each policy contract decodes; the policy contract
-    // performs the actual evaluation.
+    // `RefundPolicy` interface. The mirrors read below tell us *which* gates
+    // are active and seed the params each policy contract decodes; the policy
+    // contract performs the actual evaluation.
     //
     // The delegation runs inside the reentrancy lock acquired by the caller
     // (`refund`, `claim_batch`, `process_batch`), so a policy contract MUST
@@ -695,9 +738,30 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     // re-enter the vault from its `get_price` callback.
     let oracle_policy: Option<oracle::OraclePolicy> =
         env.storage().instance().get(&DataKey::OraclePolicy);
-    if let Some(ref policy) = oracle_policy {
-        if !oracle::evaluate_policy(env, policy)? {
+    if let Some(policy) = oracle_policy {
+        if !oracle::evaluate_policy(env, &policy)? {
             return Err(Error::OraclePolicyDenied);
+        }
+    }
+
+    // Claim cooldown: enforce a minimum wall-clock interval between
+    // successive claims. A cooldown of `0` disables this protection. By
+    // default the cooldown is global (one timestamp for the whole vault);
+    // a future per-recipient design could use `UserLastClaim(Address)`.
+    let cooldown: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::ClaimCooldown)
+        .unwrap_or(0u64);
+    if cooldown > 0 {
+        let last: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastClaim)
+            .unwrap_or(0u64);
+        let now = env.ledger().timestamp();
+        if now < last.saturating_add(cooldown) {
+            return Err(Error::ClaimCooldownNotElapsed);
         }
     }
 
@@ -757,7 +821,6 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         return Err(Error::ExceedsPayment);
     }
 
-    // Token client: use the cached token address instead of reading from storage.
     let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
     let token_client = token::Client::new(env, &token_addr);
     let balance = token_client.balance(&env.current_contract_address());
@@ -803,6 +866,13 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         .persistent()
         .set(&DataKey::RefundV2(claim.payment_ref.clone()), &record);
 
+    // Update global last-claim timestamp when the claim succeeds.
+    let now_ts = env.ledger().timestamp();
+    env.storage().persistent().set(&DataKey::LastClaim, &now_ts);
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::LastClaim, TTL_THRESHOLD, TTL_EXTEND);
+
     env.storage()
         .instance()
         .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -845,16 +915,19 @@ const INITIAL_STORAGE_VERSION: u32 = 1;
 
 #[contractimpl]
 impl RefundVault {
-    /// Initializes the vault from a [`VaultInit`] configuration.
+    /// Constructor-wired initialization (issue #129). Sets the merchant admin,
+    /// settlement token, policy addresses, fee, refund window, deadline and VDF
+    /// delay from the [`VaultInit`] struct in one call. There is no
+    /// post-deployment `initialize` window; the factory (`deploy_v2`) wires
+    /// these inputs, and a merchant must not be able to choose them after the
+    /// vault exists.
     ///
-    /// Runs as the contract constructor, so a vault is fully configured the
-    /// moment it is deployed — by the factory or by `env.register` in tests —
-    /// and there is no window in which an uninitialized vault is callable.
-    ///
-    /// The `refund_window` / `deadline` / `vdf_delay` mirrors are stored for
-    /// the read path and to tell `claim_single` which gates are active; the
-    /// gates themselves are evaluated by the policy contracts wired here.
-    pub fn __constructor(env: Env, init: VaultInit) {
+    /// # Errors
+    /// - `AlreadyInitialized`: If the vault is already initialized.
+    pub fn __constructor(env: Env, init: VaultInit) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
         env.storage()
             .instance()
             .set(&DataKey::Admin, &init.merchant);
@@ -902,6 +975,18 @@ impl RefundVault {
             .instance()
             .set(&DataKey::DomainSeparator, &separator);
         env.storage().instance().set(&DataKey::Nonce, &0u64);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// `initialize` alias of [`__constructor`](Self::__constructor) for
+    /// environments where deploy-via-constructor is unavailable. Same
+    /// [`VaultInit`] argument and identical behavior.
+    pub fn initialize(env: Env, init: VaultInit) -> Result<(), Error> {
+        Self::__constructor(env, init)
     }
 
     /// Domain separator for this vault instance (issue #136).
@@ -915,6 +1000,13 @@ impl RefundVault {
     /// Current monotonic nonce (issue #136).
     pub fn get_nonce(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::Nonce).unwrap_or(0)
+    }
+
+    /// Current replay-protection nonce for `caller` (issue #122): the expected
+    /// `nonce` the caller's next `refund`/`claim_batch`/`process_batch` call
+    /// must supply. `0` for a caller that has not yet made a successful claim.
+    pub fn get_user_nonce(env: Env, caller: Address) -> u64 {
+        current_user_nonce(&env, &caller)
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
@@ -1016,6 +1108,7 @@ impl RefundVault {
         paid_at_ledger: u32,
         payment_amount: i128,
         vdf_proof: Option<BytesN<256>>,
+        nonce: u64,
     ) -> Result<(), Error> {
         acquire_reentrancy_lock(&env)?;
 
@@ -1034,6 +1127,8 @@ impl RefundVault {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
+
+        check_and_bump_user_nonce(&env, &merchant, nonce)?;
 
         let claim = RefundClaim {
             payment_ref,
@@ -1073,7 +1168,7 @@ impl RefundVault {
     /// persists, or none of them do.
     ///
     /// An empty `claims` vector succeeds as a no-op.
-    pub fn claim_batch(env: Env, claims: Vec<RefundClaim>) -> Result<(), Error> {
+    pub fn claim_batch(env: Env, claims: Vec<RefundClaim>, nonce: u64) -> Result<(), Error> {
         if claims.len() > MAX_BATCH_SIZE {
             return Err(Error::BatchTooLarge);
         }
@@ -1096,6 +1191,8 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        check_and_bump_user_nonce(&env, &merchant, nonce)?;
+
         for claim in claims.iter() {
             claim_single(&env, &claim)?;
         }
@@ -1117,7 +1214,11 @@ impl RefundVault {
     /// Unlike [`RefundVault::claim_batch`], this is *not* atomic: a failing
     /// item does not roll back the others, and no reentrancy lock is held, so
     /// callers that require all-or-nothing semantics should use `claim_batch`.
-    pub fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error> {
+    pub fn process_batch(
+        env: Env,
+        refunds: Vec<RefundParam>,
+        nonce: u64,
+    ) -> Result<Vec<bool>, Error> {
         if refunds.len() > MAX_BATCH_SIZE {
             return Err(Error::BatchTooLarge);
         }
@@ -1139,14 +1240,16 @@ impl RefundVault {
         merchant.require_auth();
 
         // An empty batch is a no-op; return before touching any state so the
-        // caller can probe auth without paying for state loads.
+        // caller can probe auth without paying for state loads or consuming a
+        // nonce.
         if refunds.is_empty() {
             return Ok(Vec::new(&env));
         }
 
+        check_and_bump_user_nonce(&env, &merchant, nonce)?;
+
         // The loop below only touches per-payment storage and performs the
         // transfers; each item runs the identical per-claim logic as `refund`.
-        // Policy context is read once before the loop, not per item.
         let mut payment_refs: Vec<BytesN<32>> = Vec::new(&env);
         let mut results = Vec::new(&env);
         for item in refunds.into_iter() {
@@ -1389,6 +1492,32 @@ impl RefundVault {
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// Admin setter: configure the minimum seconds between successive claims
+    /// for the same recipient. `0` disables the cooldown.
+    pub fn set_claim_cooldown(env: Env, cooldown_secs: u64) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ClaimCooldown, &cooldown_secs);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    pub fn get_claim_cooldown(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ClaimCooldown)
+            .unwrap_or(0u64)
     }
 
     /// Returns the minimum commit-reveal delay in ledgers (read-only).
@@ -1830,8 +1959,6 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Sets the address that collects the refund fee; rejects the vault's own
-    /// address. Merchant auth. Emits a [`FeeConfigUpdatedEvent`].
     pub fn set_fee_recipient(env: Env, recipient: Address) -> Result<(), Error> {
         if recipient == env.current_contract_address() {
             return Err(Error::SelfTransfer);
@@ -1860,6 +1987,12 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Aggregate the current value of `feed_id` across the whitelisted
+    /// oracles: the median of the fresh (non-stale) reported values.
+    ///
+    /// Read-only, so it is safe to call from an indexer or a wallet.
+    /// `max_staleness_ledgers` is the caller's freshness bound for this
+    /// query (`0` = never stale).
     pub fn get_median_price(
         env: Env,
         feed_id: BytesN<32>,
@@ -1925,6 +2058,7 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Read-only: the currently installed oracle policy, if any.
     pub fn get_oracle_policy(env: Env) -> Option<oracle::OraclePolicy> {
         env.storage().instance().get(&DataKey::OraclePolicy)
     }
@@ -2283,7 +2417,7 @@ impl RefundVault {
         }
     }
 
-    // ── Admin & governance functions ───────────────────────────────────────
+    // ── Existing admin functions ───────────────────────────────────────────
 
     pub fn pause(env: Env) -> Result<(), Error> {
         let merchant: Address = env
@@ -2340,6 +2474,11 @@ impl RefundVault {
             .unwrap();
 
         let extend_to = refund_record_ttl_extend_to(&env, window, record.paid_at_ledger);
+        // Threshold == extend_to: a caller invoking this well before expiry
+        // (which is the whole point of a manual top-up) must still see it
+        // take effect. TTL_THRESHOLD (100 ledgers, ~8 minutes) would make
+        // this silently succeed as a no-op unless called in that final
+        // sliver before the entry actually expires.
         env.storage().persistent().extend_ttl(
             &DataKey::RefundV2(payment_ref),
             extend_to,
@@ -2359,11 +2498,16 @@ impl RefundVault {
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+
         AdminTransferInitiatedEvent {
-            from: admin,
+            from: admin.clone(),
             to: new_admin,
         }
         .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 
@@ -2385,10 +2529,14 @@ impl RefundVault {
         env.storage().instance().remove(&DataKey::PendingAdmin);
 
         AdminTransferAcceptedEvent {
-            from: old_admin,
+            from: old_admin.clone(),
             to: pending,
         }
         .publish(&env);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 

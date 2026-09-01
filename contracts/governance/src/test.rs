@@ -13,7 +13,7 @@ use soroban_sdk::{
 };
 
 /// A trivial admin-gated contract: `set_value` requires the stored admin's
-/// auth, exactly like `ReceiptAnchor::set_min_anchor_interval` requires its
+/// auth, exactly like `ReceiptAnchor::set_anchor_rate_limit` requires its
 /// merchant's. Used to prove `Governance::execute` can act as that admin.
 #[contract]
 struct Target;

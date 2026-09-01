@@ -177,7 +177,10 @@
                 {
                   "i128": "1000000"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "0"
+                }
               ]
             }
           },
@@ -231,7 +234,10 @@
                 {
                   "i128": "1000000"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "1"
+                }
               ]
             }
           },
@@ -285,7 +291,10 @@
                 {
                   "i128": "1000000"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "2"
+                }
               ]
             }
           },
@@ -339,7 +348,10 @@
                 {
                   "i128": "1000000"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "3"
+                }
               ]
             }
           },
@@ -393,7 +405,10 @@
                 {
                   "i128": "1000000"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "4"
+                }
               ]
             }
           },
@@ -447,7 +462,10 @@
                 {
                   "i128": "1000000"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "5"
+                }
               ]
             }
           },
@@ -501,7 +519,10 @@
                 {
                   "i128": "123457"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "6"
+                }
               ]
             }
           },
@@ -555,7 +576,10 @@
                 {
                   "i128": "123457"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "7"
+                }
               ]
             }
           },
@@ -609,7 +633,10 @@
                 {
                   "i128": "123457"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "8"
+                }
               ]
             }
           },
@@ -663,7 +690,10 @@
                 {
                   "i128": "5000"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "9"
+                }
               ]
             }
           },
@@ -717,7 +747,10 @@
                 {
                   "i128": "100"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "10"
+                }
               ]
             }
           },
@@ -771,7 +804,10 @@
                 {
                   "i128": "1"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "11"
+                }
               ]
             }
           },
@@ -825,7 +861,10 @@
                 {
                   "i128": "1"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "12"
+                }
               ]
             }
           },
@@ -879,7 +918,10 @@
                 {
                   "i128": "10000000"
                 },
-                "void"
+                "void",
+                {
+                  "u64": "13"
+                }
               ]
             }
           },
@@ -1621,6 +1663,30 @@
                   },
                   "storage": null
                 }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "LastClaim"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "0"
               }
             }
           },
@@ -2579,6 +2645,33 @@
           "ext": "v0"
         },
         "live_until": 518400
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "UserNonce"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "14"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
       },
       {
         "entry": {
