@@ -35,6 +35,9 @@ pub enum DataKey {
     /// the factory to deploy every subsequent shard.
     ShardWasmHash,
     ShardCount,
+    /// Admin-configured minimum interval, in seconds, between anchors.
+    /// `0` (the default) disables the check.
+    MinAnchorInterval,
     /// Maps a shard index (`batch_id_zero_based / SHARD_CAPACITY`) to the
     /// deployed shard's contract address.
     Shard(u64),
@@ -181,6 +184,9 @@ const ROOT_BUFFER_SIZE: u32 = 100;
 /// back-to-back anchors a single identity can submit before the bucket
 /// refills, so an admin cannot configure the burst so large that the
 /// protection is meaningless.
+/// Upper bound on the configurable minimum anchor interval (24 h).
+const MAX_ANCHOR_INTERVAL: u32 = 86_400;
+
 const MAX_RATE_BURST: u32 = 1000;
 
 /// Maximum allowed refill interval for the anchor rate limiter (24 hours in
@@ -305,7 +311,7 @@ impl ReceiptAnchor {
             rate_limit.burst_capacity > 0 && rate_limit.refill_interval_secs > 0;
         let bucket_key = if rate_limit_active {
             let key = DataKey::RateLimitBucket(merchant.clone());
-            Self::rate_limit_admitted(&env, &key, &rate_limit)?;
+            Self::rate_limit_admitted(env, &key, &rate_limit)?;
             Some(key)
         } else {
             None
@@ -339,7 +345,7 @@ impl ReceiptAnchor {
         // Phase 2 of the rate limit: spend the token now that the anchor
         // succeeded, persisting the bucket alongside the batch.
         if let Some(key) = bucket_key {
-            Self::rate_limit_consume(&env, &key, &rate_limit);
+            Self::rate_limit_consume(env, &key, &rate_limit);
         }
 
         // Push root into the ring buffer, evicting the oldest if full.
@@ -467,7 +473,6 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)
     }
 
-<<<<<<< ours
     /// Configures the token-bucket rate limit applied to `anchor_batch`.
     ///
     /// `burst_capacity` anchors may be submitted back-to-back before the
@@ -484,7 +489,27 @@ impl ReceiptAnchor {
         burst_capacity: u32,
         refill_interval_secs: u32,
     ) -> Result<(), Error> {
-=======
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let config = RateLimitConfig {
+            burst_capacity,
+            refill_interval_secs,
+        };
+        if !Self::is_valid_rate_limit(&config) {
+            return Err(Error::InvalidRateLimitConfig);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RateLimitConfig, &config);
+        Ok(())
+    }
+
     pub fn get_shard_capacity(_env: Env) -> u64 {
         SHARD_CAPACITY
     }
@@ -514,7 +539,6 @@ impl ReceiptAnchor {
     /// Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables
     /// rate-limiting entirely.
     pub fn set_min_anchor_interval(env: Env, interval: u32) -> Result<(), Error> {
->>>>>>> theirs
         let merchant: Address = env
             .storage()
             .instance()
@@ -522,18 +546,22 @@ impl ReceiptAnchor {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        let config = RateLimitConfig {
-            burst_capacity,
-            refill_interval_secs,
-        };
-        if !Self::is_valid_rate_limit(&config) {
-            return Err(Error::InvalidRateLimitConfig);
+        if interval > MAX_ANCHOR_INTERVAL {
+            return Err(Error::BatchTooLarge);
         }
 
         env.storage()
             .instance()
-            .set(&DataKey::RateLimitConfig, &config);
+            .set(&DataKey::MinAnchorInterval, &interval);
         Ok(())
+    }
+
+    /// Returns the current minimum anchor interval in seconds (read-only).
+    pub fn get_min_anchor_interval(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinAnchorInterval)
+            .unwrap_or(0)
     }
 
     /// Returns the current anchor rate-limit configuration (read-only).

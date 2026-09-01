@@ -154,15 +154,15 @@ impl Model {
         }
     }
 
+    /// Vault float: tokens the vault should hold.
     fn float(&self) -> i128 {
         self.deposits - self.refunds - self.withdrawals
     }
 
-    fn is_expired(&self, paid_at: u32, current_ledger: u32) -> bool {
-        if self.window == 0 {
-            return false;
-        }
-        current_ledger > paid_at.saturating_add(self.window)
+    /// Merchant's remaining SAC balance: refunds and withdrawals return
+    /// tokens to the merchant, so this is FLOAT minus the vault float.
+    fn merchant_balance(&self) -> i128 {
+        FLOAT - self.float()
     }
 
     // Invariant Test (#94): RefundVault's total internal token balance MUST equal
@@ -281,20 +281,8 @@ enum Op {
     },
 }
 
-prop_compose! {
-    fn arb_op()(tag in 0..7_u32, amount in -200..2_000_000_i128, slot in 0..REF_SLOTS, delta in 0..500_u32) (
-        op in match tag {
-            0 => arb_deposit(amount).boxed(),
-            1 => arb_refund(slot, amount, delta).boxed(),
-            2 => arb_withdraw(amount).boxed(),
-            3 => Just(Op::Pause).boxed(),
-            4 => Just(Op::Unpause).boxed(),
-            5 => (0..1000_u32).prop_map(|w| Op::SetWindow { new_window: w }).boxed(),
-            _ => (1..100_u32).prop_map(|l| Op::AdvanceLedger { ledgers: l }).boxed(),
-        }
-    ) -> Op {
-        op
-    }
+fn amount_strategy() -> impl Strategy<Value = i128> {
+    -1000i128..=FLOAT
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -322,29 +310,23 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     ]
 }
 
-fn execute_op(
+fn execute(
     env: &Env,
-    client: &RefundVaultClient,
+    client: &RefundVaultClient<'static>,
     merchant: &Address,
     token: &Address,
-    model: &mut Model,
-    op: &Op,
-)
-{
+    ops: &[Op],
+) -> std::vec::Vec<String> {
+    let mut model = Model::new(100);
+    let mut failures: std::vec::Vec<String> = std::vec::Vec::new();
     let token_client = TokenClient::new(env, token);
 
-    match op {
-        Op::Deposit { amount }
-        if *amount > 0 && model.float().saturating_add(*amount) <= FLOAT =>
-        {
-            if model.paused {
-                assert_eq!(
-                    client.try_deposit(merchant, amount),
-                    Err(Ok(Error::Paused))
-                );
-            } else {
-                client.deposit(merchant, amount);
-                model.deposits += *amount;
+    let balance = || token_client.balance(&client.address);
+
+    for op in ops {
+        match op {
+            Op::Advance { ledgers } => {
+                env.ledger().with_mut(|li| li.sequence_number += ledgers);
             }
             Op::TogglePause => {
                 if model.paused {
@@ -360,47 +342,47 @@ fn execute_op(
                 let _ = client.try_propose_policy(window, &0, &0);
                 model.window = *window;
             }
-        }
-        Op::Deposit { .. } => {}
-
-        Op::Refund { slot, amount, paid_at_delta }
-        if *amount > 0 =>
-        {
-            let slot_idx = *slot as usize;
-            let already_refunded = model.refunded[slot_idx].is_some();
-
-            let current_ledger = env.ledger().sequence();
-            let paid_at = current_ledger.saturating_sub(*paid_at_delta);
-            let expired = model.is_expired(paid_at, current_ledger);
-            let insufficient = *amount > model.float();
-
-            let buyer = Address::generate(env);
-            let pref = payment_ref(env, *slot);
-
-            if model.paused {
-                assert_eq!(
-                    client.try_refund(&pref, &buyer, amount, &paid_at),
-                    Err(Ok(Error::Paused))
-                );
-            } else if already_refunded {
-                assert_eq!(
-                    client.try_refund(&pref, &buyer, amount, &paid_at),
-                    Err(Ok(Error::AlreadyRefunded))
-                );
-            } else if expired {
-                assert_eq!(
-                    client.try_refund(&pref, &buyer, amount, &paid_at),
-                    Err(Ok(Error::WindowExpired))
-                );
-            } else if insufficient {
-                assert_eq!(
-                    client.try_refund(&pref, &buyer, amount, &paid_at),
-                    Err(Ok(Error::InsufficientFloat))
-                );
-            } else {
-                client.refund(&pref, &buyer, amount, &paid_at);
-                model.refunds += *amount;
-                model.refunded[slot_idx] = Some(*amount);
+            Op::Deposit { amount } => {
+                let res = client.try_deposit(merchant, amount);
+                match &res {
+                    Ok(Ok(())) => {
+                        if *amount <= 0 {
+                            failures
+                                .push(format!("deposit of {amount} succeeded but must be invalid"));
+                        } else if *amount > model.merchant_balance() {
+                            failures.push(format!(
+                                "deposit of {amount} succeeded beyond merchant balance {}",
+                                model.merchant_balance()
+                            ));
+                        } else {
+                            model.deposits += *amount;
+                        }
+                    }
+                    Err(_) | Ok(Err(_)) => {
+                        // The vault rejects with Paused/InvalidAmount, or the
+                        // token contract rejects the transfer when the merchant
+                        // lacks the funds (the surfaced error code is an SDK
+                        // artifact, so we only assert the outcome matches the
+                        // model).
+                        let expected = (model.paused && matches!(res, Err(Ok(Error::Paused))))
+                            || (*amount <= 0 && matches!(res, Err(Ok(Error::InvalidAmount))))
+                            || *amount > model.merchant_balance();
+                        if !expected {
+                            failures.push(format!(
+                                "deposit of {amount} failed for no modelled reason (error {res:?}, \
+                                 merchant balance {})",
+                                model.merchant_balance()
+                            ));
+                        }
+                    }
+                }
+                if balance() != model.float() {
+                    failures.push(format!(
+                        "float {} != deposits - refunds - withdrawals {} after Deposit({amount})",
+                        balance(),
+                        model.float()
+                    ));
+                }
             }
             Op::Refund {
                 slot,
@@ -637,37 +619,33 @@ fn execute_op(
                 }
             }
         }
-        Op::Withdraw { .. } => {}
-
-        Op::Pause => {
-            client.pause();
-            model.paused = true;
-        }
-
-        Op::Unpause => {
-            client.unpause();
-            model.paused = false;
-        }
-
-        Op::SetWindow { new_window }
-        if model.paused => {
-            // Pause prevents nothing about window config in the current design, or does it?
-            // Window changes require merchant auth, which mock_all_auths grants.
-            client.set_refund_window(new_window);
-            model.window = *new_window;
-        }
-        Op::SetWindow { new_window } => {
-            client.set_refund_window(new_window);
-            model.window = *new_window;
-        }
-
-        Op::AdvanceLedger { ledgers }
-        if *ledgers > 0 => {
-            let target = env.ledger().sequence() + *ledgers;
-            env.ledger().with_mut(|li| li.sequence_number = target);
-        }
-        _ => {}
     }
+
+    failures
+}
+
+proptest! {
+    #![proptest_config(proptest_config(fuzz_cases()))]
+
+    /// float never negative; float == deposits - refunds - withdrawals after
+    /// any sequence of operations; every rejected call returns the error the
+    /// model predicts.
+    #[test]
+    fn test_fuzz_float_accounting(
+        ops in proptest::collection::vec(op_strategy(), 0..=fuzz_seq_len()),
+    ) {
+        let (env, client, merchant, token) = setup(100);
+        let failures = execute(&env, &client, &merchant, &token, &ops);
+        assert!(
+            failures.is_empty(),
+            "float accounting invariants violated:\n{}",
+            failures.join("\n")
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(proptest_config(fuzz_cases()))]
 
     /// Cumulative refunds per payment_ref never exceed the first-supplied
     /// ceiling, under any interleaving of deposits, withdrawals, window
@@ -689,14 +667,24 @@ fn execute_op(
 proptest! {
     #![proptest_config(proptest_config(fuzz_cases()))]
 
+    /// Operations while paused never mutate state: every state-changing call
+    /// returns Paused and the float and refund records are untouched.
     #[test]
-    fn fuzz_vault_operations(ops in prop::collection::vec(arb_op(), 0..fuzz_seq_len())) {
+    fn test_fuzz_paused_ops_never_mutate(
+        ops in proptest::collection::vec(op_strategy(), 0..=fuzz_seq_len()),
+    ) {
         let (env, client, merchant, token) = setup(100);
-        let mut model = Model::new(100);
+        let failures = execute(&env, &client, &merchant, &token, &ops);
+        assert!(
+            failures.is_empty(),
+            "pause invariants violated:\n{}",
+            failures.join("\n")
+        );
+    }
+}
 
-        // Initial deposit to fund float
-        client.deposit(&merchant, &5_000_000);
-        model.deposits += 5_000_000;
+proptest! {
+    #![proptest_config(proptest_config(fuzz_cases()))]
 
     /// TTL extension on a refund record never shortens its TTL; extension on
     /// a missing record always errors with RefundNotFound.

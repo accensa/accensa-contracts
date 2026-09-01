@@ -86,6 +86,11 @@ pub enum Error {
     AnchorRateLimited = 202,
     /// The supplied zero-knowledge validity proof is invalid or malformed.
     InvalidProof = 203,
+    /// A token-bucket rate-limit config was rejected: exactly one of
+    /// `burst_capacity` / `refill_interval_secs` was zero, or either exceeded
+    /// its cap (`MAX_RATE_BURST` / `MAX_RATE_REFILL_INTERVAL`). `{0, 0}`
+    /// disables rate limiting and is accepted.
+    InvalidRateLimitConfig = 204,
     /// No pending policy change exists to execute.
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
