@@ -1,11 +1,12 @@
-use accensa_common::Error;
+#![no_std]
+
+use accensa_common::{
+    Error, PolicyContext, RefundPolicyClient, TimePolicyParams, VaultInit, VdfPolicyParams,
+};
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, Bytes, BytesN, Env, Symbol, Vec,
+    xdr::ToXdr, Address, Bytes, BytesN, Env, Symbol, Vec,
 };
-
-mod vdf;
-use vdf::VdfProof;
 
 contractmeta!(key = "name", val = "RefundVault");
 contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
@@ -52,6 +53,16 @@ pub enum DataKey {
     /// required. Configured with the policy (propose/execute) and read at
     /// claim time in `claim_single`.
     VdfDelay,
+    /// Stateless time-policy contract (window + deadline gate, issue #129).
+    ///
+    /// The vault delegates the time gate to this address via the shared
+    /// `RefundPolicy` interface. `None` (or unconfigured) means the gate is
+    /// *not* delegated; a vault with an active time gate but no contract wired
+    /// fails closed with `PolicyContractsNotConfigured`.
+    TimePolicyContract,
+    /// Stateless VDF-policy contract (proof gate, issue #129). Same semantics
+    /// as [`DataKey::TimePolicyContract`] for the VDF proof gate.
+    VdfPolicyContract,
     /// Refund fee, in basis points (1 bp = 0.01%), deducted from the amount
     /// sent to a refund recipient and paid to the fee recipient. `0` (the
     /// default) means no fee. Set via `set_fee_bps` and read at claim time.
@@ -70,6 +81,7 @@ pub enum DataKey {
     Refund(BytesN<32>),
     IsPaused,
     PendingAdmin,
+    SettlementContract,
     /// Yield strategy contract address. Stored in **Persistent** storage so
     /// it is not loaded on every non-yield invocation (issue #131).
     YieldStrategy,
@@ -461,6 +473,8 @@ const POLICY_TIMELOCK: u32 = 17_280;
 /// submit it first. 7 ledgers (~35s at 5s/ledger) is long enough to make the
 /// reordering useless while keeping the UX snappy.
 const COMMIT_MIN_DELAY_LEDGERS: u32 = 7;
+/// Maximum number of items allowed in a single batch call.
+const MAX_BATCH_SIZE: u32 = 100;
 
 /// Reentrancy guard for entry points that make an external call (a token
 /// transfer or a yield-strategy invocation).
@@ -602,21 +616,30 @@ fn active_fee_recipient(env: &Env) -> Address {
 /// Cached policy-level state that is constant for the duration of a
 /// transaction. Read once per entry point (or per batch) to avoid redundant
 /// storage reads inside [`claim_single`].
-struct PolicyContext {
+///
+/// Distinct from [`accensa_common::PolicyContext`], which is the per-claim
+/// argument the stateless policy contracts decode.
+struct PolicyCache {
     refund_window: u32,
     refund_deadline: u64,
+    time_policy_contract: Option<Address>,
     oracle_policy: Option<oracle::OraclePolicy>,
     vdf_delay: u32,
+    vdf_policy_contract: Option<Address>,
     token_addr: Address,
     fee_bps: u32,
 }
 
 /// Read all policy-level instance-storage keys once and return a
-/// [`PolicyContext`]. Call this at the start of each entry point that
+/// [`PolicyCache`]. Call this at the start of each entry point that
 /// processes one or more refund claims so that `claim_single` never re-reads
 /// the same keys.
-fn read_policy_context(env: &Env) -> PolicyContext {
-    PolicyContext {
+///
+/// The policy-contract addresses are cached as `Option`s and unwrapped at
+/// their use sites, so `PolicyContractsNotConfigured` is still raised only
+/// when the corresponding gate is actually active.
+fn read_policy_cache(env: &Env) -> PolicyCache {
+    PolicyCache {
         refund_window: env
             .storage()
             .instance()
@@ -627,25 +650,16 @@ fn read_policy_context(env: &Env) -> PolicyContext {
             .instance()
             .get(&DataKey::RefundDeadline)
             .unwrap_or(0),
-        oracle_policy: env
-            .storage()
-            .instance()
-            .get(&DataKey::OraclePolicy),
+        time_policy_contract: env.storage().instance().get(&DataKey::TimePolicyContract),
+        oracle_policy: env.storage().instance().get(&DataKey::OraclePolicy),
         vdf_delay: env
             .storage()
             .instance()
             .get(&DataKey::VdfDelay)
             .unwrap_or(0),
-        token_addr: env
-            .storage()
-            .instance()
-            .get(&DataKey::Token)
-            .unwrap(),
-        fee_bps: env
-            .storage()
-            .instance()
-            .get(&DataKey::FeeBps)
-            .unwrap_or(0),
+        vdf_policy_contract: env.storage().instance().get(&DataKey::VdfPolicyContract),
+        token_addr: env.storage().instance().get(&DataKey::Token).unwrap(),
+        fee_bps: env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0),
     }
 }
 
@@ -658,13 +672,13 @@ fn read_policy_context(env: &Env) -> PolicyContext {
 /// legacy record, window, deadline, ceiling, float), fee split and transfers,
 /// cumulative-record storage and TTL extension, and the [`RefundEvent`].
 ///
-/// `ctx` caches all policy-level state so that batch callers pay for
-/// storage reads once, not per claim.
+/// `cache` holds all policy-level state so that batch callers pay for
+/// those storage reads once, not per claim.
 ///
 /// The float is read from the token contract fresh on **every** call, so a
 /// batch that overdraws the vault on a later claim fails there exactly as a
 /// sequence of single refunds would.
-fn claim_single(env: &Env, ctx: &PolicyContext, claim: &RefundClaim) -> Result<(), Error> {
+fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(), Error> {
     if claim.amount <= 0 {
         return Err(Error::InvalidAmount);
     }
@@ -683,20 +697,41 @@ fn claim_single(env: &Env, ctx: &PolicyContext, claim: &RefundClaim) -> Result<(
         return Err(Error::ExceedsPayment);
     }
 
-    // Refund window: use the cached value instead of reading from storage.
-    let window = ctx.refund_window;
-    if window > 0 {
-        let current_ledger = env.ledger().sequence();
-        if current_ledger > claim.paid_at_ledger + window {
-            return Err(Error::WindowExpired);
-        }
-    }
+    // Refund policy gates (issue #129). The time gate (window + wall-clock
+    // deadline) and the VDF gate (Wesolowski proof verification) are delegated
+    // to the configured stateless policy contracts through the shared
+    // `RefundPolicy` interface. The mirrors tell us *which* gates are active
+    // and seed the params each policy contract decodes; the policy contract
+    // performs the actual evaluation.
+    //
+    // The mirrors and the policy addresses come from `cache`, read once per
+    // entry point, so a batch pays for those instance reads once rather than
+    // once per claim.
+    //
+    // The delegation runs inside the reentrancy lock acquired by the caller
+    // (`refund`, `claim_batch`, `process_batch`), so a policy contract MUST
+    // NOT call back into any guarded vault entry point. Policies are pure.
+    let window = cache.refund_window;
+    let deadline = cache.refund_deadline;
 
-    // Policy deadline: a wall-clock timestamp configured with the policy.
-    // `0` (or unset) means no deadline. Expiry is strictly past the deadline,
-    // so a claim landing exactly on the deadline still succeeds.
-    if ctx.refund_deadline > 0 && env.ledger().timestamp() > ctx.refund_deadline {
-        return Err(Error::RefundExpired);
+    // Gate order preserves the historical error precedence: window, then
+    // deadline, then (after the inline oracle gate) the VDF proof. The time
+    // policy contract enforces the same window-then-deadline sub-order.
+    if window > 0 || deadline > 0 {
+        let contract = cache
+            .time_policy_contract
+            .clone()
+            .ok_or(Error::PolicyContractsNotConfigured)?;
+        let params = TimePolicyParams { window, deadline }.to_xdr(env);
+        let ctx = PolicyContext {
+            payment_ref: claim.payment_ref.clone(),
+            amount: claim.amount,
+            paid_at_ledger: claim.paid_at_ledger,
+            current_ledger: env.ledger().sequence(),
+            timestamp: env.ledger().timestamp(),
+            vdf_proof: None,
+        };
+        RefundPolicyClient::new(env, &contract).evaluate(&params, &ctx);
     }
 
     // Dynamic oracle policy (issue: oracle aggregator): when configured,
@@ -706,7 +741,7 @@ fn claim_single(env: &Env, ctx: &PolicyContext, claim: &RefundClaim) -> Result<(
     // This runs inside the reentrancy lock acquired by the caller (`refund`,
     // `claim_batch`, `process_batch`), so a whitelisted oracle cannot
     // re-enter the vault from its `get_price` callback.
-    if let Some(ref policy) = ctx.oracle_policy {
+    if let Some(ref policy) = cache.oracle_policy {
         if !oracle::evaluate_policy(env, policy)? {
             return Err(Error::OraclePolicyDenied);
         }
@@ -715,27 +750,31 @@ fn claim_single(env: &Env, ctx: &PolicyContext, claim: &RefundClaim) -> Result<(
     // VDF delay (policy trigger, issue #138): when the policy carries a
     // configured delay, finalizing this refund requires a valid Wesolowski
     // proof that `vdf_delay` sequential squarings have genuinely elapsed. The
-    // delay is computational, so unlike the ledger window or the wall-clock
-    // deadline above it cannot be shortened by a validator controlling block
-    // timestamps or transaction ordering. The challenge is derived from the
-    // payment ref (`sha256(payment_ref)`), binding the proof to this payment
-    // and preventing replay across payments or across policy changes.
-    match (ctx.vdf_delay, &claim.vdf_proof) {
+    // proof is verified by the stateless VDF policy contract the vault is
+    // wired to. The delay is computational, so unlike the ledger window or the
+    // wall-clock deadline above it cannot be shortened by a validator
+    // controlling block timestamps or transaction ordering. The challenge is
+    // derived from the payment ref (`sha256(payment_ref)`), binding the proof
+    // to this payment and preventing replay across payments or across policy
+    // changes.
+    match (cache.vdf_delay, &claim.vdf_proof) {
         (0, None) => {}
         (0, Some(_)) => return Err(Error::VdfNotConfigured),
-        (_, None) => return Err(Error::VdfProofRequired),
-        (delay, Some(proof)) => {
-            let payment_hash = env
-                .crypto()
-                .sha256(&Bytes::from_slice(env, &claim.payment_ref.to_array()));
-            let mut challenge = [0u8; 128];
-            challenge[96..].copy_from_slice(&payment_hash.to_array());
-            let packed = proof.to_array();
-            let mut output = [0u8; 128];
-            let mut witness = [0u8; 128];
-            output.copy_from_slice(&packed[..128]);
-            witness.copy_from_slice(&packed[128..]);
-            vdf::verify_vdf(env, &challenge, delay, &output, &witness)?;
+        (delay, proof) => {
+            let contract = cache
+                .vdf_policy_contract
+                .clone()
+                .ok_or(Error::PolicyContractsNotConfigured)?;
+            let params = VdfPolicyParams { delay }.to_xdr(env);
+            let ctx = PolicyContext {
+                payment_ref: claim.payment_ref.clone(),
+                amount: claim.amount,
+                paid_at_ledger: claim.paid_at_ledger,
+                current_ledger: env.ledger().sequence(),
+                timestamp: env.ledger().timestamp(),
+                vdf_proof: proof.clone(),
+            };
+            RefundPolicyClient::new(env, &contract).evaluate(&params, &ctx);
         }
     }
 
@@ -759,7 +798,7 @@ fn claim_single(env: &Env, ctx: &PolicyContext, claim: &RefundClaim) -> Result<(
     }
 
     // Token client: use the cached token address instead of reading from storage.
-    let token_client = token::Client::new(env, &ctx.token_addr);
+    let token_client = token::Client::new(env, &cache.token_addr);
     let balance = token_client.balance(&env.current_contract_address());
     if balance < claim.amount {
         return Err(Error::InsufficientFloat);
@@ -770,7 +809,7 @@ fn claim_single(env: &Env, ctx: &PolicyContext, claim: &RefundClaim) -> Result<(
     // exactly `amount`, so the float check above and the ceiling check against
     // the payment amount are unchanged. The fee rounds *up* (the
     // fractional-token remainder goes to the protocol).
-    let fee = refund_fee(claim.amount, ctx.fee_bps);
+    let fee = refund_fee(claim.amount, cache.fee_bps);
     let payout = claim.amount - fee;
 
     let fee_recipient = if fee > 0 {
@@ -834,6 +873,7 @@ fn claim_single(env: &Env, ctx: &PolicyContext, claim: &RefundClaim) -> Result<(
 /// Maximum number of refund requests allowed in a single `process_batch` call.
 /// Bounds CPU and memory usage to ensure the transaction stays within Soroban
 /// limits.
+#[allow(dead_code)]
 const MAX_REFUND_BATCH_SIZE: u32 = 100;
 
 #[contract]
@@ -843,16 +883,47 @@ const INITIAL_STORAGE_VERSION: u32 = 1;
 
 #[contractimpl]
 impl RefundVault {
-    /// Initializes the vault.
-    /// # Errors
-    /// - `AlreadyInitialized`: If already set.
-    pub fn initialize(env: Env, merchant: Address, token: Address, refund_window: u32) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) { return Err(Error::AlreadyInitialized); }
-        env.storage().instance().set(&DataKey::Admin, &merchant);
-        env.storage().instance().set(&DataKey::Token, &token);
+    /// Initializes the vault from a [`VaultInit`] configuration.
+    ///
+    /// Runs as the contract constructor, so a vault is fully configured the
+    /// moment it is deployed — by the factory or by `env.register` in tests —
+    /// and there is no window in which an uninitialized vault is callable.
+    ///
+    /// The `refund_window` / `deadline` / `vdf_delay` mirrors are stored for
+    /// the read path and to tell `claim_single` which gates are active; the
+    /// gates themselves are evaluated by the policy contracts wired here.
+    pub fn __constructor(env: Env, init: VaultInit) {
         env.storage()
             .instance()
-            .set(&DataKey::RefundWindow, &refund_window);
+            .set(&DataKey::Admin, &init.merchant);
+        env.storage().instance().set(&DataKey::Token, &init.token);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &init.refund_window);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundDeadline, &init.deadline);
+        env.storage()
+            .instance()
+            .set(&DataKey::VdfDelay, &init.vdf_delay);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeBps, &init.fee_bps);
+        if let Some(recipient) = &init.fee_recipient {
+            env.storage()
+                .instance()
+                .set(&DataKey::FeeRecipient, recipient);
+        }
+        if let Some(policy) = &init.time_policy {
+            env.storage()
+                .instance()
+                .set(&DataKey::TimePolicyContract, policy);
+        }
+        if let Some(policy) = &init.vdf_policy {
+            env.storage()
+                .instance()
+                .set(&DataKey::VdfPolicyContract, policy);
+        }
         env.storage()
             .instance()
             .set(&DataKey::StorageVersion, &INITIAL_STORAGE_VERSION);
@@ -869,8 +940,6 @@ impl RefundVault {
             .instance()
             .set(&DataKey::DomainSeparator, &separator);
         env.storage().instance().set(&DataKey::Nonce, &0u64);
-
-        Ok(())
     }
 
     /// Domain separator for this vault instance (issue #136).
@@ -902,15 +971,24 @@ impl RefundVault {
             return Err(Error::InvalidAmount);
         }
 
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         if from != admin {
             return Err(Error::Unauthorized);
         }
         admin.require_auth();
 
-        let token_address: Address = env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(&admin, &env.current_contract_address(), &amount);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&admin, &contract_addr, &amount);
 
         let nonce = increment_nonce(&env);
 
@@ -1003,8 +1081,8 @@ impl RefundVault {
             payment_amount,
             vdf_proof,
         };
-        let ctx = read_policy_context(&env);
-        claim_single(&env, &ctx, &claim)?;
+        let cache = read_policy_cache(&env);
+        claim_single(&env, &cache, &claim)?;
 
         release_reentrancy_lock(&env);
         Ok(())
@@ -1035,6 +1113,10 @@ impl RefundVault {
     ///
     /// An empty `claims` vector succeeds as a no-op.
     pub fn claim_batch(env: Env, claims: Vec<RefundClaim>) -> Result<(), Error> {
+        if claims.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+
         acquire_reentrancy_lock(&env)?;
 
         if env
@@ -1053,15 +1135,15 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        let ctx = read_policy_context(&env);
+        let cache = read_policy_cache(&env);
         for claim in claims.iter() {
-            claim_single(&env, &ctx, &claim)?;
+            claim_single(&env, &cache, &claim)?;
         }
         release_reentrancy_lock(&env);
         Ok(())
     }
 
-    /// Processes a batch of refund requests in a single transaction.
+    /// Refund part (or all) of an upto payment verified on-chain.
     ///
     /// Design choice: Best-effort execution model with per-item result booleans.
     /// Each refund is processed with exactly the same per-claim logic as
@@ -1076,6 +1158,10 @@ impl RefundVault {
     /// item does not roll back the others, and no reentrancy lock is held, so
     /// callers that require all-or-nothing semantics should use `claim_batch`.
     pub fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error> {
+        if refunds.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+
         if env
             .storage()
             .instance()
@@ -1092,10 +1178,6 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        if refunds.len() > MAX_REFUND_BATCH_SIZE {
-            return Err(Error::BatchTooLarge);
-        }
-
         // An empty batch is a no-op; return before touching any state so the
         // caller can probe auth without paying for state loads.
         if refunds.is_empty() {
@@ -1105,7 +1187,7 @@ impl RefundVault {
         // The loop below only touches per-payment storage and performs the
         // transfers; each item runs the identical per-claim logic as `refund`.
         // Policy context is read once before the loop, not per item.
-        let ctx = read_policy_context(&env);
+        let cache = read_policy_cache(&env);
         let mut payment_refs: Vec<BytesN<32>> = Vec::new(&env);
         let mut results = Vec::new(&env);
         for item in refunds.into_iter() {
@@ -1119,7 +1201,7 @@ impl RefundVault {
                 payment_amount: item.payment_amount,
                 vdf_proof: item.vdf_proof,
             };
-            results.push_back(claim_single(&env, &ctx, &claim).is_ok());
+            results.push_back(claim_single(&env, &cache, &claim).is_ok());
         }
 
         BatchRefundEvent {
@@ -1161,20 +1243,35 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        let token_address: Address = env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
 
         let mut contract_balance = token_client.balance(&env.current_contract_address());
         if contract_balance < amount {
-            let deployed_principal: i128 = env.storage().instance().get(&DataKey::DeployedPrincipal).unwrap_or(0);
+            let deployed_principal: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::DeployedPrincipal)
+                .unwrap_or(0);
             if deployed_principal > 0 {
-                if let Some(strategy_addr) = env.storage().instance().get::<_, Address>(&DataKey::YieldStrategy) {
+                if let Some(strategy_addr) = env
+                    .storage()
+                    .instance()
+                    .get::<_, Address>(&DataKey::YieldStrategy)
+                {
                     let needed = amount - contract_balance;
                     let withdraw_amount = core::cmp::min(needed, deployed_principal);
                     if withdraw_amount > 0 {
                         let strategy_client = YieldStrategyClient::new(&env, &strategy_addr);
                         let (_p, _y) = strategy_client.withdraw(&withdraw_amount);
-                        env.storage().instance().set(&DataKey::DeployedPrincipal, &(deployed_principal - withdraw_amount));
+                        env.storage().instance().set(
+                            &DataKey::DeployedPrincipal,
+                            &(deployed_principal - withdraw_amount),
+                        );
                         contract_balance = token_client.balance(&env.current_contract_address());
                     }
                 }
@@ -1267,6 +1364,19 @@ impl RefundVault {
             return Err(Error::TimelockNotExpired);
         }
 
+        // Any gate the proposal activates must have a policy contract to
+        // delegate to. Fail here — at admin-facing, timelocked policy
+        // execution — rather than silently deploying a vault whose claims
+        // brick with `PolicyContractsNotConfigured`.
+        if (proposal.window > 0 || proposal.deadline > 0)
+            && !env.storage().instance().has(&DataKey::TimePolicyContract)
+        {
+            return Err(Error::PolicyContractsNotConfigured);
+        }
+        if proposal.vdf_delay > 0 && !env.storage().instance().has(&DataKey::VdfPolicyContract) {
+            return Err(Error::PolicyContractsNotConfigured);
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::RefundWindow, &proposal.window);
@@ -1290,20 +1400,36 @@ impl RefundVault {
         Ok(())
     }
 
+    pub fn get_pending_policy(env: Env) -> Option<PolicyProposal> {
+        env.storage().instance().get(&DataKey::PendingPolicy)
+    }
+
+    pub fn get_policy_timelock() -> u32 {
+        POLICY_TIMELOCK
+    }
+
     pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {
         env.storage()
             .persistent()
             .get(&DataKey::RefundV2(payment_ref))
     }
 
-    /// Returns the current pending policy proposal, if any.
-    pub fn get_pending_policy(env: Env) -> Option<PolicyProposal> {
-        env.storage().instance().get(&DataKey::PendingPolicy)
-    }
+    pub fn set_settlement_contract(env: Env, contract: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
 
-    /// Returns the policy timelock delay in ledgers (read-only).
-    pub fn get_policy_timelock() -> u32 {
-        POLICY_TIMELOCK
+        env.storage()
+            .instance()
+            .set(&DataKey::SettlementContract, &contract);
+
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
     }
 
     /// Returns the minimum commit-reveal delay in ledgers (read-only).
@@ -1591,25 +1717,67 @@ impl RefundVault {
             .unwrap_or(0)
     }
 
-    /// Verifies a Wesolowski VDF proof that `output == challenge^(2^delay)
-    /// mod N` for the contract's fixed modulus (issue #138). Read-only and
-    /// unauthenticated, so anyone can check a VDF output — the surface used
-    /// by random-selection / randomness-beacon flows that never touch the
-    /// vault. Returns `Error::InvalidVdfProof` if the proof does not verify
-    /// or the challenge is degenerate.
-    pub fn verify_vdf(
-        env: Env,
-        challenge: BytesN<128>,
-        delay: u32,
-        proof: VdfProof,
-    ) -> Result<(), Error> {
-        vdf::verify_vdf(
-            &env,
-            &challenge.to_array(),
-            delay,
-            &proof.output.to_array(),
-            &proof.proof.to_array(),
-        )
+    // ── Refund policy contract wiring (issue #129) ─────────────────────────
+
+    /// Wires (or clears) the stateless time-policy contract this vault
+    /// delegates its window + deadline gate to. Admin-only. Direct
+    /// (non-factory) deployments must call this before proposing a policy
+    /// that activates the time gate; factory deployments get it from
+    /// `VaultInit` at construction.
+    pub fn set_time_policy_contract(env: Env, address: Option<Address>) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+        match address {
+            Some(policy) => env
+                .storage()
+                .instance()
+                .set(&DataKey::TimePolicyContract, &policy),
+            None => env
+                .storage()
+                .instance()
+                .remove(&DataKey::TimePolicyContract),
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Wires (or clears) the stateless VDF-policy contract this vault
+    /// delegates its Wesolowski proof gate to. Admin-only. See
+    /// [`Self::set_time_policy_contract`].
+    pub fn set_vdf_policy_contract(env: Env, address: Option<Address>) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+        match address {
+            Some(policy) => env
+                .storage()
+                .instance()
+                .set(&DataKey::VdfPolicyContract, &policy),
+            None => env.storage().instance().remove(&DataKey::VdfPolicyContract),
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Returns the configured stateless time-policy contract address, if any.
+    pub fn get_time_policy_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::TimePolicyContract)
+    }
+
+    /// Returns the configured stateless VDF-policy contract address, if any.
+    pub fn get_vdf_policy_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::VdfPolicyContract)
     }
 
     // ── Fee configuration ──────────────────────────────────────────────────
@@ -1733,12 +1901,6 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Aggregate the current value of `feed_id` across the whitelisted
-    /// oracles: the median of the fresh (non-stale) reported values.
-    ///
-    /// Read-only, so it is safe to call from an indexer or a wallet.
-    /// `max_staleness_ledgers` is the caller's freshness bound for this
-    /// query (`0` = never stale).
     pub fn get_median_price(
         env: Env,
         feed_id: BytesN<32>,
@@ -1804,7 +1966,6 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Read-only: the currently installed oracle policy, if any.
     pub fn get_oracle_policy(env: Env) -> Option<oracle::OraclePolicy> {
         env.storage().instance().get(&DataKey::OraclePolicy)
     }
@@ -2236,14 +2397,14 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
-        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
-
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
         AdminTransferInitiatedEvent {
             from: admin,
             to: new_admin,
         }
         .publish(&env);
-
         Ok(())
     }
 
@@ -2269,7 +2430,6 @@ impl RefundVault {
             to: pending,
         }
         .publish(&env);
-
         Ok(())
     }
 
@@ -2297,9 +2457,9 @@ mod oracle_tests;
 mod reentrancy_tests;
 #[cfg(test)]
 mod test;
-mod token_agnostic_tests;
 #[cfg(test)]
-mod vdf_test;
+mod test_helpers;
+mod token_agnostic_tests;
 mod yield_tests;
 
 /// Security audit tests for the commit-reveal scheme (issue #128): simulate

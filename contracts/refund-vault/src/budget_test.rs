@@ -21,9 +21,11 @@ use std::format;
 use std::string::{String, ToString};
 
 use super::*;
+use crate::test_helpers::vault_init;
 use budget_macros::budget_cpu_lt;
 use soroban_sdk::{
-    testutils::Address as _, token::StellarAssetClient, Address, Bytes, BytesN, Env,
+    contract, contractimpl, testutils::Address as _, token::StellarAssetClient, Address, Bytes,
+    BytesN, Env,
 };
 
 const FLOAT: i128 = 1_000_000;
@@ -36,25 +38,44 @@ fn load_wasm(env: &Env, path: &str) -> Bytes {
     Bytes::from_slice(env, &buf)
 }
 
+/// Minimal contract that wraps `deploy_v2`, so tests can deploy the vault
+/// wasm from inside a real contract context.
+#[contract]
+pub struct TestDeployer;
+
+#[contractimpl]
+impl TestDeployer {
+    pub fn deploy(env: Env, wasm_hash: BytesN<32>, salt: BytesN<32>, init: VaultInit) -> Address {
+        env.deployer()
+            .with_current_contract(salt)
+            .deploy_v2(wasm_hash, (init,))
+    }
+}
+
 /// Deploys the real `refund_vault` WASM, mints a test token, and initializes the
 /// vault so `deposit` / `refund` behave exactly as they do on-chain.
 fn setup(env: &Env, window: u32) -> (RefundVaultClient<'static>, Address, Address) {
     let wasm = load_wasm(env, "../../target/wasm32v1-none/release/refund_vault.wasm");
-    #[allow(deprecated)]
-    let id = env.register_contract_wasm(None, wasm);
-    let client = RefundVaultClient::new(env, &id);
+    let wasm_hash = env.deployer().upload_contract_wasm(wasm);
     env.mock_all_auths();
     let merchant = Address::generate(env);
     let token_admin = Address::generate(env);
     let sac = env.register_stellar_asset_contract_v2(token_admin);
     let token = sac.address();
     StellarAssetClient::new(env, &token).mint(&merchant, &FLOAT);
-    client.initialize(&merchant, &token, &window);
+    let init = vault_init(env, &merchant, &token, window);
+    let salt = BytesN::from_array(env, &[0u8; 32]);
+    // `deploy_v2`/`with_current_contract` only run inside a contract context
+    // (the test harness has no current contract ID), so the vault is deployed
+    // through a tiny natively-registered deployer contract.
+    let deployer = env.register(TestDeployer, ());
+    let id = TestDeployerClient::new(env, &deployer).deploy(&wasm_hash, &salt, &init);
+    let client = RefundVaultClient::new(env, &id);
     (client, merchant, token)
 }
 
 #[test]
-#[budget_cpu_lt(1_500_000)]
+#[budget_cpu_lt(1_600_000)]
 fn budget_deposit() {
     let env = Env::default();
     let (client, merchant, _token) = setup(&env, 100);
@@ -63,7 +84,7 @@ fn budget_deposit() {
 }
 
 #[test]
-#[budget_cpu_lt(2_000_000)]
+#[budget_cpu_lt(2_410_000)]
 fn budget_refund() {
     let env = Env::default();
     let (client, merchant, _token) = setup(&env, 100);

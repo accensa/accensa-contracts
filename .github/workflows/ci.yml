@@ -12,7 +12,7 @@ jobs:
     name: changelog & version check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -64,9 +64,9 @@ jobs:
     name: fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e701504024f229986b6bc21544a47a1ec68d0ee5 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - name: Run fmt
@@ -76,14 +76,14 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e701504024f229986b6bc21544a47a1ec68d0ee5 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -101,13 +101,13 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e701504024f229986b6bc21544a47a1ec68d0ee5 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -125,13 +125,13 @@ jobs:
     name: benchmark-budgets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e701504024f229986b6bc21544a47a1ec68d0ee5 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -164,13 +164,13 @@ jobs:
       # forks / untrusted runs, so the network step is skipped there.
       STELLAR_TESTNET_SECRET: ${{ secrets.STELLAR_TESTNET_SECRET }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Rust (stable + wasm)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -196,7 +196,7 @@ jobs:
           echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
 
-          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm"; do
+          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm" "refund_policy_time:refund_policy_time.wasm" "refund_policy_vdf:refund_policy_vdf.wasm" "refund_vault_factory:refund_vault_factory.wasm"; do
             name="${pair%%:*}"; wasm="${pair##*:}"
             SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
             BUDGET=$(jq -r ".$name" .wasm-budget.json)
@@ -275,13 +275,13 @@ jobs:
       # baseline by up to (1 + tolerance) before the build fails.
       WASM_SIZE_TOLERANCE: 0.10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -304,7 +304,7 @@ jobs:
           echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
 
-          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm"; do
+          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm" "refund_policy_time:refund_policy_time.wasm" "refund_policy_vdf:refund_policy_vdf.wasm" "refund_vault_factory:refund_vault_factory.wasm"; do
             name="${pair%%:*}"; wasm="${pair##*:}"
             SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
             BUDGET=$(jq -r ".$name" .wasm-budget.json)
@@ -342,7 +342,7 @@ jobs:
       group: vector-parity-${{ github.ref }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify local fixture is in sync with its source of truth
         # Regenerates src/vectors.rs from merkle-vectors.json and fails if it

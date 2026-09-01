@@ -1,6 +1,9 @@
 #![cfg(test)]
 
+use accensa_common::VaultInit;
 use receipt_anchor::{ReceiptAnchor, ReceiptAnchorClient};
+use refund_policy_time::TimePolicy;
+use refund_policy_vdf::VdfPolicy;
 use refund_vault::{RefundVault, RefundVaultClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -44,9 +47,8 @@ fn setup<'a>() -> TestEnv<'a> {
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
     anchor.initialize(&merchant, &shard_wasm_hash);
 
-    let vault_id = env.register(RefundVault, ());
+    let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token),));
     let vault = RefundVaultClient::new(&env, &vault_id);
-    vault.initialize(&merchant, &token, &WINDOW);
 
     // Initial sequence number
     env.ledger().with_mut(|li| li.sequence_number = 10);
@@ -57,6 +59,20 @@ fn setup<'a>() -> TestEnv<'a> {
         vault,
         merchant,
         token,
+    }
+}
+
+fn vault_init(env: &Env, merchant: &Address, token: &Address) -> VaultInit {
+    VaultInit {
+        merchant: merchant.clone(),
+        token: token.clone(),
+        time_policy: Some(env.register(TimePolicy, ())),
+        vdf_policy: Some(env.register(VdfPolicy, ())),
+        fee_bps: 0,
+        fee_recipient: None,
+        refund_window: WINDOW,
+        deadline: 0,
+        vdf_delay: 0,
     }
 }
 
