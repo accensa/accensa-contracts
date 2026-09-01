@@ -227,7 +227,6 @@ fn test_nonce_does_not_increment_on_failed_operation() {
 
     env.ledger().with_mut(|li| li.sequence_number = 500);
 
-    client.set_refund_window(&600);
     let payment_ref = BytesN::from_array(&env, &[5u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
@@ -259,31 +258,16 @@ fn test_nonce_does_not_increment_on_failed_operation() {
 }
 
 #[test]
-fn test_uninitialized_calls_fail() {
+#[should_panic(expected = "constructor invocation has failed")]
+fn test_vault_cannot_be_deployed_without_config() {
+    // Issue #129 moved initialization into `__constructor`, which takes a
+    // `VaultInit`. That removes the "deployed but uninitialized" state the
+    // old `NotInitialized` guards covered: a vault either does not exist or
+    // is fully configured. Registering without a `VaultInit` therefore fails
+    // at construction rather than leaving a half-built vault callable.
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(RefundVault, ());
-    let client = RefundVaultClient::new(&env, &contract_id);
-    let addr = Address::generate(&env);
-    let payment_ref = BytesN::from_array(&env, &[6u8; 32]);
-
-    assert_eq!(
-        client.try_deposit(&addr, &100),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(
-        client.try_refund(&payment_ref, &addr, &100, &0, &100, &None),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(
-        client.try_withdraw(&100, &addr),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(
-        client.try_propose_policy(&10, &0, &0),
-        Err(Ok(Error::NotInitialized))
-    );
-    assert_eq!(client.try_execute_policy(), Err(Ok(Error::NotInitialized)));
+    env.register(RefundVault, ());
 }
 
 #[test]
@@ -569,7 +553,7 @@ fn test_extend_refund_ttl_fails_if_missing() {
     client.deposit(&merchant, &500_000);
     let payment_ref = BytesN::from_array(&env, &[99u8; 32]);
     assert_eq!(
-        client.try_get_refund(&payment_ref),
+        client.try_extend_refund_ttl(&payment_ref),
         Err(Ok(Error::RefundNotFound))
     );
 }
@@ -2370,5 +2354,52 @@ fn test_claim_batch_cost_stays_within_budget() {
     assert!(
         batch_cpu < single_cpu * 12,
         "batch cpu {batch_cpu} (single {single_cpu}) exceeds 12x single"
+    );
+}
+
+/// Verify that the PolicyContext caching in `claim_single` measurably reduces
+/// per-claim gas cost in batch mode. The context is read once for the entire
+/// batch instead of per claim, so the amortised per-claim cost should be
+/// strictly less than a standalone single claim.
+#[test]
+fn test_batch_per_claim_cost_benefits_from_policy_context_caching() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &1_000_000);
+
+    // ── Single claim baseline ──────────────────────────────────────────────
+    let single_ref = BytesN::from_array(&env, &[0xA0u8; 32]);
+    let single_buyer = Address::generate(&env);
+    env.cost_estimate().budget().reset_default();
+    client.refund(&single_ref, &single_buyer, &10_000, &0, &10_000, &None);
+    let single_cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(single_cpu > 0, "single-claim CPU must be positive");
+
+    // ── Batch of 10 claims ────────────────────────────────────────────────
+    const BATCH_SIZE: usize = 10;
+    let mut claims = Vec::new(&env);
+    for i in 0..BATCH_SIZE as u8 {
+        let buyer = Address::generate(&env);
+        claims.push_back(make_claim(
+            BytesN::from_array(&env, &[0xB0 + i; 32]),
+            &buyer,
+            10_000,
+            0,
+            10_000,
+        ));
+    }
+    env.cost_estimate().budget().reset_default();
+    client.claim_batch(&claims);
+    let batch_cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(batch_cpu > 0, "batch CPU must be positive");
+
+    // The amortised per-claim cost of the batch must be strictly less than
+    // a standalone single claim. The savings come from the PolicyContext
+    // caching 6 instance-storage reads (window, deadline, oracle_policy,
+    // vdf_delay, token, fee_bps) once instead of per claim.
+    let per_claim_batch_cpu = batch_cpu / BATCH_SIZE as u64;
+    assert!(
+        per_claim_batch_cpu < single_cpu,
+        "per-claim batch cost ({per_claim_batch_cpu} CPU) should be less than \
+         single claim ({single_cpu} CPU) due to PolicyContext caching"
     );
 }

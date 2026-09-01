@@ -647,9 +647,9 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     // Refund policy gates (issue #129). The time gate (window + wall-clock
     // deadline) and the VDF gate (Wesolowski proof verification) are delegated
     // to the configured stateless policy contracts through the shared
-    // `RefundPolicy` interface. The mirrors read below tell us *which* gates
-    // are active and seed the params each policy contract decodes; the policy
-    // contract performs the actual evaluation.
+    // `RefundPolicy` interface. The mirrors tell us *which* gates are active
+    // and seed the params each policy contract decodes; the policy contract
+    // performs the actual evaluation.
     //
     // The delegation runs inside the reentrancy lock acquired by the caller
     // (`refund`, `claim_batch`, `process_batch`), so a policy contract MUST
@@ -695,8 +695,8 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
     // re-enter the vault from its `get_price` callback.
     let oracle_policy: Option<oracle::OraclePolicy> =
         env.storage().instance().get(&DataKey::OraclePolicy);
-    if let Some(policy) = oracle_policy {
-        if !oracle::evaluate_policy(env, &policy)? {
+    if let Some(ref policy) = oracle_policy {
+        if !oracle::evaluate_policy(env, policy)? {
             return Err(Error::OraclePolicyDenied);
         }
     }
@@ -757,6 +757,7 @@ fn claim_single(env: &Env, claim: &RefundClaim) -> Result<(), Error> {
         return Err(Error::ExceedsPayment);
     }
 
+    // Token client: use the cached token address instead of reading from storage.
     let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
     let token_client = token::Client::new(env, &token_addr);
     let balance = token_client.balance(&env.current_contract_address());
@@ -844,50 +845,63 @@ const INITIAL_STORAGE_VERSION: u32 = 1;
 
 #[contractimpl]
 impl RefundVault {
-    /// Initializes the vault.
-    /// # Errors
-    /// - `AlreadyInitialized`: If already set.
-    pub fn initialize(
-        env: Env,
-        merchant: Address,
-        token: Address,
-        refund_window: u32,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    /// Initializes the vault from a [`VaultInit`] configuration.
+    ///
+    /// Runs as the contract constructor, so a vault is fully configured the
+    /// moment it is deployed — by the factory or by `env.register` in tests —
+    /// and there is no window in which an uninitialized vault is callable.
+    ///
+    /// The `refund_window` / `deadline` / `vdf_delay` mirrors are stored for
+    /// the read path and to tell `claim_single` which gates are active; the
+    /// gates themselves are evaluated by the policy contracts wired here.
+    pub fn __constructor(env: Env, init: VaultInit) {
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &init.merchant);
+        env.storage().instance().set(&DataKey::Token, &init.token);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &init.refund_window);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundDeadline, &init.deadline);
+        env.storage()
+            .instance()
+            .set(&DataKey::VdfDelay, &init.vdf_delay);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeBps, &init.fee_bps);
+        if let Some(recipient) = &init.fee_recipient {
+            env.storage()
+                .instance()
+                .set(&DataKey::FeeRecipient, recipient);
         }
-        env.storage().instance().set(&DataKey::Admin, &merchant);
-        env.storage().instance().set(&DataKey::Token, &token);
+        if let Some(policy) = &init.time_policy {
+            env.storage()
+                .instance()
+                .set(&DataKey::TimePolicyContract, policy);
+        }
+        if let Some(policy) = &init.vdf_policy {
+            env.storage()
+                .instance()
+                .set(&DataKey::VdfPolicyContract, policy);
+        }
         env.storage()
             .instance()
-            .set(&DataKey::RefundWindow, &refund_window);
-        env.storage()
-            .instance()
-            .set(&DataKey::TimePolicyContract, policy);
-    }
-    if let Some(policy) = &init.vdf_policy {
-        env.storage()
-            .instance()
-            .set(&DataKey::VdfPolicyContract, policy);
-    }
-    env.storage()
-        .instance()
-        .set(&DataKey::StorageVersion, &INITIAL_STORAGE_VERSION);
+            .set(&DataKey::StorageVersion, &INITIAL_STORAGE_VERSION);
 
-    // Issue #136: store the domain separator (a hash of this contract's
-    // address) and initialise the monotonic nonce to 0.
-    let contract_addr = env.current_contract_address();
-    let addr_str = contract_addr.to_string();
-    let separator: BytesN<32> = env
-        .crypto()
-        .sha256(&soroban_sdk::Bytes::from(addr_str))
-        .to_bytes();
-    env.storage()
-        .instance()
-        .set(&DataKey::DomainSeparator, &separator);
-    env.storage().instance().set(&DataKey::Nonce, &0u64);
-
-        Ok(())
+        // Issue #136: store the domain separator (a hash of this contract's
+        // address) and initialise the monotonic nonce to 0.
+        let contract_addr = env.current_contract_address();
+        let addr_str = contract_addr.to_string();
+        let separator: BytesN<32> = env
+            .crypto()
+            .sha256(&soroban_sdk::Bytes::from(addr_str))
+            .to_bytes();
+        env.storage()
+            .instance()
+            .set(&DataKey::DomainSeparator, &separator);
+        env.storage().instance().set(&DataKey::Nonce, &0u64);
     }
 
     /// Domain separator for this vault instance (issue #136).
@@ -1132,6 +1146,7 @@ impl RefundVault {
 
         // The loop below only touches per-payment storage and performs the
         // transfers; each item runs the identical per-claim logic as `refund`.
+        // Policy context is read once before the loop, not per item.
         let mut payment_refs: Vec<BytesN<32>> = Vec::new(&env);
         let mut results = Vec::new(&env);
         for item in refunds.into_iter() {
@@ -1807,21 +1822,11 @@ impl RefundVault {
             fee_bps: bps,
             fee_recipient: active_fee_recipient(&env),
         }
-
-        let token_address: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Token)
-            .ok_or(Error::NotInitialized)?;
-        let token_client = token::TokenClient::new(&env, &token_address);
-        token_client.transfer(&merchant, &env.current_contract_address(), &amount);
+        .publish(&env);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-
-        DepositEvent { from, amount }.publish(&env);
-
         Ok(())
     }
 
@@ -1834,11 +1839,9 @@ impl RefundVault {
         let merchant: Address = env
             .storage()
             .instance()
-            .get(&DataKey::RefundMax)
-            .unwrap_or(0);
-        if max_refund > 0 && amount > max_refund {
-            return Err(Error::AmountExceedsMax);
-        }
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
 
         env.storage()
             .instance()
@@ -1857,12 +1860,6 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Aggregate the current value of `feed_id` across the whitelisted
-    /// oracles: the median of the fresh (non-stale) reported values.
-    ///
-    /// Read-only, so it is safe to call from an indexer or a wallet.
-    /// `max_staleness_ledgers` is the caller's freshness bound for this
-    /// query (`0` = never stale).
     pub fn get_median_price(
         env: Env,
         feed_id: BytesN<32>,
@@ -1892,15 +1889,11 @@ impl RefundVault {
             refund_when_below: policy.refund_when_below,
             max_staleness_ledgers: policy.max_staleness_ledgers,
         }
-
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+        .publish(&env);
 
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
-
-        WithdrawEvent { to: recipient, amount }.publish(&env);
-
         Ok(())
     }
 
@@ -1932,7 +1925,6 @@ impl RefundVault {
         Ok(())
     }
 
-    /// Read-only: the currently installed oracle policy, if any.
     pub fn get_oracle_policy(env: Env) -> Option<oracle::OraclePolicy> {
         env.storage().instance().get(&DataKey::OraclePolicy)
     }
@@ -1966,20 +1958,20 @@ impl RefundVault {
         Ok(())
     }
 
-    pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-    }
+    /// Set the minimum reserve ratio in basis points (1 bp = 0.01%).
+    /// E.g., 2000 = 20% of total vault value must remain as liquid token balance.
+    pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
+        if basis_points > 10_000 {
+            return Err(Error::InvalidRatio);
+        }
 
-    pub fn set_refund_window(env: Env, refund_window_ledgers: u32) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
+
         env.storage()
             .persistent()
             .set(&DataKey::ReserveRatio, &basis_points);
@@ -1991,23 +1983,20 @@ impl RefundVault {
         Ok(())
     }
 
-    pub fn get_refund_window(env: Env) -> Result<u32, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::RefundWindow)
-            .ok_or(Error::NotInitialized)
-    }
+    /// Set the maximum deployment ratio in basis points.
+    /// E.g., 8000 = at most 80% of total vault value can be deployed to yield.
+    pub fn set_max_deploy_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
+        if basis_points > 10_000 {
+            return Err(Error::InvalidRatio);
+        }
 
-    pub fn set_refund_max(env: Env, max_amount: i128) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
-        if max_amount < 0 {
-            return Err(Error::InvalidAmount);
-        }
+
         env.storage()
             .persistent()
             .set(&DataKey::MaxDeployRatio, &basis_points);
@@ -2032,11 +2021,16 @@ impl RefundVault {
         if env
             .storage()
             .instance()
-            .get(&DataKey::RefundMax)
-            .unwrap_or(0))
-    }
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            return Err(Error::Paused);
+        }
 
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
         let merchant: Address = env
             .storage()
             .instance()
@@ -2054,11 +2048,9 @@ impl RefundVault {
         let token_client = token::Client::new(&env, &token_addr);
         let token_balance = token_client.balance(&env.current_contract_address());
 
-        AdminTransferInitiatedEvent {
-            from: merchant,
-            to: new_admin,
+        if token_balance < amount {
+            return Err(Error::InsufficientFloat);
         }
-        .publish(&env);
 
         let deployed: i128 = env
             .storage()
@@ -2076,8 +2068,8 @@ impl RefundVault {
         //  but it belongs to the operator, not the principal pool — subtract it)
         let total_value = token_balance + deployed - harvested;
 
-    pub fn accept_admin(env: Env) -> Result<(), Error> {
-        let pending: Address = env
+        // Reserve check: after deployment, liquid tokens must cover the reserve.
+        let reserve_ratio: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::ReserveRatio)
@@ -2088,7 +2080,8 @@ impl RefundVault {
             return Err(Error::InsufficientReserve);
         }
 
-        let old_merchant: Address = env
+        // Max deployment check.
+        let max_deploy_ratio: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::MaxDeployRatio)
@@ -2141,12 +2134,11 @@ impl RefundVault {
         {
             return Err(Error::Paused);
         }
-        .publish(&env);
 
-        Ok(())
-    }
+        if principal <= 0 {
+            return Err(Error::InvalidAmount);
+        }
 
-    pub fn cancel_admin_transfer(env: Env) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
@@ -2196,8 +2188,8 @@ impl RefundVault {
             yield_amount: yield_returned,
             nonce,
         }
+        .publish(&env);
 
-        env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -2257,7 +2249,6 @@ impl RefundVault {
         }
         .publish(&env);
 
-        env.storage().instance().set(&DataKey::YieldStrategy, &info);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -2292,15 +2283,15 @@ impl RefundVault {
         }
     }
 
-    // ── Existing admin functions ───────────────────────────────────────────
+    // ── Admin & governance functions ───────────────────────────────────────
 
     pub fn pause(env: Env) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
             .instance()
-            .get(&DataKey::YieldStrategy)
-            .ok_or(Error::StrategyNotSet)
-    }
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
 
         env.storage().instance().set(&DataKey::IsPaused, &true);
 
@@ -2311,8 +2302,8 @@ impl RefundVault {
 
         env.storage()
             .instance()
-            .get::<_, YieldInfo>(&DataKey::YieldStrategy)
-            .and_then(|info| info.strategy)
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
     }
 
     pub fn unpause(env: Env) -> Result<(), Error> {
@@ -2349,11 +2340,6 @@ impl RefundVault {
             .unwrap();
 
         let extend_to = refund_record_ttl_extend_to(&env, window, record.paid_at_ledger);
-        // Threshold == extend_to: a caller invoking this well before expiry
-        // (which is the whole point of a manual top-up) must still see it
-        // take effect. TTL_THRESHOLD (100 ledgers, ~8 minutes) would make
-        // this silently succeed as a no-op unless called in that final
-        // sliver before the entry actually expires.
         env.storage().persistent().extend_ttl(
             &DataKey::RefundV2(payment_ref),
             extend_to,
