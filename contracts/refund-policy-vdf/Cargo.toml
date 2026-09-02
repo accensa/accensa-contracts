@@ -19,7 +19,7 @@ accensa-common = { workspace = true }
 # Wesolowski VDF verification (issue #138): big-integer modular exponentiation
 # in pure WASM. `default-features = false` keeps it no_std / no rand; it adds
 # no new crates over what the vault previously pulled in transitively.
-crypto-bigint = { version = "0.5.5", default-features = false }
+crypto-bigint = { version = "0.7.5", default-features = false }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
