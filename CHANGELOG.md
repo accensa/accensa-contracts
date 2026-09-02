@@ -27,6 +27,15 @@ breaking changes bump the **minor** version, and they are called out as such.
   by a test asserting the exact topics and data map the host records
   (`contracts/receipt-anchor/src/test.rs`), with shapes documented in
   `docs/EVENTS.md` and the README event table.
+### Performance
+
+- **`refund-vault`: policy-level state reads are now cached once per entry
+  point (issue #86).** `claim_single` no longer re-reads the six policy keys
+  (`RefundWindow`, `RefundDeadline`, `OraclePolicy`, `VdfDelay`, `Token`,
+  `FeeBps`) from instance storage on every claim. A `read_policy_cache` pass
+  builds a policy cache up front and `refund`, `claim_batch` and
+  `process_batch` share it, removing `6×(N−1)` redundant instance reads for a
+  batch of `N` claims (594 fewer reads for `process_batch` at `N=100`).
 
 ### Fixed
 
