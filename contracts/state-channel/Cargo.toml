@@ -17,5 +17,5 @@ soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
 
 [dev-dependencies]
-ed25519-dalek = "2.2"
+ed25519-dalek = "3.0"
 soroban-sdk = { workspace = true, features = ["testutils"] }
