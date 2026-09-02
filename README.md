@@ -123,13 +123,18 @@ Emits:
 
 | Event | Topics | Data |
 |---|---|---|
+| `InitializedEvent` | `("initialized_event", merchant)` | `shard_wasm_hash`, `ledger` |
 | `AnchorEvent` | `("anchor_event", shard_id, batch_id)` | `root`, `count`, `period_start`, `period_end`, `anchored_ledger` |
 | `PruneEvent` | `("prune_event", shard_id, start_batch_id)` | `end_batch_id` |
 | `ShardCreatedEvent` | `("shard_created_event", shard_id, shard_index)` | `shard_address`, `start_batch_id`, `end_batch_id` |
+| `RateLimitUpdatedEvent` | `("rate_limit_updated_event", previous_burst_capacity, previous_refill_interval_secs)` | `new_burst_capacity`, `new_refill_interval_secs`, `ledger` |
+| `AnchorIntervalUpdatedEvent` | `("anchor_interval_updated_event", previous_interval)` | `new_interval`, `ledger` |
 
 The `AnchorEvent` data map mirrors `BatchRecord`, so an indexer decodes it with the same
 shape `get_batch` returns. Because `batch_id` is only unique within a `shard_id`,
-indexers must key on the `(shard_id, batch_id)` pair. See
+indexers must key on the `(shard_id, batch_id)` pair. `PruneEvent` is emitted only
+when a `prune_batches` call actually deletes batches (the closed range
+`[start_batch_id, end_batch_id]`). See
 [`docs/EVENTS.md`](docs/EVENTS.md) for the pinned topic tuples.
 
 Proofs use **sorted-pair SHA-256**: siblings are concatenated smaller-hash-first, so

@@ -1620,3 +1620,271 @@ fn test_verify_zk_proof_end_to_end() {
     };
     assert!(!client.verify_zk_proof(&corrupted_proof, &vk, &public_inputs));
 }
+
+// ---------------------------------------------------------------------------
+// State-change events (issue #89)
+// ---------------------------------------------------------------------------
+
+use soroban_sdk::{testutils::Events, IntoVal, Map, Symbol, Val};
+
+/// Every state-mutating entry point emits a distinct event whose topics and
+/// data map pin the full state transition, so an indexer can reconstruct the
+/// contract's configuration from the event log alone. These tests assert the
+/// exact `(contract, topics, data)` triples the host records, keyed by the
+/// `*_event` topic symbol documented in `docs/EVENTS.md`.
+
+#[test]
+fn test_initialized_event_emitted() {
+    let (env, client, merchant) = setup();
+
+    let wasm_hash = shard_wasm_hash(&env);
+    env.ledger().with_mut(|li| li.sequence_number = 77);
+    client.initialize(&merchant, &wasm_hash);
+
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "ledger").into_val(&env),
+        77u32.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "shard_wasm_hash").into_val(&env),
+        wasm_hash.clone().into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "initialized_event"), merchant.clone()).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_rate_limit_updated_event_emitted() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    // Enable: topics carry the previous config ({0, 0} = disabled), the data
+    // map the new one.
+    env.ledger().with_mut(|li| li.sequence_number = 500);
+    client.set_anchor_rate_limit(&5, &120);
+
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "ledger").into_val(&env),
+        500u32.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "new_burst_capacity").into_val(&env),
+        5u32.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "new_refill_interval_secs").into_val(&env),
+        120u32.into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "rate_limit_updated_event"), 0u32, 0u32).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+
+    // Disable: topics carry the config being replaced.
+    client.set_anchor_rate_limit(&0, &0);
+
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "ledger").into_val(&env),
+        500u32.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "new_burst_capacity").into_val(&env),
+        0u32.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "new_refill_interval_secs").into_val(&env),
+        0u32.into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "rate_limit_updated_event"), 5u32, 120u32).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_anchor_interval_updated_event_emitted() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    env.ledger().with_mut(|li| li.sequence_number = 900);
+    client.set_min_anchor_interval(&90);
+
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "ledger").into_val(&env),
+        900u32.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "new_interval").into_val(&env),
+        90u32.into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "anchor_interval_updated_event"), 0u32).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+
+    // Setting 0 disables the check; the topic records the value it replaced.
+    client.set_min_anchor_interval(&0);
+
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "ledger").into_val(&env),
+        900u32.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "new_interval").into_val(&env),
+        0u32.into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "anchor_interval_updated_event"), 90u32).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_prune_event_emitted_with_deleted_range() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    for i in 0..3u8 {
+        client.anchor_batch(
+            &DEFAULT_SHARD,
+            &BytesN::from_array(&env, &[i + 1; 32]),
+            &1,
+            &0,
+            &10,
+        );
+    }
+
+    // Prune everything: batches 1..=3 are deleted, so the event brackets the
+    // closed range [1, 3] of deleted batch ids.
+    env.ledger().with_mut(|li| li.sequence_number = 300);
+    let pruned = client.prune_batches(&DEFAULT_SHARD, &400);
+    assert_eq!(pruned, 4);
+
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "end_batch_id").into_val(&env),
+        3u64.into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "prune_event"), DEFAULT_SHARD, 1u64).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+
+    // A second call with nothing left to prune does not emit: the cursor did
+    // not advance, so there is no deleted range to report.
+    client.prune_batches(&DEFAULT_SHARD, &400);
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![&env]
+    );
+}
+
+#[test]
+fn test_prune_event_isolated_per_shard() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    for shard in 1..=2u64 {
+        for i in 0..2u8 {
+            client.anchor_batch(
+                &shard,
+                &BytesN::from_array(&env, &[(i + 1) * 16 + shard as u8; 32]),
+                &1,
+                &0,
+                &10,
+            );
+        }
+    }
+
+    // Pruning shard 1 emits an event scoped to shard 1 only.
+    env.ledger().with_mut(|li| li.sequence_number = 300);
+    client.prune_batches(&1, &400);
+
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "end_batch_id").into_val(&env),
+        2u64.into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "prune_event"), 1u64, 1u64).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+
+    // ...and pruning shard 2 afterwards reports shard 2's own range.
+    client.prune_batches(&2, &400);
+
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "end_batch_id").into_val(&env),
+        2u64.into_val(&env),
+    );
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "prune_event"), 2u64, 1u64).into_val(&env),
+                data.into_val(&env)
+            )
+        ]
+    );
+}
