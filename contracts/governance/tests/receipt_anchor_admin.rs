@@ -1,6 +1,6 @@
 //! Governance as `ReceiptAnchor`'s admin — closes the single-admin-key SPOF
 //! (see `docs/SECURITY_MODEL.md`) for the merchant-gated calls that
-//! genuinely exist on the contract (`set_min_anchor_interval`,
+//! genuinely exist on the contract (`set_anchor_rate_limit`,
 //! `anchor_batch`, `prune_batches`). `ReceiptAnchor` has no upgrade entry
 //! point (see `docs/ADR-003-upgradeability.md`, accepted: both contracts are
 //! deliberately immutable), so there is nothing to gate there — this
@@ -9,7 +9,7 @@
 //! `ReceiptAnchor::initialize` accepts any `Address` as merchant, including
 //! a contract's (`multisig_admin_anchor.rs` already proves this with a
 //! `MultisigAccount`). These tests initialize it with a `Governance`
-//! instance instead and drive `set_min_anchor_interval`/`prune_batches`
+//! instance instead and drive `set_anchor_rate_limit`/`prune_batches`
 //! through `propose`/`vote`/`execute`, with **no change to `ReceiptAnchor`
 //! itself**: `execute`'s nested call satisfies `merchant.require_auth()`
 //! because the host auto-authorizes a contract's own address when that
@@ -27,6 +27,9 @@ use soroban_sdk::{
     testutils::{Address as _, MockAuth, MockAuthInvoke},
     Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
+
+/// Logical shard used by these governance-admin tests (single-stream).
+const DEFAULT_SHARD: u64 = 0;
 
 /// The `ReceiptShard` wasm, built by `cargo build -p receipt-shard --target
 /// wasm32v1-none --release` before these tests run (see `.github/workflows/ci.yml`).
@@ -111,14 +114,14 @@ fn mock_propose_auth(
     }]);
 }
 
-/// A quorum of governance votes gates `set_min_anchor_interval`; once
+/// A quorum of governance votes gates `set_anchor_rate_limit`; once
 /// passed, `execute` applies it with no auth entries of its own.
 #[test]
-fn set_min_anchor_interval_requires_full_quorum_then_executes() {
+fn set_anchor_rate_limit_requires_full_quorum_then_executes() {
     let (env, gov, anchor, gov_id, m1, m2) = setup();
 
-    let function = Symbol::new(&env, "set_min_anchor_interval");
-    let call_args = Vec::from_array(&env, [3600u32.into_val(&env)]);
+    let function = Symbol::new(&env, "set_anchor_rate_limit");
+    let call_args = Vec::from_array(&env, [1u32.into_val(&env), 3600u32.into_val(&env)]);
 
     mock_propose_auth(&env, &gov_id, &m1, &anchor.address, &function, &call_args);
     let id = gov.propose(&m1, &anchor.address, &function, &call_args);
@@ -142,7 +145,13 @@ fn set_min_anchor_interval_requires_full_quorum_then_executes() {
     env.set_auths(&[]);
     gov.execute(&id);
 
-    assert_eq!(anchor.get_min_anchor_interval(), 3600);
+    assert_eq!(
+        anchor.get_anchor_rate_limit(),
+        receipt_anchor::RateLimitConfig {
+            burst_capacity: 1,
+            refill_interval_secs: 3600,
+        }
+    );
 }
 
 /// `anchor_batch` and `prune_batches` — both merchant-gated — also run only
@@ -156,6 +165,7 @@ fn anchor_and_prune_run_through_governance() {
     let anchor_args = Vec::from_array(
         &env,
         [
+            DEFAULT_SHARD.into_val(&env),
             root.into_val(&env),
             10u32.into_val(&env),
             100u64.into_val(&env),
@@ -179,11 +189,14 @@ fn anchor_and_prune_run_through_governance() {
     env.set_auths(&[]);
     gov.execute(&anchor_proposal);
 
-    let batch = anchor.get_batch(&1);
+    let batch = anchor.get_batch(&DEFAULT_SHARD, &1);
     assert_eq!(batch.count, 10, "the anchored batch must be stored");
 
     let prune_fn = Symbol::new(&env, "prune_batches");
-    let prune_args = Vec::from_array(&env, [1_000_000u32.into_val(&env)]);
+    let prune_args = Vec::from_array(
+        &env,
+        [DEFAULT_SHARD.into_val(&env), 1_000_000u32.into_val(&env)],
+    );
 
     mock_propose_auth(&env, &gov_id, &m2, &anchor.address, &prune_fn, &prune_args);
     let prune_proposal = gov.propose(&m2, &anchor.address, &prune_fn, &prune_args);
@@ -195,7 +208,7 @@ fn anchor_and_prune_run_through_governance() {
     gov.execute(&prune_proposal);
 
     assert!(
-        anchor.try_get_batch(&1).is_err(),
+        anchor.try_get_batch(&DEFAULT_SHARD, &1).is_err(),
         "the pruned batch must be gone"
     );
 }

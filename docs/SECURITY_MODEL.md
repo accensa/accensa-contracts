@@ -140,9 +140,24 @@ window-based refunds.
   simply never restored — causes `refund` to fail closed (a host trap on
   accessing an archived entry) or fail open (a stale read). The test host
   auto-heals expired entries rather than modeling archival, so it cannot
-  distinguish the two. Treat this as an open item for anyone auditing against
-  testnet/mainnet directly, and see #122 for a nonce-based alternative that
-  would not depend on the answer either way.
+  distinguish the two. As belt-and-suspenders for the same threat, every
+  claim entry point carries a **per-user nonce** (see below), so a request
+  cannot be replayed regardless of how the guard behaves around archival.
+- **Per-user nonce (issue #122):** each `refund`, `claim_batch`, and
+  `process_batch` call must present a `nonce` that exactly equals the
+  caller's (the merchant's) stored counter, which starts at `0` and
+  increments by one on every *successful* claim call
+  (`get_user_nonce` exposes the expected next value). Failure to match —
+  whether a replay of an already-consumed nonce or a skipped one — reverts
+  the whole call with `Error::StaleState`, mirroring the state channel's
+  nonce-replay semantics. Because the nonce check runs inside the call,
+  before the payment executes, a failed claim reverts atomically and does
+  *not* consume a nonce; an empty `process_batch` returns early and
+  deliberately consumes none. This is complementary to (not a substitute
+  for) the cumulative `RefundV2` ceiling: the ceiling stops a payment from
+  being double-refunded, while the nonce stops an identical signed refund
+  *request* from being submitted twice — e.g. through an RPC endpoint or
+  facilitator that retries or replays transactions.
 
 ### Anchor Spam / Storage Bloat
 - **Threat:** A malicious actor (or a compromised merchant key) submits a

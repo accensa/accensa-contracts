@@ -166,6 +166,8 @@ pub enum Error {
     /// policy's schema (`TimePolicyParams` / `VdfPolicyParams`). Indicates a
     /// vault configured a policy entry against the wrong contract.
     InvalidPolicyParams = 318,
+    /// A refund/claim was submitted before the minimum cooldown elapsed.
+    ClaimCooldownNotElapsed = 320,
 }
 
 /// Parameters for the stateless **time** policy contract (issue #129).
