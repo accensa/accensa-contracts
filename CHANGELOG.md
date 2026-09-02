@@ -8,6 +8,26 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+### Added
+
+- **Distinct events for every `ReceiptAnchor` state change** (issue #89):
+  `prune_batches` now actually emits the long-documented `PruneEvent` — it was
+  defined in the code and pinned in `docs/EVENTS.md` but never published —
+  bracketing the deleted batch ids as the closed range
+  `[start_batch_id, end_batch_id]`, and is suppressed when a call deletes
+  nothing so no-op calls do not spam the log. Admin configuration changes emit
+  three new events: `InitializedEvent` (from `initialize`; carries the merchant
+  and shard wasm hash so a deployment is discoverable from the event log
+  alone), `RateLimitUpdatedEvent` (from `set_anchor_rate_limit`; topics carry
+  the previous `{burst, refill}` config and the data map the new one, so a
+  reader never joins two events) and `AnchorIntervalUpdatedEvent` (from
+  `set_min_anchor_interval`; previous interval in the topics, new interval in
+  the data map). Both config events also carry the ledger sequence. New events
+  are additive — no existing topic tuple or field changed — and each is pinned
+  by a test asserting the exact topics and data map the host records
+  (`contracts/receipt-anchor/src/test.rs`), with shapes documented in
+  `docs/EVENTS.md` and the README event table.
+
 ### Fixed
 
 - **Repaired source corruption that left `main` unable to compile.** Two bad

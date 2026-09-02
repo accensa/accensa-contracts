@@ -148,7 +148,11 @@ pub struct AnchorEvent {
 /// stream.
 ///
 /// Topics: `("prune_event", shard_id, start_batch_id)`. Pruning is per logical
-/// shard, so `shard_id` is required to disambiguate the range.
+/// shard, so `shard_id` is required to disambiguate the range. The deleted
+/// batch ids are exactly `[start_batch_id, end_batch_id]` — inclusive on both
+/// ends — and every id in between, so a reader can drop all batches in the
+/// closed range from its index. Not emitted when a call prunes nothing (the
+/// cursor did not advance).
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PruneEvent {
@@ -171,6 +175,55 @@ pub struct ShardCreatedEvent {
     pub shard_address: Address,
     pub start_batch_id: u64,
     pub end_batch_id: u64,
+}
+
+/// Emitted once by [`ReceiptAnchor::initialize`], after the admin, shard wasm
+/// hash and default configuration have been written. Lets indexers discover a
+/// new anchor deployment (and its merchant) from the event log alone.
+///
+/// Topics: `("initialized_event", merchant)`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InitializedEvent {
+    #[topic]
+    pub merchant: Address,
+    pub shard_wasm_hash: BytesN<32>,
+    pub ledger: u32,
+}
+
+/// Emitted when the merchant reconfigures the `anchor_batch` token-bucket rate
+/// limit via [`ReceiptAnchor::set_anchor_rate_limit`].
+///
+/// Topics: `("rate_limit_updated_event", previous_burst_capacity,
+/// previous_refill_interval_secs)`. The topics carry the configuration in
+/// force *before* the change and the data map the one in force *after* it, so
+/// a reader reconstructing the limiter never needs to join two events. A
+/// `{0, 0}` pair means rate limiting is disabled.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateLimitUpdatedEvent {
+    #[topic]
+    pub previous_burst_capacity: u32,
+    #[topic]
+    pub previous_refill_interval_secs: u32,
+    pub new_burst_capacity: u32,
+    pub new_refill_interval_secs: u32,
+    pub ledger: u32,
+}
+
+/// Emitted when the merchant reconfigures the minimum interval (in seconds)
+/// between consecutive anchors via [`ReceiptAnchor::set_min_anchor_interval`].
+///
+/// Topics: `("anchor_interval_updated_event", previous_interval)` — the
+/// configuration in force *before* the change; the data map carries the new
+/// one. `0` disables the check.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnchorIntervalUpdatedEvent {
+    #[topic]
+    pub previous_interval: u32,
+    pub new_interval: u32,
+    pub ledger: u32,
 }
 
 /// Approximately 30 days of ledgers, assuming ~5 seconds per ledger.
@@ -255,6 +308,14 @@ impl ReceiptAnchor {
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+
+        InitializedEvent {
+            merchant,
+            shard_wasm_hash,
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -579,9 +640,30 @@ impl ReceiptAnchor {
             return Err(Error::InvalidRateLimitConfig);
         }
 
+        // Capture the configuration in force before the overwrite so the event
+        // can carry both sides of the change.
+        let previous: RateLimitConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::RateLimitConfig)
+            .unwrap_or(RateLimitConfig {
+                burst_capacity: 0,
+                refill_interval_secs: 0,
+            });
+
         env.storage()
             .instance()
             .set(&DataKey::RateLimitConfig, &config);
+
+        RateLimitUpdatedEvent {
+            previous_burst_capacity: previous.burst_capacity,
+            previous_refill_interval_secs: previous.refill_interval_secs,
+            new_burst_capacity: config.burst_capacity,
+            new_refill_interval_secs: config.refill_interval_secs,
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -600,9 +682,23 @@ impl ReceiptAnchor {
             return Err(Error::BatchTooLarge);
         }
 
+        let previous: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinAnchorInterval)
+            .unwrap_or(0);
+
         env.storage()
             .instance()
             .set(&DataKey::MinAnchorInterval, &interval);
+
+        AnchorIntervalUpdatedEvent {
+            previous_interval: previous,
+            new_interval: interval,
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -804,6 +900,10 @@ impl ReceiptAnchor {
             .instance()
             .get(&DataKey::ShardBatchCount(shard_id))
             .unwrap_or(0);
+        // Where the cursor started, i.e. the first batch id this call could
+        // have deleted. If the cursor advances, every batch id in
+        // `[start_batch_id, cursor)` was deleted (or was already absent).
+        let start_batch_id = cursor;
 
         while cursor <= batch_count && (pruned_count as u32) < MAX_PRUNE_BATCHES {
             let shard_addr = match Self::shard_for_batch(&env, shard_id, cursor) {
@@ -829,6 +929,20 @@ impl ReceiptAnchor {
         env.storage()
             .instance()
             .set(&DataKey::ShardPrunedUpTo(shard_id), &cursor);
+
+        // Emit only when the cursor actually advanced: every no-op call
+        // re-persists the untouched cursor, and spamming the log on those
+        // would drown the real pruning signal. On an advance the deleted
+        // batch ids are exactly `[start_batch_id, cursor)`, so the event
+        // brackets the range inclusive on both ends.
+        if cursor > start_batch_id {
+            PruneEvent {
+                shard_id,
+                start_batch_id,
+                end_batch_id: cursor - 1,
+            }
+            .publish(&env);
+        }
 
         Ok(cursor)
     }
