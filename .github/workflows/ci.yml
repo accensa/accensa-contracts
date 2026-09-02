@@ -268,7 +268,7 @@ jobs:
           cat budget-report.json >> $GITHUB_STEP_SUMMARY
       - name: Upload Tier B report
         if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: budget-report-${{ github.sha }}
           path: budget-report.json
