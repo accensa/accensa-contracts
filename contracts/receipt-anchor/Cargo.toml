@@ -22,7 +22,7 @@ budget-assert = ["dep:budget_macros"]
 [dependencies]
 soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
 # Tollcraft/soroban-budget-assert — Tier A local assertion macros, used only
 # by the `#[cfg(test)]`-gated `budget_test` module. Cargo does not allow
 # optional *dev*-dependencies, so this lives here, optional, gated by the
