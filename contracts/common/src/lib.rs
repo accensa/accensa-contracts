@@ -173,6 +173,8 @@ pub enum Error {
     /// (issue #396). The operation was refused *before* any state changed;
     /// raw operators never run in the shared math helpers.
     MathOverflow = 321,
+    /// Explicit Soroban Host error mapping (issue #380).
+    HostError = 500,
 }
 
 /// Parameters for the stateless **time** policy contract (issue #129).

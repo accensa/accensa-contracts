@@ -185,23 +185,27 @@ impl Model {
 
             let mut expected_balance: i128 = 0;
 
-            // Deposits
+            // Deposits: simulate multiple deposit operations
             for amt in deposit_amounts {
+                // If deposit succeeds, the vault balance increases by `amt`
                 if client.try_deposit(&merchant, &amt).is_ok() {
                     expected_balance += amt;
                 }
+                // Assert the actual balance matches expected after each deposit
                 let actual_balance = token_client.balance(&client.address);
                 assert_eq!(actual_balance, expected_balance, "Invariant mismatch after deposit");
             }
 
-            // Refunds
+            // Refunds: simulate multiple refund operations for the deposits made
             let mut refund_nonce: u64 = 0;
             for (idx, amt) in refund_amounts.into_iter().enumerate() {
+                // Generate a unique payment reference for the refund
                 let mut ref_bytes = [0u8; 32];
                 ref_bytes[0] = (idx + 1) as u8;
                 let payment_ref = BytesN::from_array(&env, &ref_bytes);
                 let recipient = Address::generate(&env);
 
+                // Attempt to refund. If successful, expected balance decreases
                 if client
                     .try_refund(&payment_ref, &recipient, &amt, &0, &amt, &None, &refund_nonce)
                     .is_ok()
@@ -209,15 +213,18 @@ impl Model {
                     expected_balance -= amt;
                     refund_nonce += 1;
                 }
+                // Validate balance invariant after each refund
                 let actual_balance = token_client.balance(&client.address);
                 assert_eq!(actual_balance, expected_balance, "Invariant mismatch after refund");
             }
 
-            // Withdrawals
+            // Withdrawals: simulate withdrawing remaining funds
             for amt in withdraw_amounts {
+                // If withdrawal is successful, expected balance decreases
                 if client.try_withdraw(&amt, &merchant).is_ok() {
                     expected_balance -= amt;
                 }
+                // Ensure the final balance matches expected balance
                 let actual_balance = token_client.balance(&client.address);
                 assert_eq!(actual_balance, expected_balance, "Invariant mismatch after withdrawal");
             }

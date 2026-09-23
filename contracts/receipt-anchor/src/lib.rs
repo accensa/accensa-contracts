@@ -19,6 +19,10 @@ contractmeta!(
 );
 contractmeta!(key = "commit", val = env!("GIT_SHA"));
 contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
+contractmeta!(
+    key = "rsrvmeta",
+    val = r#"{"repository":"https://github.com/accensa/accensa-contracts","description":"State-minimized receipt anchoring contract for x402 on Stellar"}"#
+);
 
 #[contracttype]
 pub enum DataKey {

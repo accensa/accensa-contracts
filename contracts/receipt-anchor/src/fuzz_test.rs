@@ -740,7 +740,11 @@ proptest! {
         ops in proptest::collection::vec(op_strategy(), 0..=fuzz_seq_len()),
     ) {
         let (env, client, _merchant) = setup();
+
+        // Execute the generated sequence of operations and track any invariant violations
         let failures = execute(&env, &client, &ops);
+
+        // Assert that no invariants were violated during the operation sequence
         assert!(
             failures.is_empty(),
             "invariants violated:\n{}",
@@ -762,12 +766,18 @@ proptest! {
     ) {
         let (env, client, _merchant) = setup();
         let mut ops = std::vec::Vec::new();
+
+        // Populate anchor operations with the randomly generated seeds and leaf counts
         for (seed, leaf_count) in anchors {
             ops.push(Op::Anchor { seed, leaf_count });
         }
+
+        // Append verification operations that attempt to verify against the anchored batches
         for target in verifies {
             ops.push(Op::Verify { target });
         }
+
+        // Execute the operations. The test oracle inside execute() will assert that invalid proofs are correctly rejected.
         let failures = execute(&env, &client, &ops);
         assert!(
             failures.is_empty(),

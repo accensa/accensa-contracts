@@ -17,6 +17,10 @@ contractmeta!(
 contractmeta!(key = "commit", val = env!("GIT_SHA"));
 
 contractmeta!(key = "commit_dirty", val = env!("GIT_DIRTY"));
+contractmeta!(
+    key = "rsrvmeta",
+    val = r#"{"repository":"https://github.com/accensa/accensa-contracts","description":"Policy-bounded merchant refund vault for x402 on Stellar"}"#
+);
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
