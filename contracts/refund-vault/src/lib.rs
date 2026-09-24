@@ -2665,6 +2665,8 @@ mod oracle_tests;
 #[cfg(test)]
 mod reentrancy_tests;
 #[cfg(test)]
+mod streaming_tests;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_helpers;
