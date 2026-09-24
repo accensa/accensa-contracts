@@ -176,6 +176,14 @@ pub enum Error {
     /// (issue #396). The operation was refused *before* any state changed;
     /// raw operators never run in the shared math helpers.
     MathOverflow = 321,
+    /// No disbursement stream exists under the given id (issue #410). A
+    /// stream that was cancelled or ran to completion is removed, so it also
+    /// reports this error.
+    StreamNotFound = 322,
+    /// The disbursement stream is not in the state this operation requires,
+    /// e.g. pausing an already-paused stream or resuming a running one
+    /// (issue #410).
+    StreamNotActive = 323,
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }
