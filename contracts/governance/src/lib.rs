@@ -433,7 +433,9 @@ impl Governance {
 
     /// Read-only: whether `member` is registered.
     pub fn is_member(env: Env, member: Address) -> bool {
-        env.storage().persistent().has(&DataKey::MemberDeposit(member))
+        env.storage()
+            .persistent()
+            .has(&DataKey::MemberDeposit(member))
     }
 
     /// Read-only: whether `voter` has already voted on `proposal_id`.

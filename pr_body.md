@@ -1,11 +1,10 @@
-- closes #398
-- closes #380
-- closes #294
-- closes #290
+- closes #375
+- closes #385
+- closes #386
+- closes #388
 
-### Changes Made
-
-- **Issue #398**: Added Standardized SEP-0026 Soroban Contract Registry Metadata in the contract `lib.rs` files using `rsrvmeta`.
-- **Issue #380**: Standardized the `Error` code enum in `contracts/common/src/lib.rs` by adding a specific `HostError` variant to explicitly map Soroban host errors.
-- **Issue #294**: Improved inline documentation and comments in `contracts/refund-vault/src/fuzz_test.rs` to better explain the property test invariants.
-- **Issue #290**: Improved inline documentation and comments in `contracts/receipt-anchor/src/fuzz_test.rs` to better explain the operations and invariant checking logic.
+### Changes Implemented
+- **Issue #375**: Implemented `extract_fee` with a Tiered Fee Assessment Hook in `refund-vault-factory/src/fee.rs`, varying the fee assessed depending on the tier.
+- **Issue #385**: Added a Batch Transaction Execution Pipeline by implementing `execute_batch` on `MultisigAccount` to run sequences of calls within a single transaction in `multisig-account/src/lib.rs`.
+- **Issue #386**: Implemented `verify_zk_commitment` on `StateChannel` for Zero-Knowledge Commitment Verification of Off-Chain Settlements in `state-channel/src/lib.rs`.
+- **Issue #388**: Implemented `ReentrancyGuard` module in `common/src/reentrancy.rs` to serve as a Cross-Contract Call Reentrancy Guard Protocol across applications.

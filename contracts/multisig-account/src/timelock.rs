@@ -129,7 +129,7 @@ pub fn cancel_queued_transaction(
 //! Approve a queued transaction. Each authorized signer can approve once.
 //!
 //! Returns `Ok(())` if the approval was recorded.
-//! Returns `Err(Error::AlreadyVoted)` if the signer has already approved.
+/// Returns `Err(Error::AlreadyVoted)` if the signer has already approved.
 pub fn approve_queued_transaction(
     env: &Env,
     queue_id: u64,

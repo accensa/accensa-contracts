@@ -128,6 +128,26 @@ impl MultisigAccount {
     ) -> Result<(), Error> {
         signers::rotate_signers_and_threshold(&env, to_add, to_remove, new_threshold)
     }
+
+    /// Execute a batch of transactions
+    pub fn execute_batch(env: Env, calls: Vec<Call>) -> Vec<soroban_sdk::Val> {
+        env.current_contract_address().require_auth();
+        
+        let mut results = Vec::new(&env);
+        for call in calls.iter() {
+            let res = env.invoke_contract(&call.contract, &call.function, call.args);
+            results.push_back(res);
+        }
+        results
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Call {
+    pub contract: Address,
+    pub function: soroban_sdk::Symbol,
+    pub args: Vec<soroban_sdk::Val>,
 }
 
 #[contractimpl]

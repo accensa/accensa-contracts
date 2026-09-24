@@ -14,7 +14,7 @@ impl NonceBitmap {
         let bit_index = nonce % 256;
         let byte_index = bit_index / 8;
         let bit_in_byte = bit_index % 8;
-        
+
         let byte = self.bitmap.get(byte_index as u32).unwrap_or(0);
         (byte & (1 << bit_in_byte)) != 0
     }
