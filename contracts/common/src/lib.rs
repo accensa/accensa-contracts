@@ -176,19 +176,25 @@ pub enum Error {
     /// (issue #396). The operation was refused *before* any state changed;
     /// raw operators never run in the shared math helpers.
     MathOverflow = 321,
+    /// The yield strategy is not on the vault's admin-approved whitelist
+    /// (issue #415).
+    StrategyNotApproved = 322,
+    /// The active yield strategy still holds deployed principal, so it cannot
+    /// be replaced or revoked until that principal is recalled (issue #415).
+    StrategyHasPrincipal = 323,
     /// No escrow record exists for the NFT contract/token id (issue #474).
-    NftEscrowNotFound = 322,
+    NftEscrowNotFound = 324,
     /// The NFT contract/token id is already escrowed in this vault
     /// (issue #474).
-    NftAlreadyEscrowed = 323,
+    NftAlreadyEscrowed = 325,
     /// The vault is not the current owner of the NFT it was asked to release
     /// (issue #474).
-    NftNotOwned = 324,
+    NftNotOwned = 326,
     /// No dispute is recorded under the given id in the fallback-oracle
     /// ledger (issue #469).
-    DisputeNotFound = 325,
+    DisputeNotFound = 327,
     /// A fallback-oracle dispute was already settled (issue #469).
-    DisputeClosed = 326,
+    DisputeClosed = 328,
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }

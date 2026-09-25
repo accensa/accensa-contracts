@@ -181,9 +181,9 @@ impl MockYieldStrategy {
 
 // ── Test helpers ───────────────────────────────────────────────────────────
 
-const FLOAT: i128 = 10_000_000;
+pub(crate) const FLOAT: i128 = 10_000_000;
 
-fn setup_with_strategy(
+pub(crate) fn setup_with_strategy(
     reserve_bp: u32,
     max_deploy_bp: u32,
 ) -> (
@@ -212,6 +212,7 @@ fn setup_with_strategy(
 
     StellarAssetClient::new(&env, &token).mint(&strategy_addr, &FLOAT);
 
+    vault_client.approve_yield_strategy(&strategy_addr);
     vault_client.set_yield_strategy(&strategy_addr);
     vault_client.set_reserve_ratio(&reserve_bp);
     vault_client.set_max_deploy_ratio(&max_deploy_bp);
@@ -569,8 +570,28 @@ fn test_refund_succeeds_after_deploy_within_reserve() {
     assert_eq!(tc.balance(&vault_client.address), 1_500_000);
 }
 
+/// Issue #415: deployed principal is instantly redeemable. A refund larger
+/// than the liquid float recalls exactly the shortfall from the strategy.
 #[test]
-fn test_refund_exceeding_liquid_after_deploy_fails() {
+fn test_refund_exceeding_liquid_after_deploy_recalls_principal() {
+    let (env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(2000, 8000);
+
+    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deploy_to_yield(&3_000_000);
+
+    let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
+    let buyer = Address::generate(&env);
+    vault_client.refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000, &None, &0);
+
+    assert_eq!(tc.balance(&buyer), 2_500_000);
+    assert_eq!(tc.balance(&vault_client.address), 0);
+    assert_eq!(vault_client.get_yield_info().deployed_principal, 2_500_000);
+}
+
+/// A refund larger than liquid float *plus* all deployed principal still
+/// fails closed with `InsufficientFloat`, and nothing is recalled.
+#[test]
+fn test_refund_exceeding_total_value_fails() {
     let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
     vault_client.deposit(&merchant, &5_000_000);
@@ -579,9 +600,10 @@ fn test_refund_exceeding_liquid_after_deploy_fails() {
     let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
-        vault_client.try_refund(&payment_ref, &buyer, &2_500_000, &0, &2_500_000, &None, &0),
+        vault_client.try_refund(&payment_ref, &buyer, &5_000_001, &0, &5_000_001, &None, &0),
         Err(Ok(Error::InsufficientFloat))
     );
+    assert_eq!(vault_client.get_yield_info().deployed_principal, 3_000_000);
 }
 
 #[test]

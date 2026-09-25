@@ -9,6 +9,20 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`RefundVault` (issue #415): yield-bearing escrow strategy hook.** The
+  `YieldStrategy` interface moves to `src/strategy.rs`. Strategies must be
+  whitelisted with `approve_yield_strategy` (`revoke_yield_strategy`,
+  `is_strategy_approved`) before `set_yield_strategy` / `deploy_to_yield`
+  accept them (`Error::StrategyNotApproved`); a strategy still holding
+  principal cannot be replaced or revoked (`Error::StrategyHasPrincipal`).
+  Deployed principal is now instantly redeemable: `refund`, `claim_batch`,
+  `process_batch` and `withdraw` recall any liquidity shortfall from the
+  strategy in the same call, checked against the vault's real balance delta.
+  `emergency_exit_yield` recalls all principal, even while paused.
+  `set_yield_recipient` / `distribute_yield` route harvested yield to the
+  protocol treasury or a merchant rebate pool (default: the merchant).
+  **Behaviour change:** a refund larger than the liquid float but covered by
+  deployed principal now succeeds instead of failing with `InsufficientFloat`.
 - **`refund-vault-factory` (issue #472): deterministic CREATE2-style vault
   deployments.** New `deploy_for_participants(init, buyer)` derives the
   deployment salt as `sha256(buyer ‖ merchant)` (a pure function of the escrow
@@ -184,6 +198,13 @@ breaking changes bump the **minor** version, and they are called out as such.
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+- **`state-channel`: restore the build.** The merge of #504 dropped the
+  `extend_instance_ttl` and `NonceWindow` imports and the `nonce` module
+  declaration, and `nonce.rs` used a non-existent `BytesN::zero` and a
+  module-level `#![no_std]`.
+- **`common`, `refund-vault`: clippy clean again.** Removed a module-level
+  `#![no_std]` in `common/src/storage.rs` and a needless borrow in
+  `refund-vault`.
 
 - **Repaired source corruption that left `main` unable to compile.** Two bad
   merges (`a6e234b`, then `8eb4fa6` "Resolve conflicts in PR 263") committed

@@ -14,6 +14,10 @@
 //! - `__check_auth` requires every attached delegated signer to be a registered
 //!   signer, and the count of distinct delegates to be at least `threshold`.
 //!
+//! - Governance may set a per-token daily allowance ([`limits`]); a routine
+//!   token transfer authorized by fewer than `threshold` signers is then
+//!   accepted while it fits in each signer's remaining daily quota.
+//!
 //! This is the piece referenced by `docs/SECURITY_MODEL.md` and
 //! `DEPLOYMENTS.md`: initialize an app contract with the multisig account's
 //! address, and privileged calls now need `threshold` approved signers.
@@ -21,6 +25,7 @@
 #![no_std]
 
 pub mod crypto;
+pub mod limits;
 mod signers;
 pub mod timelock;
 
@@ -54,6 +59,11 @@ pub enum Error {
     /// An Ed25519 signature's `s` scalar is not canonical (`s >= L`), i.e.
     /// it is a malleated form of some other valid signature.
     NonCanonicalSignature = 7,
+    /// A sub-threshold spend would exceed a signer's remaining daily
+    /// allowance; the full threshold is required.
+    DailyLimitExceeded = 8,
+    /// A daily limit must not be negative.
+    InvalidLimit = 9,
 }
 
 #[contracttype]
@@ -70,6 +80,11 @@ pub enum DataKey {
     TimelockGuardian,
     /// Persistent: a queued transaction identified by its queue ID.
     QueuedTransaction(u64),
+    /// Instance: daily allowance for sub-threshold spends of a token (`i128`).
+    DailyLimit(Address),
+    /// Instance: a signer's spending of a token in the current window
+    /// ([`limits::SpendingLimit`]).
+    Spending(Address, Address),
 }
 
 /// A threshold account enforcing that `threshold` distinct registered signers
@@ -133,6 +148,22 @@ impl MultisigAccount {
         signers::rotate_signers_and_threshold(&env, to_add, to_remove, new_threshold)
     }
 
+    /// Set the daily allowance for sub-threshold transfers of `token`
+    /// (`0` disables it). Requires the full threshold.
+    pub fn set_daily_limit(env: Env, token: Address, limit: i128) -> Result<(), Error> {
+        limits::set_daily_limit(&env, token, limit)
+    }
+
+    /// The daily allowance configured for `token` (`0` = none).
+    pub fn get_daily_limit(env: Env, token: Address) -> i128 {
+        limits::daily_limit(&env, &token)
+    }
+
+    /// What `signer` has spent of `token` in the current 24-hour window.
+    pub fn get_spent_today(env: Env, signer: Address, token: Address) -> i128 {
+        limits::spent_today(&env, &signer, &token)
+    }
+
     /// Verify an Ed25519 `signature` by `public_key` over `message`,
     /// rejecting malleable encodings.
     ///
@@ -160,7 +191,7 @@ impl CustomAccountInterface for MultisigAccount {
         env: Env,
         _signature_payload: soroban_sdk::crypto::Hash<32>,
         _signatures: (),
-        _auth_contexts: Vec<soroban_sdk::auth::Context>,
+        auth_contexts: Vec<soroban_sdk::auth::Context>,
     ) -> Result<(), Error> {
         let threshold = env
             .storage()
@@ -177,7 +208,9 @@ impl CustomAccountInterface for MultisigAccount {
         }
 
         if delegates.len() < threshold {
-            return Err(Error::InsufficientSignatures);
+            // Below threshold, only routine spends within the daily
+            // allowance are admitted (issue #413).
+            return limits::authorize_within_limits(&env, &delegates, &auth_contexts);
         }
 
         Ok(())

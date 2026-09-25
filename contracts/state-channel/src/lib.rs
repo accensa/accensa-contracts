@@ -1,12 +1,14 @@
 #![no_std]
 
 #[cfg(test)]
+mod close_test;
+#[cfg(test)]
 mod multi_asset_test;
 #[cfg(test)]
 mod test;
 
-use accensa_common::storage::extend_instance_ttl;
-use accensa_common::Error;
+use accensa_common::{storage::extend_instance_ttl, Error};
+use close::MutualCloseState;
 use multi_asset::{MultiAssetChannel, MultiAssetState};
 use nonce::NonceWindow;
 use soroban_sdk::{
@@ -91,6 +93,9 @@ pub enum DataKey {
     /// Persistent: a multi-asset channel (issue #423). Shares the
     /// `ChannelCount` id sequence with single-asset channels.
     MultiAssetChannel(u64),
+    /// Instance: the receiver's Ed25519 key for a channel, used to verify
+    /// its half of a mutual close (issue #412).
+    ReceiverPubkey(u64),
 }
 
 /// Emitted when a channel is opened.
@@ -661,6 +666,35 @@ impl StateChannel {
             .unwrap_or(DEFAULT_MAX_CHANNEL_LIFETIME)
     }
 
+    // ── Cooperative mutual close (issue #412) ────────────────────────────
+
+    /// Register (or replace) the receiver's Ed25519 key for `channel_id`.
+    /// Must be authorized by the channel's receiver. See [`close`].
+    pub fn register_receiver_key(
+        env: Env,
+        channel_id: u64,
+        receiver_pubkey: BytesN<32>,
+    ) -> Result<(), Error> {
+        close::register_receiver_key(&env, channel_id, receiver_pubkey)
+    }
+
+    /// The receiver's registered Ed25519 key for `channel_id`, if any.
+    pub fn get_receiver_key(env: Env, channel_id: u64) -> Option<BytesN<32>> {
+        close::receiver_key(&env, channel_id)
+    }
+
+    /// Settle a channel instantly with a final balance distribution signed
+    /// by both the sender (`sig_a`) and the receiver (`sig_b`). Skips the
+    /// challenge window, pays both parties and deletes the channel record.
+    pub fn mutual_close(
+        env: Env,
+        final_state: MutualCloseState,
+        sig_a: BytesN<64>,
+        sig_b: BytesN<64>,
+    ) -> Result<(), Error> {
+        close::mutual_close(&env, final_state, sig_a, sig_b)
+    }
+
     // ── Multi-asset channels (issue #423) ────────────────────────────────
 
     /// Open a channel escrowing several tokens at once. `deposits` maps each
@@ -757,6 +791,7 @@ impl StateChannel {
         buf
     }
 }
+pub mod close;
 pub mod dispute;
 pub mod epoch;
 pub mod multi_asset;
