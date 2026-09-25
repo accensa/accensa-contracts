@@ -38,6 +38,16 @@ pub struct RefundParam {
     pub vdf_proof: Option<BytesN<256>>,
 }
 
+/// Reason for a vault pause, used for auditability and event attribution.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PauseReason {
+    /// Pause triggered by the admin (merchant) via `pause`.
+    Admin,
+    /// Pause triggered by the guardian via `emergency_pause`.
+    Guardian,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -85,6 +95,20 @@ pub enum DataKey {
     /// already fully refunded under the old rule.
     Refund(BytesN<32>),
     IsPaused,
+    /// Emergency pause guardian: an address that may halt the vault via
+    /// `emergency_pause` but can never lift the halt. Appointed (and cleared)
+    /// by the admin via `set_guardian`; absent means only the admin can pause.
+    Guardian,
+    /// Ledger sequence at which the *current* pause began (the rising edge).
+    /// Written by `pause` / `emergency_pause`, read by `unpause` to enforce
+    /// `UNPAUSE_DELAY_LEDGERS`, and removed when the vault resumes. An absent
+    /// value while `IsPaused` is true is legacy state written before the
+    /// cool-down existed and is treated as ledger `0` — see `unpause`.
+    PausedAtLedger,
+    /// The reason for the current pause (admin vs guardian triggered). Used
+    /// for auditability and event attribution. Only written on the rising edge
+    /// (when `IsPaused` transitions from false to true).
+    PauseReason,
     PendingAdmin,
     SettlementContract,
     /// Yield strategy contract address. Stored in **Persistent** storage so
@@ -319,6 +343,48 @@ pub struct UnpauseEvent {
     pub ledger: u32,
 }
 
+/// Emitted when the vault is paused, indicating the reason (admin vs guardian).
+///
+/// Topics: `("pause_reason_event", reason)`. The data map carries the ledger
+/// sequence so an indexer can reconstruct the exact pause timeline.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseReasonEvent {
+    #[topic]
+    pub reason: PauseReason,
+    pub ledger: u32,
+}
+
+/// Emitted when the admin appoints or clears the emergency pause guardian.
+///
+/// Topics: `("guardian_updated_event", ledger)`. The new guardian travels in
+/// the data map (rather than a topic) because it is optional: `None` means the
+/// role was cleared and `emergency_pause` is disabled again, which cannot be
+/// expressed by a topic tuple that must stay stable.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianUpdatedEvent {
+    #[topic]
+    pub ledger: u32,
+    /// The new guardian, or `None` when the role was cleared.
+    pub guardian: Option<Address>,
+}
+
+/// Emitted when the *guardian* (not the admin) trips the emergency pause.
+///
+/// Topics: `("guardian_pause_event", ledger)`, data map: `guardian`. The
+/// `PauseEvent` is published alongside it, so an indexer that reconstructs
+/// pause windows from `pause_event` alone keeps working; this event only adds
+/// attribution — an alerting rule can therefore page on a guardian trip
+/// without inferring it from auth data.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianPauseEvent {
+    #[topic]
+    pub ledger: u32,
+    pub guardian: Address,
+}
+
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WithdrawEvent {
@@ -493,6 +559,25 @@ const TTL_EXTEND: u32 = 518_400;
 const TTL_THRESHOLD: u32 = 100;
 /// Timelock delay for policy changes in ledgers (~24 hours at 5s/ledger).
 const POLICY_TIMELOCK: u32 = 17_280;
+
+/// Emergency cool-down: the minimum number of ledgers a paused vault must stay
+/// halted before `unpause` is accepted (~24 hours at 5s/ledger).
+///
+/// The cool-down is what makes the pause a *circuit* rather than a switch. It
+/// bounds the damage a single key can do in either direction:
+///
+/// - A compromised admin key cannot use `pause`/`unpause` as a griefing lever
+///   to flip the vault off and on between two ledgers.
+/// - A compromised (or coerced) guardian key — which can only ever halt the
+///   vault — cannot be used to force an immediate restart either, so a halt
+///   that lands is visible to the merchant for at least a full day before the
+///   vault can resume. That window is the operation's chance to rotate the
+///   admin, withdraw float, or migrate (see `docs/ADR-003-upgradeability.md`).
+///
+/// It deliberately matches [`POLICY_TIMELOCK`]: both express "the merchant has
+/// ~24 hours to notice and react", and using one constant for both means the
+/// recovery story has a single number to reason about.
+const UNPAUSE_DELAY_LEDGERS: u32 = 17_280;
 
 /// Minimum number of ledgers that must elapse between a commit and its
 /// matching reveal (issue #128). By the time the merchant's reveal lands,
@@ -956,6 +1041,87 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
 /// limits.
 #[allow(dead_code)]
 const MAX_REFUND_BATCH_SIZE: u32 = 100;
+
+/// Reads the emergency halt flag.
+///
+/// An untouched vault (no `IsPaused` entry) is treated as running, matching the
+/// `unwrap_or(false)` default every entry-point guard uses inline.
+fn is_paused_flag(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::IsPaused)
+        .unwrap_or(false)
+}
+
+/// Common logic for setting the pause flag and recording the pause timestamp.
+///
+/// Only the rising edge (false -> true) writes `PausedAtLedger` and `PauseReason`,
+/// so re-pausing does not extend the cool-down. This prevents a guardian from
+/// freezing the vault indefinitely by re-tripping every ledger.
+fn set_pause_state(env: &Env, reason: PauseReason) {
+    let ledger = env.ledger().sequence();
+    env.storage().instance().set(&DataKey::IsPaused, &true);
+
+    // Only the rising edge moves the cool-down clock and records the reason.
+    if !env.storage().instance().has(&DataKey::PausedAtLedger) {
+        env.storage()
+            .instance()
+            .set(&DataKey::PausedAtLedger, &ledger);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseReason, &reason);
+    }
+}
+
+/// Validates that the vault is initialized and returns the admin address.
+///
+/// This is a common pre-check for admin-only operations.
+fn require_admin(env: &Env) -> Result<Address, Error> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(Error::NotInitialized)
+}
+
+/// Validates that the vault is initialized and returns the guardian address.
+///
+/// This is a common pre-check for guardian-only operations.
+fn require_guardian(env: &Env) -> Result<Address, Error> {
+    if !env.storage().instance().has(&DataKey::Admin) {
+        return Err(Error::NotInitialized);
+    }
+    env.storage()
+        .instance()
+        .get(&DataKey::Guardian)
+        .ok_or(Error::GuardianNotSet)
+}
+
+/// Checks if the unpause cool-down has elapsed.
+///
+/// Returns an error if the vault is paused and insufficient ledgers have passed
+/// since the pause began. An unpaused vault always succeeds.
+fn check_unpause_cooldown(env: &Env) -> Result<(), Error> {
+    if is_paused_flag(env) {
+        let paused_at: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PausedAtLedger)
+            .unwrap_or(0);
+        if env.ledger().sequence() < paused_at.saturating_add(UNPAUSE_DELAY_LEDGERS) {
+            return Err(Error::UnpauseCoolDownActive);
+        }
+    }
+    Ok(())
+}
+
+/// Clears the pause state (flag, timestamp, and reason).
+///
+/// Called by `unpause` after the cool-down check passes.
+fn clear_pause_state(env: &Env) {
+    env.storage().instance().set(&DataKey::IsPaused, &false);
+    env.storage().instance().remove(&DataKey::PausedAtLedger);
+    env.storage().instance().remove(&DataKey::PauseReason);
+}
 
 #[contract]
 pub struct RefundVault;
@@ -2421,35 +2587,100 @@ impl RefundVault {
         }
     }
 
-    // ── Existing admin functions ───────────────────────────────────────────
+    // ── Emergency pause circuit ────────────────────────────────────────────
 
+    /// Halts every fund-moving entry point (`deposit`, `refund`,
+    /// `claim_batch`, `process_batch`, `withdraw`, the yield surface and
+    /// `sweep_dust`) until `unpause` is accepted. Merchant (admin) only.
+    ///
+    /// This is the admin's own emergency stop. When the admin wants a *second*
+    /// key to be able to halt the vault — one that cannot move float — they
+    /// appoint a guardian with `set_guardian`, and the guardian trips the same
+    /// halt with `emergency_pause`.
+    ///
+    /// Re-pausing an already-paused vault re-asserts the flag and publishes
+    /// another `PauseEvent`, but does **not** move the cool-down clock: only
+    /// the rising edge (`false` -> `true`) writes `PausedAtLedger`, so the
+    /// earliest legal `unpause` cannot be pushed further out by repeating the
+    /// call.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
     pub fn pause(env: Env) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+        let merchant = require_admin(&env)?;
         merchant.require_auth();
 
-        env.storage().instance().set(&DataKey::IsPaused, &true);
+        set_pause_state(&env, PauseReason::Admin);
 
-        PauseEvent {
-            ledger: env.ledger().sequence(),
-        }
-        .publish(&env);
+        let ledger = env.ledger().sequence();
+        PauseEvent { ledger }.publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 
+    /// Trips the emergency pause circuit as the configured **guardian**.
+    ///
+    /// The guardian is a key that can halt the vault but can never lift the
+    /// halt, move float, or change policy: appointing one (via `set_guardian`)
+    /// buys the merchant a way to stop the vault from a key whose worst case is
+    /// a liveness cost, not a float loss — see "Emergency Pause Circuit" in
+    /// `docs/SECURITY_MODEL.md` and invariant I-16 in `docs/AUDIT.md`.
+    ///
+    /// While the vault is already paused this is a **no-op**: it writes nothing
+    /// and publishes nothing. That is deliberate — a guardian cannot reset
+    /// `PausedAtLedger`, so it cannot extend the cool-down that `unpause` waits
+    /// out and freeze the vault indefinitely by re-tripping every ledger.
+    ///
+    /// Publishes `PauseEvent` (so indexers that reconstruct pause windows from
+    /// `pause_event` alone keep working) plus `GuardianPauseEvent`, which
+    /// attributes the halt to the guardian.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    /// - `GuardianNotSet`: no guardian has been appointed.
+    pub fn emergency_pause(env: Env) -> Result<(), Error> {
+        let guardian = require_guardian(&env)?;
+        guardian.require_auth();
+
+        if is_paused_flag(&env) {
+            return Ok(());
+        }
+
+        set_pause_state(&env, PauseReason::Guardian);
+
+        let ledger = env.ledger().sequence();
+        PauseEvent { ledger }.publish(&env);
+        GuardianPauseEvent { ledger, guardian }.publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Lifts the emergency halt. Merchant (admin) only — the guardian can trip
+    /// the circuit but never reset it.
+    ///
+    /// A paused vault rejects this call with `UnpauseCoolDownActive` until
+    /// [`UNPAUSE_DELAY_LEDGERS`] ledgers have elapsed since the pause began
+    /// (`get_paused_at_ledger` + `get_unpause_delay` tell a caller exactly when
+    /// that is). An unpaused vault is unaffected: `unpause` on a running vault
+    /// remains a no-op that publishes `UnpauseEvent`, exactly as before.
+    ///
+    /// A pause recorded before the cool-down existed carries no timestamp; it
+    /// is treated as having begun at ledger `0`, i.e. the cool-down has already
+    /// elapsed. That keeps a vault already halted across this change
+    /// recoverable instead of bricking it, and matches the historical
+    /// behaviour.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    /// - `UnpauseCoolDownActive`: the cool-down has not elapsed yet.
     pub fn unpause(env: Env) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+        let admin = require_admin(&env)?;
         admin.require_auth();
-        env.storage().instance().set(&DataKey::IsPaused, &false);
+
+        check_unpause_cooldown(&env)?;
+        clear_pause_state(&env);
 
         UnpauseEvent {
             ledger: env.ledger().sequence(),
@@ -2458,6 +2689,77 @@ impl RefundVault {
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// Appoints (or clears) the emergency pause guardian. Merchant (admin)
+    /// only.
+    ///
+    /// `None` removes the role, leaving `pause` as the only way to halt the
+    /// vault. The guardian may call exactly one entry point —
+    /// `emergency_pause` — and can never unpause, move float, or change policy.
+    ///
+    /// The role survives an admin handover: `transfer_admin` / `accept_admin`
+    /// do not touch it, so the incoming admin inherits the guardian and must
+    /// clear or replace it explicitly. That is the safe direction — a handover
+    /// never silently *removes* the emergency stop — and the inherited
+    /// authority is analysed as an accepted risk in `docs/SECURITY_MODEL.md`.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    /// - `SelfTransfer`: `guardian` is the vault's own address. A contract
+    ///   cannot authorize on its own behalf without a self-call path, so such a
+    ///   guardian could never trip the circuit and would fail silently.
+    /// - `GuardianSameAsAdmin`: `guardian` is the same address as the admin.
+    ///   This would defeat the purpose of having a separate key with limited
+    ///   authority.
+    pub fn set_guardian(env: Env, guardian: Option<Address>) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        if let Some(address) = &guardian {
+            if *address == env.current_contract_address() {
+                return Err(Error::SelfTransfer);
+            }
+            if *address == admin {
+                return Err(Error::GuardianSameAsAdmin);
+            }
+            env.storage().instance().set(&DataKey::Guardian, address);
+        } else {
+            env.storage().instance().remove(&DataKey::Guardian);
+        }
+
+        GuardianUpdatedEvent {
+            ledger: env.ledger().sequence(),
+            guardian,
+        }
+        .publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// The configured emergency pause guardian, if any (read-only).
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Guardian)
+    }
+
+    /// The ledger at which the *current* pause began, or `None` while the
+    /// vault is running (read-only). `unpause` becomes legal at
+    /// `get_paused_at_ledger() + get_unpause_delay()`.
+    pub fn get_paused_at_ledger(env: Env) -> Option<u32> {
+        env.storage().instance().get(&DataKey::PausedAtLedger)
+    }
+
+    /// The reason for the current pause, if the vault is paused (read-only).
+    /// Returns `None` while the vault is running or for legacy pauses set
+    /// before the reason tracking was added.
+    pub fn get_pause_reason(env: Env) -> Option<PauseReason> {
+        env.storage().instance().get(&DataKey::PauseReason)
+    }
+
+    /// The emergency cool-down `unpause` waits out, in ledgers (read-only).
+    pub fn get_unpause_delay() -> u32 {
+        UNPAUSE_DELAY_LEDGERS
     }
 
     /// Configure the dust sweep (issue #427): residual balances strictly

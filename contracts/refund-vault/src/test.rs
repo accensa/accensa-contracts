@@ -5,6 +5,7 @@ use soroban_sdk::{
     token::{StellarAssetClient, TokenClient},
     vec, Address, BytesN, Env, Val,
 };
+use crate::PauseReason;
 
 const FLOAT: i128 = 1_000_000;
 
@@ -448,6 +449,74 @@ fn test_pause_unpause() {
     client.unpause();
     client.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
     assert!(client.get_refund(&payment_ref).is_some());
+}
+
+#[test]
+fn test_pause_reason_tracking() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    // Admin pause should track reason
+    client.pause();
+    assert_eq!(client.get_pause_reason(), Some(PauseReason::Admin));
+
+    // Unpause should clear the reason
+    client.unpause();
+    assert_eq!(client.get_pause_reason(), None);
+}
+
+#[test]
+fn test_guardian_pause_tracks_reason() {
+    let (env, client, merchant, _token) = setup(100);
+    let guardian = Address::generate(&env);
+
+    client.set_guardian(&Some(guardian.clone()));
+
+    env.mock_auths(&[
+        guardian.clone().mock_auth_authenticate(&guardian),
+    ]);
+    client.emergency_pause();
+
+    // Verify get_pause_reason returns the correct reason
+    assert_eq!(client.get_pause_reason(), Some(PauseReason::Guardian));
+}
+
+#[test]
+fn test_guardian_cannot_be_same_as_admin() {
+    let (env, client, merchant, _token) = setup(100);
+
+    assert_eq!(
+        client.try_set_guardian(&Some(merchant.clone())),
+        Err(Ok(Error::GuardianSameAsAdmin))
+    );
+}
+
+#[test]
+fn test_set_guardian_preserves_pause_reason() {
+    let (env, client, merchant, _token) = setup(100);
+    let guardian = Address::generate(&env);
+
+    client.pause();
+    assert_eq!(client.get_pause_reason(), Some(PauseReason::Admin));
+
+    // Setting guardian should not affect pause reason
+    client.set_guardian(&Some(guardian.clone()));
+    assert_eq!(client.get_pause_reason(), Some(PauseReason::Admin));
+
+    // Unpause should clear the pause reason
+    client.unpause();
+    assert_eq!(client.get_pause_reason(), None);
+}
+
+#[test]
+fn test_re_pause_does_not_change_reason() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    client.pause();
+    assert_eq!(client.get_pause_reason(), Some(PauseReason::Admin));
+
+    // Re-pausing should not change the reason
+    client.pause();
+    assert_eq!(client.get_pause_reason(), Some(PauseReason::Admin));
 }
 
 #[test]
