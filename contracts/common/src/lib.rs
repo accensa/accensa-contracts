@@ -176,12 +176,7 @@ pub enum Error {
     /// (issue #396). The operation was refused *before* any state changed;
     /// raw operators never run in the shared math helpers.
     MathOverflow = 321,
-    /// The yield strategy is not on the vault's admin-approved whitelist
-    /// (issue #415).
-    StrategyNotApproved = 322,
-    /// The active yield strategy still holds deployed principal, so it cannot
-    /// be replaced or revoked until that principal is recalled (issue #415).
-    StrategyHasPrincipal = 323,
+
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }

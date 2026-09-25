@@ -350,3 +350,205 @@ fn quadratic_weight_prevents_whale_domination() {
     assert_eq!(gov.get_member_weight(&m2), 100);
     assert_eq!(gov.get_total_weight(), 110);
 }
+
+// ── veToken (Time-Weighted Voting) Tests ──────────────────────────────────
+
+#[test]
+fn vetoken_toggle_functionality() {
+    let h = setup();
+    
+    // Initially disabled
+    assert_eq!(h.gov.is_vetoken_enabled(), false);
+    
+    // Enable via proposal execution (simulate by direct call for test)
+    h.gov.set_vetoken_enabled(&true);
+    assert_eq!(h.gov.is_vetoken_enabled(), true);
+    
+    // Disable
+    h.gov.set_vetoken_enabled(&false);
+    assert_eq!(h.gov.is_vetoken_enabled(), false);
+}
+
+#[test]
+fn lock_vetoken_basic() {
+    let h = setup();
+    
+    // Enable veToken
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Lock tokens for m1
+    let lock_duration = 1000u32;
+    h.gov.lock_vetoken(&h.m1, &1, &lock_duration).unwrap();
+    
+    // Verify lock was created
+    let lock = h.gov.get_vetoken_lock(&h.m1).unwrap();
+    assert_eq!(lock.amount, 1);
+    assert_eq!(lock.withdrawn, false);
+    assert_eq!(lock.unlock_at_ledger, h.env.ledger().sequence() + lock_duration);
+}
+
+#[test]
+fn lock_vetoken_when_disabled_fails() {
+    let h = setup();
+    
+    // Don't enable veToken
+    let res = h.gov.try_lock_vetoken(&h.m1, &1, &1000);
+    assert_eq!(res, Err(Ok(Error::VeTokenDisabled)));
+}
+
+#[test]
+fn lock_vetoken_exceeds_max_duration_fails() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Try to lock for longer than max duration
+    let res = h.gov.try_lock_vetoken(&h.m1, &1, 1_000_000_000);
+    assert_eq!(res, Err(Ok(Error::LockDurationTooLong)));
+}
+
+#[test]
+fn lock_vetoken_amount_exceeds_deposit_fails() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Try to lock more than deposited
+    let res = h.gov.try_lock_vetoken(&h.m1, &100, &1000);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn lock_vetoken_zero_amount_fails() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    let res = h.gov.try_lock_vetoken(&h.m1, &0, &1000);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn lock_vetoken_already_locked_fails() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // First lock succeeds
+    h.gov.lock_vetoken(&h.m1, &1, &1000).unwrap();
+    
+    // Second lock fails
+    let res = h.gov.try_lock_vetoken(&h.m1, &1, &1000);
+    assert_eq!(res, Err(Ok(Error::LockAlreadyExists)));
+}
+
+#[test]
+fn withdraw_vetoken_after_expiry() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Lock tokens
+    h.gov.lock_vetoken(&h.m1, &1, &100).unwrap();
+    
+    // Advance ledger past expiry
+    h.env.ledger().with_mut(|li| li.sequence_number += 200);
+    
+    // Withdraw succeeds
+    h.gov.withdraw_vetoken(&h.m1).unwrap();
+    
+    // Verify lock is marked as withdrawn
+    let lock = h.gov.get_vetoken_lock(&h.m1).unwrap();
+    assert_eq!(lock.withdrawn, true);
+}
+
+#[test]
+fn withdraw_vetoken_before_expiry_fails() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Lock tokens
+    h.gov.lock_vetoken(&h.m1, &1, &1000).unwrap();
+    
+    // Try to withdraw before expiry
+    let res = h.gov.try_withdraw_vetoken(&h.m1);
+    assert_eq!(res, Err(Ok(Error::LockNotExpired)));
+}
+
+#[test]
+fn withdraw_vetoken_no_lock_fails() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Try to withdraw without lock
+    let res = h.gov.try_withdraw_vetoken(&h.m1);
+    assert_eq!(res, Err(Ok(Error::NoActiveLock)));
+}
+
+#[test]
+fn withdraw_vetoken_already_withdrawn_fails() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Lock and withdraw
+    h.gov.lock_vetoken(&h.m1, &1, &100).unwrap();
+    h.env.ledger().with_mut(|li| li.sequence_number += 200);
+    h.gov.withdraw_vetoken(&h.m1).unwrap();
+    
+    // Try to withdraw again
+    let res = h.gov.try_withdraw_vetoken(&h.m1);
+    assert_eq!(res, Err(Ok(Error::LockAlreadyWithdrawn)));
+}
+
+#[test]
+fn time_weighted_voting_power_calculation() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Lock for a moderate duration
+    let lock_duration = 10_000u32;
+    h.gov.lock_vetoken(&h.m1, &100, &lock_duration).unwrap();
+    
+    // With lock, voting power should be boosted
+    let power = h.gov.get_vetoken_voting_power(&h.m1);
+    assert!(power > 0);
+    
+    // Advance ledger partway through lock
+    h.env.ledger().with_mut(|li| li.sequence_number += lock_duration / 2);
+    
+    // Voting power should decay
+    let decayed_power = h.gov.get_vetoken_voting_power(&h.m1);
+    assert!(decayed_power <= power); // Decay may not be strictly less due to rounding
+}
+
+#[test]
+fn time_weighted_voting_power_zero_after_expiry() {
+    let h = setup();
+    
+    h.gov.set_vetoken_enabled(&true);
+    
+    // Lock tokens
+    h.gov.lock_vetoken(&h.m1, &100, &100).unwrap();
+    
+    // Advance ledger past expiry
+    h.env.ledger().with_mut(|li| li.sequence_number += 200);
+    
+    // Voting power should be zero after expiry
+    let power = h.gov.get_vetoken_voting_power(&h.m1);
+    assert_eq!(power, 0);
+}
+
+#[test]
+fn time_weighted_voting_disabled_uses_quadratic() {
+    let h = setup();
+    
+    // Don't enable veToken
+    let power = h.gov.get_vetoken_voting_power(&h.m1);
+    
+    // Should use base quadratic weight (sqrt(1) = 1)
+    assert_eq!(power, 1);
+}

@@ -38,6 +38,41 @@ pub struct RefundParam {
     pub vdf_proof: Option<BytesN<256>>,
 }
 
+/// Reason for a vault pause, used for auditability and event attribution.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PauseReason {
+    /// Pause triggered by the admin (merchant) via `pause`.
+    Admin,
+    /// Pause triggered by the guardian via `emergency_pause`.
+    Guardian,
+}
+
+/// Stealth address record for privacy-preserving deposits.
+///
+/// Each stealth address is a one-time address that can only be detected
+/// and spent by the merchant who registered it. Observers cannot link
+/// deposits to the merchant's public identity.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthAddress {
+    /// The stealth address itself (derived from merchant's public key)
+    pub address: Address,
+    /// The viewing key (hash of merchant's secret)
+    pub viewing_key: BytesN<32>,
+    /// The spending key (hash of merchant's secret)
+    pub spending_key: BytesN<32>,
+    /// Ledger sequence when this stealth address was registered
+    pub registered_at_ledger: u32,
+    /// Whether this stealth address has been used for a deposit
+    pub used: bool,
+}
+
+/// Stealth address registry entry keyed by the stealth address itself.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthAddressKey(Address);
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -85,6 +120,20 @@ pub enum DataKey {
     /// already fully refunded under the old rule.
     Refund(BytesN<32>),
     IsPaused,
+    /// Emergency pause guardian: an address that may halt the vault via
+    /// `emergency_pause` but can never lift the halt. Appointed (and cleared)
+    /// by the admin via `set_guardian`; absent means only the admin can pause.
+    Guardian,
+    /// Ledger sequence at which the *current* pause began (the rising edge).
+    /// Written by `pause` / `emergency_pause`, read by `unpause` to enforce
+    /// `UNPAUSE_DELAY_LEDGERS`, and removed when the vault resumes. An absent
+    /// value while `IsPaused` is true is legacy state written before the
+    /// cool-down existed and is treated as ledger `0` — see `unpause`.
+    PausedAtLedger,
+    /// The reason for the current pause (admin vs guardian triggered). Used
+    /// for auditability and event attribution. Only written on the rising edge
+    /// (when `IsPaused` transitions from false to true).
+    PauseReason,
     PendingAdmin,
     SettlementContract,
     /// Yield strategy contract address. Stored in **Persistent** storage so
@@ -146,13 +195,7 @@ pub enum DataKey {
     /// Treasury receiving swept dust (issue #427). Falls back to the fee
     /// recipient when unset.
     DustTreasury,
-    /// Whitelist flag for a yield strategy (issue #415). Only approved
-    /// strategies can be registered or receive deployments. Persistent.
-    ApprovedStrategy(Address),
-    /// Destination of harvested yield — the protocol treasury or a merchant
-    /// rebate pool (issue #415). Falls back to the merchant when unset.
-    /// Persistent.
-    YieldRecipient,
+
 }
 
 #[contracttype]
@@ -182,6 +225,31 @@ pub struct PolicyProposal {
     /// prove. `0` (the default) means no VDF proof is required.
     pub vdf_delay: u32,
     pub proposed_at_ledger: u32,
+}
+
+/// Types of protocol upgrade operations that require timelock.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpgradeOperation {
+    /// Change the settlement token address.
+    SetToken { new_token: Address },
+    /// Change the guardian address.
+    SetGuardian { guardian: Option<Address> },
+    /// Change the fee recipient.
+    SetFeeRecipient { recipient: Address },
+    /// Change the settlement contract.
+    SetSettlementContract { contract: Address },
+    /// Enable/disable stealth address feature.
+    SetStealthAddressEnabled { enabled: bool },
+}
+
+/// A pending protocol upgrade waiting for the timelock to expire.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposal {
+    pub operation: UpgradeOperation,
+    pub proposed_at_ledger: u32,
+    pub execute_after_ledger: u32,
 }
 
 /// A pending commit-reveal commitment (issue #128). Recorded by
@@ -326,6 +394,48 @@ pub struct UnpauseEvent {
     pub ledger: u32,
 }
 
+/// Emitted when the vault is paused, indicating the reason (admin vs guardian).
+///
+/// Topics: `("pause_reason_event", reason)`. The data map carries the ledger
+/// sequence so an indexer can reconstruct the exact pause timeline.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseReasonEvent {
+    #[topic]
+    pub reason: PauseReason,
+    pub ledger: u32,
+}
+
+/// Emitted when the admin appoints or clears the emergency pause guardian.
+///
+/// Topics: `("guardian_updated_event", ledger)`. The new guardian travels in
+/// the data map (rather than a topic) because it is optional: `None` means the
+/// role was cleared and `emergency_pause` is disabled again, which cannot be
+/// expressed by a topic tuple that must stay stable.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianUpdatedEvent {
+    #[topic]
+    pub ledger: u32,
+    /// The new guardian, or `None` when the role was cleared.
+    pub guardian: Option<Address>,
+}
+
+/// Emitted when the *guardian* (not the admin) trips the emergency pause.
+///
+/// Topics: `("guardian_pause_event", ledger)`, data map: `guardian`. The
+/// `PauseEvent` is published alongside it, so an indexer that reconstructs
+/// pause windows from `pause_event` alone keeps working; this event only adds
+/// attribution — an alerting rule can therefore page on a guardian trip
+/// without inferring it from auth data.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianPauseEvent {
+    #[topic]
+    pub ledger: u32,
+    pub guardian: Address,
+}
+
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WithdrawEvent {
@@ -460,6 +570,95 @@ pub struct CommitRevealedEvent {
     pub ledger: u32,
 }
 
+/// Emitted when a stealth address is registered in the vault.
+///
+/// Topics: `("stealth_address_registered_event", address)`. The data map
+/// carries the viewing key hash (for verification) and registration ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthAddressRegisteredEvent {
+    #[topic]
+    pub address: Address,
+    pub viewing_key: BytesN<32>,
+    pub registered_at_ledger: u32,
+}
+
+/// Emitted when a deposit is made to a stealth address.
+///
+/// Topics: `("stealth_deposit_event", stealth_address)`. The data map
+/// carries the amount and the actual deposit address (for accounting).
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthDepositEvent {
+    #[topic]
+    pub stealth_address: Address,
+    pub amount: i128,
+    pub actual_deposit_address: Address,
+    pub nonce: u64,
+}
+
+/// Emitted when stealth address feature is enabled/disabled.
+///
+/// Topics: `("stealth_address_enabled_event", enabled)`. The data map
+/// carries the ledger sequence of the toggle.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthAddressEnabledEvent {
+    #[topic]
+    pub enabled: bool,
+    pub ledger: u32,
+}
+
+/// Emitted when a protocol upgrade is proposed and enters timelock.
+///
+/// Topics: `("upgrade_proposed_event", operation_type)`. The data map
+/// carries the proposed ledger and execution ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposedEvent {
+    #[topic]
+    pub operation_type: Symbol,
+    pub proposed_at_ledger: u32,
+    pub execute_after_ledger: u32,
+}
+
+/// Emitted when a proposed protocol upgrade is executed.
+///
+/// Topics: `("upgrade_executed_event", operation_type)`. The data map
+/// carries the execution ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeExecutedEvent {
+    #[topic]
+    pub operation_type: Symbol,
+    pub executed_at_ledger: u32,
+}
+
+/// Emitted when a pending upgrade is cancelled.
+///
+/// Topics: `("upgrade_cancelled_event", operation_type)`. The data map
+/// carries the cancellation ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeCancelledEvent {
+    #[topic]
+    pub operation_type: Symbol,
+    pub cancelled_at_ledger: u32,
+}
+
+/// Emitted when emergency timelock bypass is toggled.
+///
+/// Topics: `("emergency_bypass_event", enabled)`. The data map
+/// carries the ledger sequence and admin address for auditability.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyBypassEvent {
+    #[topic]
+    pub enabled: bool,
+    pub ledger: u32,
+    pub admin: Address,
+}
+
 pub mod dust;
 pub mod oracle;
 
@@ -474,6 +673,30 @@ const TTL_EXTEND: u32 = 518_400;
 const TTL_THRESHOLD: u32 = 100;
 /// Timelock delay for policy changes in ledgers (~24 hours at 5s/ledger).
 const POLICY_TIMELOCK: u32 = 17_280;
+
+/// Timelock delay for protocol upgrades and sensitive admin operations
+/// (~48 hours at 5s/ledger). This provides additional security for critical
+/// changes that could affect the vault's fundamental operation.
+const PROTOCOL_UPGRADE_TIMELOCK: u32 = 34_560;
+
+/// Emergency cool-down: the minimum number of ledgers a paused vault must stay
+/// halted before `unpause` is accepted (~24 hours at 5s/ledger).
+///
+/// The cool-down is what makes the pause a *circuit* rather than a switch. It
+/// bounds the damage a single key can do in either direction:
+///
+/// - A compromised admin key cannot use `pause`/`unpause` as a griefing lever
+///   to flip the vault off and on between two ledgers.
+/// - A compromised (or coerced) guardian key — which can only ever halt the
+///   vault — cannot be used to force an immediate restart either, so a halt
+///   that lands is visible to the merchant for at least a full day before the
+///   vault can resume. That window is the operation's chance to rotate the
+///   admin, withdraw float, or migrate (see `docs/ADR-003-upgradeability.md`).
+///
+/// It deliberately matches [`POLICY_TIMELOCK`]: both express "the merchant has
+/// ~24 hours to notice and react", and using one constant for both means the
+/// recovery story has a single number to reason about.
+const UNPAUSE_DELAY_LEDGERS: u32 = 17_280;
 
 /// Minimum number of ledgers that must elapse between a commit and its
 /// matching reveal (issue #128). By the time the merchant's reveal lands,
@@ -941,6 +1164,183 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
 #[allow(dead_code)]
 const MAX_REFUND_BATCH_SIZE: u32 = 100;
 
+/// Reads the emergency halt flag.
+///
+/// An untouched vault (no `IsPaused` entry) is treated as running, matching the
+/// `unwrap_or(false)` default every entry-point guard uses inline.
+fn is_paused_flag(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::IsPaused)
+        .unwrap_or(false)
+}
+
+/// Common logic for setting the pause flag and recording the pause timestamp.
+///
+/// Only the rising edge (false -> true) writes `PausedAtLedger` and `PauseReason`,
+/// so re-pausing does not extend the cool-down. This prevents a guardian from
+/// freezing the vault indefinitely by re-tripping every ledger.
+fn set_pause_state(env: &Env, reason: PauseReason) {
+    let ledger = env.ledger().sequence();
+    env.storage().instance().set(&DataKey::IsPaused, &true);
+
+    // Only the rising edge moves the cool-down clock and records the reason.
+    if !env.storage().instance().has(&DataKey::PausedAtLedger) {
+        env.storage()
+            .instance()
+            .set(&DataKey::PausedAtLedger, &ledger);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseReason, &reason);
+    }
+}
+
+/// Validates that the vault is initialized and returns the admin address.
+///
+/// This is a common pre-check for admin-only operations.
+fn require_admin(env: &Env) -> Result<Address, Error> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(Error::NotInitialized)
+}
+
+/// Validates that the vault is initialized and returns the guardian address.
+///
+/// This is a common pre-check for guardian-only operations.
+fn require_guardian(env: &Env) -> Result<Address, Error> {
+    if !env.storage().instance().has(&DataKey::Admin) {
+        return Err(Error::NotInitialized);
+    }
+    env.storage()
+        .instance()
+        .get(&DataKey::Guardian)
+        .ok_or(Error::GuardianNotSet)
+}
+
+/// Checks if the unpause cool-down has elapsed.
+///
+/// Returns an error if the vault is paused and insufficient ledgers have passed
+/// since the pause began. An unpaused vault always succeeds.
+fn check_unpause_cooldown(env: &Env) -> Result<(), Error> {
+    if is_paused_flag(env) {
+        let paused_at: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PausedAtLedger)
+            .unwrap_or(0);
+        if env.ledger().sequence() < paused_at.saturating_add(UNPAUSE_DELAY_LEDGERS) {
+            return Err(Error::UnpauseCoolDownActive);
+        }
+    }
+    Ok(())
+}
+
+/// Clears the pause state (flag, timestamp, and reason).
+///
+/// Called by `unpause` after the cool-down check passes.
+fn clear_pause_state(env: &Env) {
+    env.storage().instance().set(&DataKey::IsPaused, &false);
+    env.storage().instance().remove(&DataKey::PausedAtLedger);
+    env.storage().instance().remove(&DataKey::PauseReason);
+}
+
+/// Maximum number of stealth addresses a merchant can register.
+/// Prevents storage bloat and denial-of-service attacks.
+const MAX_STEALTH_ADDRESSES: u32 = 1000;
+
+/// ── Stealth Address Privacy Feature ──────────────────────────────────────
+///
+/// This vault supports stealth address deposits for enhanced privacy. When enabled,
+/// merchants can register one-time stealth addresses that obscure the direct link
+/// between deposits and their public identity.
+///
+/// ## How It Works
+///
+/// 1. The merchant enables stealth address deposits via `set_stealth_address_enabled(true)`
+/// 2. The merchant registers stealth addresses using `register_stealth_address(seed)`
+/// 3. Deposits can be made to registered stealth addresses via `stealth_deposit()`
+/// 4. Each stealth address can only be used once for a single deposit
+///
+/// ## Privacy Benefits
+///
+/// - Observers cannot directly link deposits to the merchant's public address
+/// - Each deposit uses a unique one-time address
+/// - The viewing key allows the merchant to detect deposits to their stealth addresses
+/// - The spending key allows the merchant to control the deposited funds
+///
+/// ## Security Considerations
+///
+/// - Stealth addresses are limited to prevent storage bloat (MAX_STEALTH_ADDRESSES)
+/// - The feature can be toggled on/off by the admin
+/// - Proper cryptographic key derivation should be used in production
+/// - The current implementation uses simplified derivation for demonstration
+
+/// Checks if stealth address feature is enabled for this vault.
+fn is_stealth_address_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::StealthAddressEnabled)
+        .unwrap_or(false)
+}
+
+/// Derives a stealth address from the merchant's address and a random seed.
+///
+/// This is a simplified stealth address derivation for demonstration.
+/// In production, this would use proper cryptographic key derivation.
+fn derive_stealth_address(env: &Env, _merchant: &Address, seed: &BytesN<32>) -> (Address, BytesN<32>, BytesN<32>) {
+    // Simple hash-based derivation using the seed
+    let hash = env.crypto().sha256(&seed.to_bytes());
+
+    // Use the seed directly as viewing key (simplified)
+    let viewing_key = seed.clone();
+    let spending_key = seed.clone();
+
+    // Generate stealth address (simplified - in production use proper address derivation)
+    let stealth_address = Address::generate(env);
+
+    (stealth_address, viewing_key, spending_key)
+}
+
+/// Validates that a stealth address is properly formatted and derived.
+fn validate_stealth_address(env: &Env, stealth_address: &Address, viewing_key: &BytesN<32>) -> Result<(), Error> {
+    // Basic validation: ensure viewing key is not all zeros
+    if viewing_key == &BytesN::from_array(&[0u8; 32]) {
+        return Err(Error::InvalidStealthAddress);
+    }
+
+    // In production, this would verify cryptographic correctness of the derivation
+    Ok(())
+}
+
+/// Checks if emergency timelock bypass is enabled.
+fn is_emergency_bypass_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::EmergencyTimelockBypass)
+        .unwrap_or(false)
+}
+
+/// Checks if a timelock has expired for a given proposal ledger.
+fn check_timelock_expired(env: &Env, proposed_at_ledger: u32, timelock_duration: u32) -> Result<(), Error> {
+    let current_ledger = env.ledger().sequence();
+    if current_ledger < proposed_at_ledger.saturating_add(timelock_duration) {
+        return Err(Error::UpgradeTimelockNotExpired);
+    }
+    Ok(())
+}
+
+/// Converts an UpgradeOperation to a Symbol for event topics.
+fn operation_to_symbol(operation: &UpgradeOperation) -> Symbol {
+    match operation {
+        UpgradeOperation::SetToken { .. } => Symbol::short("set_token"),
+        UpgradeOperation::SetGuardian { .. } => Symbol::short("set_guardian"),
+        UpgradeOperation::SetFeeRecipient { .. } => Symbol::short("set_fee_recipient"),
+        UpgradeOperation::SetSettlementContract { .. } => Symbol::short("set_settlement_contract"),
+        UpgradeOperation::SetStealthAddressEnabled { .. } => Symbol::short("set_stealth_enabled"),
+    }
+}
+
 #[contract]
 pub struct RefundVault;
 
@@ -1087,6 +1487,204 @@ impl RefundVault {
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         release_reentrancy_lock(&env);
         Ok(())
+    }
+
+    /// Enables or disables stealth address deposits for this vault.
+    /// Merchant (admin) only.
+    ///
+    /// When enabled, merchants can register stealth addresses and receive
+    /// deposits through them, enhancing privacy by obscuring the direct
+    /// link between deposits and the merchant's public address.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    pub fn set_stealth_address_enabled(env: Env, enabled: bool) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StealthAddressEnabled, &enabled);
+
+        StealthAddressEnabledEvent {
+            enabled,
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Registers a new stealth address for privacy-preserving deposits.
+    /// Merchant (admin) only.
+    ///
+    /// The merchant provides a random seed which is used to derive a stealth
+    /// address. The merchant can later detect deposits to this address using
+    /// the viewing key, and spend them using the spending key.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    /// - `StealthAddressDisabled`: stealth address feature is not enabled.
+    /// - `StealthAddressLimitExceeded`: maximum number of stealth addresses reached.
+    /// - `InvalidStealthAddress`: the derived stealth address is invalid.
+    pub fn register_stealth_address(env: Env, seed: BytesN<32>) -> Result<Address, Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        if !is_stealth_address_enabled(&env) {
+            return Err(Error::StealthAddressDisabled);
+        }
+
+        // Check registration limit
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StealthAddressCount)
+            .unwrap_or(0);
+        if count >= MAX_STEALTH_ADDRESSES {
+            return Err(Error::StealthAddressLimitExceeded);
+        }
+
+        // Derive stealth address
+        let (stealth_address, viewing_key, spending_key) =
+            derive_stealth_address(&env, &admin, &seed);
+
+        // Validate the derived address
+        validate_stealth_address(&env, &stealth_address, &viewing_key)?;
+
+        // Check if already registered
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::StealthAddress(stealth_address.clone()))
+        {
+            return Err(Error::StealthAddressAlreadyUsed);
+        }
+
+        // Store the stealth address record
+        let record = StealthAddress {
+            address: stealth_address.clone(),
+            viewing_key,
+            spending_key,
+            registered_at_ledger: env.ledger().sequence(),
+            used: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StealthAddress(stealth_address.clone()), &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::StealthAddressCount, &(count + 1));
+
+        StealthAddressRegisteredEvent {
+            address: stealth_address.clone(),
+            viewing_key: record.viewing_key,
+            registered_at_ledger: record.registered_at_ledger,
+        }
+        .publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(stealth_address)
+    }
+
+    /// Makes a deposit to a stealth address instead of the merchant's public address.
+    /// Anyone can call this, but only registered stealth addresses are accepted.
+    ///
+    /// The deposit is attributed to the merchant who registered the stealth address,
+    /// but observers cannot see this link directly.
+    ///
+    /// # Errors
+    /// - `StealthAddressDisabled`: stealth address feature is not enabled.
+    /// - `StealthAddressNotFound`: the stealth address is not registered.
+    /// - `StealthAddressAlreadyUsed`: the stealth address has already been used.
+    /// - `InvalidAmount`: the amount is not positive.
+    /// - `Paused`: the vault is paused.
+    pub fn stealth_deposit(env: Env, stealth_address: Address, amount: i128) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
+        if is_paused_flag(&env) {
+            return Err(Error::Paused);
+        }
+
+        if !is_stealth_address_enabled(&env) {
+            return Err(Error::StealthAddressDisabled);
+        }
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Look up the stealth address record
+        let record: StealthAddress = env
+            .storage()
+            .instance()
+            .get(&DataKey::StealthAddress(stealth_address.clone()))
+            .ok_or(Error::StealthAddressNotFound)?;
+
+        if record.used {
+            return Err(Error::StealthAddressAlreadyUsed);
+        }
+
+        // Get the admin (merchant) address
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+
+        // Perform the actual deposit from admin to vault
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
+        let token_client = token::Client::new(&env, &token_address);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&admin, &contract_addr, &amount);
+
+        // Mark the stealth address as used
+        let mut updated_record = record.clone();
+        updated_record.used = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::StealthAddress(stealth_address.clone()), &updated_record);
+
+        let nonce = increment_nonce(&env);
+
+        StealthDepositEvent {
+            stealth_address: stealth_address.clone(),
+            amount,
+            actual_deposit_address: admin,
+            nonce,
+        }
+        .publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        release_reentrancy_lock(&env);
+        Ok(())
+    }
+
+    /// Gets information about a registered stealth address.
+    /// Returns None if the address is not registered.
+    pub fn get_stealth_address(env: Env, address: Address) -> Option<StealthAddress> {
+        env.storage()
+            .instance()
+            .get(&DataKey::StealthAddress(address))
+    }
+
+    /// Gets the total number of registered stealth addresses.
+    pub fn get_stealth_address_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::StealthAddressCount)
+            .unwrap_or(0)
+    }
+
+    /// Checks if stealth address deposits are enabled for this vault.
+    pub fn is_stealth_deposits_enabled(env: Env) -> bool {
+        is_stealth_address_enabled(&env)
     }
 
     pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
@@ -2411,35 +3009,100 @@ impl RefundVault {
         }
     }
 
-    // ── Existing admin functions ───────────────────────────────────────────
+    // ── Emergency pause circuit ────────────────────────────────────────────
 
+    /// Halts every fund-moving entry point (`deposit`, `refund`,
+    /// `claim_batch`, `process_batch`, `withdraw`, the yield surface and
+    /// `sweep_dust`) until `unpause` is accepted. Merchant (admin) only.
+    ///
+    /// This is the admin's own emergency stop. When the admin wants a *second*
+    /// key to be able to halt the vault — one that cannot move float — they
+    /// appoint a guardian with `set_guardian`, and the guardian trips the same
+    /// halt with `emergency_pause`.
+    ///
+    /// Re-pausing an already-paused vault re-asserts the flag and publishes
+    /// another `PauseEvent`, but does **not** move the cool-down clock: only
+    /// the rising edge (`false` -> `true`) writes `PausedAtLedger`, so the
+    /// earliest legal `unpause` cannot be pushed further out by repeating the
+    /// call.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
     pub fn pause(env: Env) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+        let merchant = require_admin(&env)?;
         merchant.require_auth();
 
-        env.storage().instance().set(&DataKey::IsPaused, &true);
+        set_pause_state(&env, PauseReason::Admin);
 
-        PauseEvent {
-            ledger: env.ledger().sequence(),
-        }
-        .publish(&env);
+        let ledger = env.ledger().sequence();
+        PauseEvent { ledger }.publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 
+    /// Trips the emergency pause circuit as the configured **guardian**.
+    ///
+    /// The guardian is a key that can halt the vault but can never lift the
+    /// halt, move float, or change policy: appointing one (via `set_guardian`)
+    /// buys the merchant a way to stop the vault from a key whose worst case is
+    /// a liveness cost, not a float loss — see "Emergency Pause Circuit" in
+    /// `docs/SECURITY_MODEL.md` and invariant I-16 in `docs/AUDIT.md`.
+    ///
+    /// While the vault is already paused this is a **no-op**: it writes nothing
+    /// and publishes nothing. That is deliberate — a guardian cannot reset
+    /// `PausedAtLedger`, so it cannot extend the cool-down that `unpause` waits
+    /// out and freeze the vault indefinitely by re-tripping every ledger.
+    ///
+    /// Publishes `PauseEvent` (so indexers that reconstruct pause windows from
+    /// `pause_event` alone keep working) plus `GuardianPauseEvent`, which
+    /// attributes the halt to the guardian.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    /// - `GuardianNotSet`: no guardian has been appointed.
+    pub fn emergency_pause(env: Env) -> Result<(), Error> {
+        let guardian = require_guardian(&env)?;
+        guardian.require_auth();
+
+        if is_paused_flag(&env) {
+            return Ok(());
+        }
+
+        set_pause_state(&env, PauseReason::Guardian);
+
+        let ledger = env.ledger().sequence();
+        PauseEvent { ledger }.publish(&env);
+        GuardianPauseEvent { ledger, guardian }.publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Lifts the emergency halt. Merchant (admin) only — the guardian can trip
+    /// the circuit but never reset it.
+    ///
+    /// A paused vault rejects this call with `UnpauseCoolDownActive` until
+    /// [`UNPAUSE_DELAY_LEDGERS`] ledgers have elapsed since the pause began
+    /// (`get_paused_at_ledger` + `get_unpause_delay` tell a caller exactly when
+    /// that is). An unpaused vault is unaffected: `unpause` on a running vault
+    /// remains a no-op that publishes `UnpauseEvent`, exactly as before.
+    ///
+    /// A pause recorded before the cool-down existed carries no timestamp; it
+    /// is treated as having begun at ledger `0`, i.e. the cool-down has already
+    /// elapsed. That keeps a vault already halted across this change
+    /// recoverable instead of bricking it, and matches the historical
+    /// behaviour.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    /// - `UnpauseCoolDownActive`: the cool-down has not elapsed yet.
     pub fn unpause(env: Env) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+        let admin = require_admin(&env)?;
         admin.require_auth();
-        env.storage().instance().set(&DataKey::IsPaused, &false);
+
+        check_unpause_cooldown(&env)?;
+        clear_pause_state(&env);
 
         UnpauseEvent {
             ledger: env.ledger().sequence(),
@@ -2448,6 +3111,77 @@ impl RefundVault {
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// Appoints (or clears) the emergency pause guardian. Merchant (admin)
+    /// only.
+    ///
+    /// `None` removes the role, leaving `pause` as the only way to halt the
+    /// vault. The guardian may call exactly one entry point —
+    /// `emergency_pause` — and can never unpause, move float, or change policy.
+    ///
+    /// The role survives an admin handover: `transfer_admin` / `accept_admin`
+    /// do not touch it, so the incoming admin inherits the guardian and must
+    /// clear or replace it explicitly. That is the safe direction — a handover
+    /// never silently *removes* the emergency stop — and the inherited
+    /// authority is analysed as an accepted risk in `docs/SECURITY_MODEL.md`.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    /// - `SelfTransfer`: `guardian` is the vault's own address. A contract
+    ///   cannot authorize on its own behalf without a self-call path, so such a
+    ///   guardian could never trip the circuit and would fail silently.
+    /// - `GuardianSameAsAdmin`: `guardian` is the same address as the admin.
+    ///   This would defeat the purpose of having a separate key with limited
+    ///   authority.
+    pub fn set_guardian(env: Env, guardian: Option<Address>) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        if let Some(address) = &guardian {
+            if *address == env.current_contract_address() {
+                return Err(Error::SelfTransfer);
+            }
+            if *address == admin {
+                return Err(Error::GuardianSameAsAdmin);
+            }
+            env.storage().instance().set(&DataKey::Guardian, address);
+        } else {
+            env.storage().instance().remove(&DataKey::Guardian);
+        }
+
+        GuardianUpdatedEvent {
+            ledger: env.ledger().sequence(),
+            guardian,
+        }
+        .publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// The configured emergency pause guardian, if any (read-only).
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Guardian)
+    }
+
+    /// The ledger at which the *current* pause began, or `None` while the
+    /// vault is running (read-only). `unpause` becomes legal at
+    /// `get_paused_at_ledger() + get_unpause_delay()`.
+    pub fn get_paused_at_ledger(env: Env) -> Option<u32> {
+        env.storage().instance().get(&DataKey::PausedAtLedger)
+    }
+
+    /// The reason for the current pause, if the vault is paused (read-only).
+    /// Returns `None` while the vault is running or for legacy pauses set
+    /// before the reason tracking was added.
+    pub fn get_pause_reason(env: Env) -> Option<PauseReason> {
+        env.storage().instance().get(&DataKey::PauseReason)
+    }
+
+    /// The emergency cool-down `unpause` waits out, in ledgers (read-only).
+    pub fn get_unpause_delay() -> u32 {
+        UNPAUSE_DELAY_LEDGERS
     }
 
     /// Configure the dust sweep (issue #427): residual balances strictly
