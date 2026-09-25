@@ -146,6 +146,13 @@ pub enum DataKey {
     /// Treasury receiving swept dust (issue #427). Falls back to the fee
     /// recipient when unset.
     DustTreasury,
+    /// Whitelist flag for a yield strategy (issue #415). Only approved
+    /// strategies can be registered or receive deployments. Persistent.
+    ApprovedStrategy(Address),
+    /// Destination of harvested yield — the protocol treasury or a merchant
+    /// rebate pool (issue #415). Falls back to the merchant when unset.
+    /// Persistent.
+    YieldRecipient,
     /// A streaming micro-disbursement schedule, keyed by stream id
     /// (issue #410). Persistent storage, TTL kept past the stop ledger.
     Stream(u64),
@@ -463,6 +470,7 @@ pub struct CommitRevealedEvent {
 
 pub mod dust;
 pub mod oracle;
+pub mod settlement;
 pub mod streaming;
 
 pub mod strategy;
@@ -845,9 +853,17 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
 
     // Token client: use the cached token address instead of reading from storage.
     let token_client = token::Client::new(env, &cache.token_addr);
-    // Escrowed stream principal belongs to buyers, not the refund float.
+    // Escrowed stream principal belongs to buyers, not the refund float
+    // (issue #410), so the liquid balance must cover the claim on top of it.
+    let required = claim
+        .amount
+        .checked_add(streaming::escrowed(env))
+        .ok_or(Error::MathOverflow)?;
     let balance = token_client.balance(&env.current_contract_address());
-    if balance - streaming::escrowed(env) < claim.amount {
+    // Deployed principal stays instantly redeemable: recall any shortfall
+    // from the yield strategy before the float check (issue #415).
+    let balance = strategy::ensure_liquidity(env, &token_client, balance, required)?;
+    if balance < required {
         return Err(Error::InsufficientFloat);
     }
 
@@ -1329,37 +1345,16 @@ impl RefundVault {
         let token_client = token::Client::new(&env, &token_address);
 
         // Escrowed stream principal belongs to buyers and must stay in the
-        // vault, so the merchant can only withdraw the balance above it.
+        // vault, so the merchant can only withdraw the balance above it
+        // (issue #410).
         let required = amount
             .checked_add(streaming::escrowed(&env))
             .ok_or(Error::MathOverflow)?;
-        let mut contract_balance = token_client.balance(&env.current_contract_address());
-        if contract_balance < required {
-            let deployed_principal: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::DeployedPrincipal)
-                .unwrap_or(0);
-            if deployed_principal > 0 {
-                if let Some(strategy_addr) = env
-                    .storage()
-                    .instance()
-                    .get::<_, Address>(&DataKey::YieldStrategy)
-                {
-                    let needed = required - contract_balance;
-                    let withdraw_amount = core::cmp::min(needed, deployed_principal);
-                    if withdraw_amount > 0 {
-                        let strategy_client = YieldStrategyClient::new(&env, &strategy_addr);
-                        let (_p, _y) = strategy_client.withdraw(&withdraw_amount);
-                        env.storage().instance().set(
-                            &DataKey::DeployedPrincipal,
-                            &(deployed_principal - withdraw_amount),
-                        );
-                        contract_balance = token_client.balance(&env.current_contract_address());
-                    }
-                }
-            }
-        }
+        // Recall deployed principal if the liquid float cannot cover this
+        // withdrawal (issue #415).
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        let contract_balance =
+            strategy::ensure_liquidity(&env, &token_client, contract_balance, required)?;
 
         if contract_balance < required {
             return Err(Error::InsufficientFloat);
@@ -2652,6 +2647,11 @@ mod fuzz_test;
 mod oracle_tests;
 #[cfg(test)]
 mod reentrancy_tests;
+#[cfg(test)]
+mod settlement_test;
+/// Yield-bearing escrow strategy hook tests (issue #415).
+#[cfg(test)]
+mod strategy_tests;
 #[cfg(test)]
 mod streaming_tests;
 #[cfg(test)]
