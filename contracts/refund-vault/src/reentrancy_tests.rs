@@ -722,6 +722,7 @@ fn setup_with_malicious_strategy(
     // Fund the strategy so it can honor withdraw/harvest transfers back.
     StellarAssetClient::new(&env, &token).mint(&strategy_id, &YIELD_FLOAT);
 
+    vault_client.approve_yield_strategy(&strategy_id);
     vault_client.set_yield_strategy(&strategy_id);
     vault_client.set_reserve_ratio(&reserve_bp);
     vault_client.set_max_deploy_ratio(&max_deploy_bp);
@@ -876,6 +877,7 @@ fn test_guard_blocks_deploy_to_yield_while_lock_held() {
     let strategy_id = env.register(crate::yield_tests::MockYieldStrategy, ());
     let strategy_client = crate::yield_tests::MockYieldStrategyClient::new(&env, &strategy_id);
     strategy_client.initialize(&token, &client.address);
+    client.approve_yield_strategy(&strategy_id);
     client.set_yield_strategy(&strategy_id);
     client.set_reserve_ratio(&0);
     client.set_max_deploy_ratio(&10_000);

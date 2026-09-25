@@ -2101,3 +2101,135 @@ fn test_anchor_event_uses_canonical_topics() {
         ]
     );
 }
+
+// ── verify_receipt_leaf ────────────────────────────────────────────────────
+
+fn tree_proof(
+    env: &Env,
+    tree: &crate::merkle::test_tree::Tree,
+    i: usize,
+) -> soroban_sdk::Vec<BytesN<32>> {
+    build_proof(env, &tree.proof(i))
+}
+
+#[test]
+fn test_verify_receipt_leaf_every_leaf_of_max_batch() {
+    use crate::merkle::test_tree::{leaves, Tree};
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let ls = leaves(1000);
+    let tree = Tree::new(&ls);
+    let root = BytesN::from_array(&env, &tree.root());
+    client.anchor_batch(&DEFAULT_SHARD, &root, &1000, &0, &100);
+
+    for (i, leaf) in ls.iter().enumerate() {
+        assert!(
+            client.verify_receipt_leaf(
+                &DEFAULT_SHARD,
+                &root,
+                &BytesN::from_array(&env, leaf),
+                &tree_proof(&env, &tree, i)
+            ),
+            "leaf {i}"
+        );
+    }
+}
+
+#[test]
+fn test_verify_receipt_leaf_rejects_corrupted_branches() {
+    use crate::merkle::test_tree::{leaves, Tree};
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let ls = leaves(8);
+    let tree = Tree::new(&ls);
+    let root = BytesN::from_array(&env, &tree.root());
+    client.anchor_batch(&DEFAULT_SHARD, &root, &8, &0, &100);
+    let leaf = BytesN::from_array(&env, &ls[3]);
+    let good = tree.proof(3);
+
+    let verify = |leaf: &BytesN<32>, proof: &[[u8; 32]]| {
+        client.verify_receipt_leaf(&DEFAULT_SHARD, &root, leaf, &build_proof(&env, proof))
+    };
+    assert!(verify(&leaf, &good));
+
+    // Each proof element with one bit flipped.
+    for level in 0..good.len() {
+        let mut bad = good.clone();
+        bad[level][0] ^= 1;
+        assert!(!verify(&leaf, &bad), "flipped level {level}");
+    }
+    // Wrong leaf, truncated proof, reordered proof, empty proof.
+    assert!(!verify(&BytesN::from_array(&env, &ls[4]), &good));
+    assert!(!verify(&leaf, &good[..2]));
+    assert!(!verify(&leaf, &[good[1], good[0], good[2]]));
+    assert!(!verify(&leaf, &[]));
+}
+
+#[test]
+fn test_verify_receipt_leaf_rejects_unknown_root() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    let leaf = BytesN::from_array(&env, &[7u8; 32]);
+
+    // Nothing anchored yet: even a self-consistent single-leaf "tree" fails.
+    assert_eq!(
+        client.try_verify_receipt_leaf(&DEFAULT_SHARD, &leaf, &leaf, &vec![&env]),
+        Err(Ok(Error::RootNotFound))
+    );
+
+    // Anchored in another shard is not good enough.
+    client.anchor_batch(&1, &leaf, &1, &0, &10);
+    assert_eq!(
+        client.try_verify_receipt_leaf(&DEFAULT_SHARD, &leaf, &leaf, &vec![&env]),
+        Err(Ok(Error::RootNotFound))
+    );
+    assert!(client.verify_receipt_leaf(&1, &leaf, &leaf, &vec![&env]));
+}
+
+#[test]
+fn test_verify_receipt_leaf_rejects_oversize_proof() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &10);
+
+    let proof = build_proof(&env, &[[2u8; 32]; 11]);
+    assert_eq!(
+        client.try_verify_receipt_leaf(&DEFAULT_SHARD, &root, &root, &proof),
+        Err(Ok(Error::ProofTooLong))
+    );
+}
+
+#[test]
+fn test_verify_receipt_leaf_before_initialize_fails() {
+    let (env, client, _merchant) = setup();
+    let leaf = BytesN::from_array(&env, &[7u8; 32]);
+    assert_eq!(
+        client.try_verify_receipt_leaf(&DEFAULT_SHARD, &leaf, &leaf, &vec![&env]),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_verify_receipt_leaf_agrees_with_shard_verifier() {
+    // The router-side fold and the shard's own `verify_receipt` must accept
+    // exactly the same proofs.
+    use crate::merkle::test_tree::{leaves, Tree};
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let ls = leaves(37);
+    let tree = Tree::new(&ls);
+    let root = BytesN::from_array(&env, &tree.root());
+    let batch_id = client.anchor_batch(&DEFAULT_SHARD, &root, &37, &0, &100);
+
+    for (i, leaf) in ls.iter().enumerate() {
+        let leaf = BytesN::from_array(&env, leaf);
+        let proof = tree_proof(&env, &tree, i);
+        let by_root = client.verify_receipt_leaf(&DEFAULT_SHARD, &root, &leaf, &proof);
+        let by_batch = client.verify_receipt(&DEFAULT_SHARD, &batch_id, &leaf, &proof);
+        assert!(by_root && by_batch, "leaf {i}");
+    }
+}

@@ -102,6 +102,7 @@ impl ReceiptShard {
                         >= RETENTION_LEDGERS =>
                 {
                     env.storage().persistent().remove(&DataKey::Batch(cursor));
+                    crate::diagnostics::record_removal(&env, &record);
                     pruned += 1;
                     cursor += 1;
                 }

@@ -208,3 +208,68 @@ its refund record.
 - **Data Map**:
   - `amount` (`i128`): The residual transferred to the treasury. `0` when the payment was fully refunded and the record was only reclaimed.
   - `treasury` (`Address`): The address that received the dust.
+
+## `StateChannel` Events
+
+### `ChannelClosedCooperative`
+Emitted when `mutual_close` settles a channel from a final balance split
+signed by both the sender and the receiver (issue #412). The challenge window
+is skipped and the channel's storage entries are deleted.
+
+- **Topics**: `("channel_closed_cooperative", channel_id: u64)`
+- **Data Map**:
+  - `receiver_balance` (`i128`): Amount paid to the receiver.
+  - `sender_balance` (`i128`): Amount returned to the sender.
+
+## `TimePolicy` Events
+
+### `OracleResolutionApplied`
+Emitted when a delivery oracle's fresh report decides a refund claim
+(issue #426): `Lost` admits the refund, `Delivered` rejects it. A `Delivered`
+rejection fails the invocation, so in practice indexers only observe this
+event for admitted claims.
+
+- **Topics**: `("oracle_resolution_applied", payment_ref: BytesN<32>)`
+- **Data Map**:
+  - `oracle` (`Address`): The oracle contract that was consulted.
+  - `status` (`DeliveryStatus`): `Lost` or `Delivered`.
+  - `reported_at` (`u64`): Timestamp of the oracle's observation.
+  - `proof` (`BytesN<32>`): The oracle's opaque evidence.
+
+## `MultisigAccount` Events
+
+### `DailyLimitSet`
+Emitted when governance sets or clears a token's daily allowance for
+sub-threshold signers (issue #413).
+
+- **Topics**: `("daily_limit_set", token: Address)`
+- **Data Map**:
+  - `limit` (`i128`): The new daily allowance. `0` means sub-threshold spending of this token is disabled.
+
+### `PausedEvent`
+Emitted when the account's emergency pause is engaged, by the account itself
+(`threshold` signers) or by its security guardian. While paused the account
+refuses to authorize any call except its own `pause`, `unpause`,
+`set_guardian` and `rotate_signers_and_threshold`.
+
+- **Topics**: `("paused_event", ledger: u32)`
+- **Data Map**:
+  - `by` (`Address`): The account's own address (threshold signers) or the guardian.
+
+### `UnpausedEvent`
+Emitted when the account's emergency pause is lifted.
+
+- **Topics**: `("unpaused_event", ledger: u32)`
+- **Data Map**:
+  - `by` (`Address`): The account's own address (threshold signers) or the guardian.
+
+The account is paused between a `paused_event` and the next `unpaused_event`.
+
+### `GuardianSetEvent`
+Emitted when the account's threshold signers set, replace or clear the security
+guardian.
+
+- **Topics**: `("guardian_set_event",)`
+- **Data Map**:
+  - `previous` (`Option<Address>`): The guardian before the change.
+  - `new` (`Option<Address>`): The guardian after the change; `None` = no guardian.

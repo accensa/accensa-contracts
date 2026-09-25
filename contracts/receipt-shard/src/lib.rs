@@ -32,6 +32,9 @@ pub enum DataKey {
     /// (issue #395). Instance storage, keyed by the caller that evicted
     /// expired batches.
     PruneBounty(Address),
+    /// Health-diagnostic counters (issue #419), instance storage. See
+    /// [`diagnostics::ShardStats`].
+    ShardStats,
 }
 
 /// Structurally identical to `ReceiptAnchor::BatchRecord`. Soroban cross-contract
@@ -115,6 +118,10 @@ impl ReceiptShard {
             period_end,
             anchored_ledger: env.ledger().sequence(),
         };
+
+        let previous: Option<BatchRecord> =
+            env.storage().persistent().get(&DataKey::Batch(batch_id));
+        diagnostics::record_anchor(&env, batch_id, previous.as_ref(), count);
 
         env.storage()
             .persistent()
@@ -212,6 +219,7 @@ impl ReceiptShard {
             {
                 Some(record) if record.anchored_ledger < before_ledger => {
                     env.storage().persistent().remove(&DataKey::Batch(cursor));
+                    diagnostics::record_removal(&env, &record);
                     cursor += 1;
                     pruned += 1;
                 }
@@ -250,6 +258,9 @@ impl ReceiptShard {
     }
 }
 
+pub mod diagnostics;
+#[cfg(test)]
+mod diagnostics_test;
 pub mod pruning;
 #[cfg(test)]
 mod pruning_test;

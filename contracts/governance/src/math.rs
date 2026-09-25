@@ -107,7 +107,7 @@ mod tests {
         // e.g., 1_0000000 units = 1 token
         assert_eq!(isqrt(1_0000000), 3162);
         assert_eq!(isqrt(100_000000), 10000);
-        // 10 million tokens (with 7 decimals) -> sqrt ~ 3162277
-        assert_eq!(isqrt(10_0000000), 100000);
+        // 10 tokens (with 7 decimals) = 100_000_000 units -> sqrt = 10_000
+        assert_eq!(isqrt(10_0000000), 10000);
     }
 }

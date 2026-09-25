@@ -48,7 +48,7 @@ mod test;
 mod math;
 mod quorum;
 mod ragequit;
-pub mod timelock;
+
 mod voting;
 
 use quorum::current_quorum_bps;
@@ -336,16 +336,16 @@ impl Governance {
             if deposit == 0 {
                 return Err(Error::InvalidMembers);
             }
-            let key = DataKey::MemberDeposit(member);
+            let key = DataKey::MemberDeposit(member.clone());
             if env.storage().persistent().has(&key) {
                 return Err(Error::InvalidMembers);
             }
-            register_deposit(&env, member, deposit);
+            register_deposit(&env, &member, deposit);
             total_deposits = total_deposits
                 .checked_add(deposit)
                 .ok_or(Error::InvalidMembers)?;
             total_weight = total_weight
-                .checked_add(quadratic_weight(&env, member))
+                .checked_add(quadratic_weight(&env, &member))
                 .ok_or(Error::InvalidMembers)?;
         }
 
@@ -948,7 +948,7 @@ impl Governance {
     fn member_deposit(env: &Env, member: &Address) -> Result<(), Error> {
         env.storage()
             .persistent()
-            .get(&DataKey::MemberDeposit(member.clone()))
+            .get::<_, u64>(&DataKey::MemberDeposit(member.clone()))
             .ok_or(Error::NotAMember)?;
         Ok(())
     }

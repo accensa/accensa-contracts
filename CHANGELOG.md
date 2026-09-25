@@ -9,23 +9,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
-- **`governance` (issue #447): 48-hour timelock for protocol upgrades.** New
-  `contracts/governance/src/timelock.rs` holds a `hash -> execution ledger`
-  queue for protocol upgrades (a target contract's Wasm swap or a parameter
-  change). `queue_upgrade(caller, target, function, args)` — member-only —
-  records the call under `sha256(domain ‖ target ‖ function ‖ args)` with
-  `execution_ledger = now + 34_560` (48 h at ~5 s/ledger) and returns that
-  hash; `execute_queued_transaction(call_hash)` runs the call and only once
-  the delay has fully elapsed (`Error::TimelockNotExpired` before that,
-  `Error::NoQueuedTransaction` once it has run, `Error::AlreadyQueued` if the
-  identical call is queued twice, so the clock can never be reset). Execution
-  is permissionless like `Governance::execute`, the queue entry is consumed
-  before the external call (no double execution), and
-  `UpgradeQueuedEvent` / `UpgradeExecutedEvent` make every pending upgrade
-  trackable from the event log. `get_queued_transaction` is the read-only
-  view. Also restores the crate's build: `src/math.rs` and `src/voting.rs`
-  existed but were never declared as modules, and `voting.rs` / `ragequit.rs`
-  carried a stray `#![no_std]`.
+
 - **`state-channel` (issue #423): multi-asset collateral pooling.** New
   `open_multi_asset_channel` escrows several tokens in one channel, tracked
   per token as a `BalanceRecord`. Signed `MultiAssetState`s must name exactly
@@ -168,6 +152,23 @@ breaking changes bump the **minor** version, and they are called out as such.
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+- **Build fixes for code merged without compiling.** `governance` declares
+  its `voting` and `math` modules and no longer moves `member` before reuse;
+  stray `#![no_std]` attributes in submodules (`governance` `ragequit.rs` /
+  `voting.rs`, `upto-authorization` `domain.rs`) are removed; unit tests in
+  `governance::voting` run inside a contract context, and two `isqrt`
+  expectations that were off by 10x are corrected.
+- **Known issue, test ignored:** `governance::set_treasury_token` is reachable
+  only through `execute` invoking the contract itself, which Soroban rejects
+  ("Contract re-entry is not allowed"). Its test is `#[ignore]`d pending a
+  design fix.
+- **`state-channel`: restore the build.** The merge of #504 dropped the
+  `extend_instance_ttl` and `NonceWindow` imports and the `nonce` module
+  declaration, and `nonce.rs` used a non-existent `BytesN::zero` and a
+  module-level `#![no_std]`.
+- **`common`, `refund-vault`: clippy clean again.** Removed a module-level
+  `#![no_std]` in `common/src/storage.rs` and a needless borrow in
+  `refund-vault`.
 
 - **Repaired source corruption that left `main` unable to compile.** Two bad
   merges (`a6e234b`, then `8eb4fa6` "Resolve conflicts in PR 263") committed

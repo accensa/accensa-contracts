@@ -17,15 +17,24 @@
 //! call back into the vault.
 //!
 //! One deployed instance serves every vault that points its time gate at it.
+//!
+//! The `params` blob may instead be an [`oracle::TimeOraclePolicyParams`],
+//! which adds a delivery oracle that can resolve a dispute before the clock
+//! gates are consulted (issue #426); see [`oracle`].
 
 #![no_std]
 
 use accensa_common::{Error, PolicyContext, RefundPolicy, TimePolicyParams};
-use soroban_sdk::{contract, contractimpl, xdr::FromXdr, Bytes, Env};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, xdr::FromXdr, Bytes, Env, Map, Symbol, TryFromVal, Val,
+};
 
 #[contract]
 pub struct TimePolicy;
 
+pub mod oracle;
+#[cfg(test)]
+mod oracle_test;
 #[cfg(test)]
 mod test;
 
@@ -37,19 +46,23 @@ impl RefundPolicy for TimePolicy {
     /// Always returns `Ok(())` when the gate is disabled in the params
     /// (`window == 0 && deadline == 0`) — a vault only emits a time entry
     /// when at least one of them is set, so this is defensive only.
+    ///
+    /// When `params` decodes as [`oracle::TimeOraclePolicyParams`] the
+    /// attached oracle is consulted first (see [`oracle`]).
     fn evaluate(env: Env, params: Bytes, ctx: PolicyContext) -> Result<(), Error> {
+        // Decoding into the wrong struct shape traps the host instead of
+        // returning `Err`, so pick the schema by its distinguishing field.
+        let raw = Val::from_xdr(&env, &params).map_err(|_| Error::InvalidPolicyParams)?;
+        let fields =
+            Map::<Symbol, Val>::try_from_val(&env, &raw).map_err(|_| Error::InvalidPolicyParams)?;
+        if fields.contains_key(symbol_short!("oracle")) {
+            let p = oracle::TimeOraclePolicyParams::try_from_val(&env, &raw)
+                .map_err(|_| Error::InvalidPolicyParams)?;
+            return oracle::evaluate(&env, &p, &ctx);
+        }
         let p =
-            TimePolicyParams::from_xdr(&env, &params).map_err(|_| Error::InvalidPolicyParams)?;
-
-        if p.window > 0 && ctx.current_ledger > ctx.paid_at_ledger + p.window {
-            return Err(Error::WindowExpired);
-        }
-
-        if p.deadline > 0 && ctx.timestamp > p.deadline {
-            return Err(Error::RefundExpired);
-        }
-
-        Ok(())
+            TimePolicyParams::try_from_val(&env, &raw).map_err(|_| Error::InvalidPolicyParams)?;
+        oracle::check_time_gates(p.window, p.deadline, &ctx)
     }
 }
 mod state_transition;
