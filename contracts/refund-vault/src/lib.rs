@@ -204,6 +204,12 @@ pub enum DataKey {
     /// Whether stealth address deposits are enabled for this vault.
     /// Admin can toggle this feature on/off.
     StealthAddressEnabled,
+    /// Pending protocol upgrade proposal waiting for timelock.
+    PendingUpgrade,
+    /// Emergency timelock bypass flag. When set, timelocks can be skipped
+    /// for immediate execution in emergency situations. Admin-only and emits
+    /// an auditable event when toggled.
+    EmergencyTimelockBypass,
 }
 
 #[contracttype]
@@ -233,6 +239,31 @@ pub struct PolicyProposal {
     /// prove. `0` (the default) means no VDF proof is required.
     pub vdf_delay: u32,
     pub proposed_at_ledger: u32,
+}
+
+/// Types of protocol upgrade operations that require timelock.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpgradeOperation {
+    /// Change the settlement token address.
+    SetToken { new_token: Address },
+    /// Change the guardian address.
+    SetGuardian { guardian: Option<Address> },
+    /// Change the fee recipient.
+    SetFeeRecipient { recipient: Address },
+    /// Change the settlement contract.
+    SetSettlementContract { contract: Address },
+    /// Enable/disable stealth address feature.
+    SetStealthAddressEnabled { enabled: bool },
+}
+
+/// A pending protocol upgrade waiting for the timelock to expire.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposal {
+    pub operation: UpgradeOperation,
+    pub proposed_at_ledger: u32,
+    pub execute_after_ledger: u32,
 }
 
 /// A pending commit-reveal commitment (issue #128). Recorded by
@@ -592,6 +623,56 @@ pub struct StealthAddressEnabledEvent {
     pub ledger: u32,
 }
 
+/// Emitted when a protocol upgrade is proposed and enters timelock.
+///
+/// Topics: `("upgrade_proposed_event", operation_type)`. The data map
+/// carries the proposed ledger and execution ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposedEvent {
+    #[topic]
+    pub operation_type: Symbol,
+    pub proposed_at_ledger: u32,
+    pub execute_after_ledger: u32,
+}
+
+/// Emitted when a proposed protocol upgrade is executed.
+///
+/// Topics: `("upgrade_executed_event", operation_type)`. The data map
+/// carries the execution ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeExecutedEvent {
+    #[topic]
+    pub operation_type: Symbol,
+    pub executed_at_ledger: u32,
+}
+
+/// Emitted when a pending upgrade is cancelled.
+///
+/// Topics: `("upgrade_cancelled_event", operation_type)`. The data map
+/// carries the cancellation ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeCancelledEvent {
+    #[topic]
+    pub operation_type: Symbol,
+    pub cancelled_at_ledger: u32,
+}
+
+/// Emitted when emergency timelock bypass is toggled.
+///
+/// Topics: `("emergency_bypass_event", enabled)`. The data map
+/// carries the ledger sequence and admin address for auditability.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyBypassEvent {
+    #[topic]
+    pub enabled: bool,
+    pub ledger: u32,
+    pub admin: Address,
+}
+
 pub mod dust;
 pub mod oracle;
 
@@ -632,6 +713,11 @@ const TTL_EXTEND: u32 = 518_400;
 const TTL_THRESHOLD: u32 = 100;
 /// Timelock delay for policy changes in ledgers (~24 hours at 5s/ledger).
 const POLICY_TIMELOCK: u32 = 17_280;
+
+/// Timelock delay for protocol upgrades and sensitive admin operations
+/// (~48 hours at 5s/ledger). This provides additional security for critical
+/// changes that could affect the vault's fundamental operation.
+const PROTOCOL_UPGRADE_TIMELOCK: u32 = 34_560;
 
 /// Emergency cool-down: the minimum number of ledgers a paused vault must stay
 /// halted before `unpause` is accepted (~24 hours at 5s/ledger).
@@ -1262,6 +1348,34 @@ fn validate_stealth_address(env: &Env, stealth_address: &Address, viewing_key: &
 
     // In production, this would verify cryptographic correctness of the derivation
     Ok(())
+}
+
+/// Checks if emergency timelock bypass is enabled.
+fn is_emergency_bypass_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::EmergencyTimelockBypass)
+        .unwrap_or(false)
+}
+
+/// Checks if a timelock has expired for a given proposal ledger.
+fn check_timelock_expired(env: &Env, proposed_at_ledger: u32, timelock_duration: u32) -> Result<(), Error> {
+    let current_ledger = env.ledger().sequence();
+    if current_ledger < proposed_at_ledger.saturating_add(timelock_duration) {
+        return Err(Error::UpgradeTimelockNotExpired);
+    }
+    Ok(())
+}
+
+/// Converts an UpgradeOperation to a Symbol for event topics.
+fn operation_to_symbol(operation: &UpgradeOperation) -> Symbol {
+    match operation {
+        UpgradeOperation::SetToken { .. } => Symbol::short("set_token"),
+        UpgradeOperation::SetGuardian { .. } => Symbol::short("set_guardian"),
+        UpgradeOperation::SetFeeRecipient { .. } => Symbol::short("set_fee_recipient"),
+        UpgradeOperation::SetSettlementContract { .. } => Symbol::short("set_settlement_contract"),
+        UpgradeOperation::SetStealthAddressEnabled { .. } => Symbol::short("set_stealth_enabled"),
+    }
 }
 
 #[contract]

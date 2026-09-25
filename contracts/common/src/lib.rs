@@ -198,6 +198,14 @@ pub enum Error {
     InvalidStealthAddress = 328,
     /// Stealth address registration limit exceeded.
     StealthAddressLimitExceeded = 329,
+    /// A protocol upgrade operation requires timelock and none was initiated.
+    TimelockRequired = 330,
+    /// The timelock for a pending upgrade has not yet expired.
+    UpgradeTimelockNotExpired = 331,
+    /// No pending upgrade proposal exists to execute.
+    NoPendingUpgrade = 332,
+    /// Emergency timelock bypass is not enabled.
+    EmergencyBypassDisabled = 333,
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }
