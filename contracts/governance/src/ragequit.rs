@@ -25,8 +25,6 @@
 //! - **Ordering**: all storage effects are committed before the treasury
 //!   token transfer (checks-effects-interactions).
 
-#![no_std]
-
 use soroban_sdk::{token, Address, Env};
 
 use crate::quorum::current_quorum_bps;

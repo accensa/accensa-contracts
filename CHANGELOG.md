@@ -9,6 +9,23 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`governance` (issue #447): 48-hour timelock for protocol upgrades.** New
+  `contracts/governance/src/timelock.rs` holds a `hash -> execution ledger`
+  queue for protocol upgrades (a target contract's Wasm swap or a parameter
+  change). `queue_upgrade(caller, target, function, args)` — member-only —
+  records the call under `sha256(domain ‖ target ‖ function ‖ args)` with
+  `execution_ledger = now + 34_560` (48 h at ~5 s/ledger) and returns that
+  hash; `execute_queued_transaction(call_hash)` runs the call and only once
+  the delay has fully elapsed (`Error::TimelockNotExpired` before that,
+  `Error::NoQueuedTransaction` once it has run, `Error::AlreadyQueued` if the
+  identical call is queued twice, so the clock can never be reset). Execution
+  is permissionless like `Governance::execute`, the queue entry is consumed
+  before the external call (no double execution), and
+  `UpgradeQueuedEvent` / `UpgradeExecutedEvent` make every pending upgrade
+  trackable from the event log. `get_queued_transaction` is the read-only
+  view. Also restores the crate's build: `src/math.rs` and `src/voting.rs`
+  existed but were never declared as modules, and `voting.rs` / `ragequit.rs`
+  carried a stray `#![no_std]`.
 - **`state-channel` (issue #423): multi-asset collateral pooling.** New
   `open_multi_asset_channel` escrows several tokens in one channel, tracked
   per token as a `BalanceRecord`. Signed `MultiAssetState`s must name exactly

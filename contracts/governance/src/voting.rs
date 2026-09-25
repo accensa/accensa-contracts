@@ -4,8 +4,6 @@
 //! governance tokens (`sqrt(deposit)`), preventing single-whale
 //! domination in protocol decision making.
 
-#![no_std]
-
 use soroban_sdk::{Address, Env};
 
 use crate::math::isqrt;

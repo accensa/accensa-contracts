@@ -45,14 +45,17 @@
 #[cfg(test)]
 mod test;
 
+mod math;
 mod quorum;
 mod ragequit;
+pub mod timelock;
+mod voting;
 
 use quorum::current_quorum_bps;
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, Address, Env,
-    Symbol, Val, Vec,
+    contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, Address,
+    BytesN, Env, Symbol, Val, Vec,
 };
 
 use voting::{quadratic_weight, register_deposit};
@@ -110,6 +113,15 @@ pub enum Error {
     /// A checked arithmetic operation in the ragequit payout math
     /// over- or under-flowed, or a conversion would truncate (issue #411).
     MathOverflow = 17,
+    /// A queued protocol upgrade's 48-hour timelock has not elapsed yet
+    /// (issue #447).
+    TimelockNotExpired = 18,
+    /// No upgrade is queued under the supplied call hash — it was never
+    /// queued, or it has already been executed (issue #447).
+    NoQueuedTransaction = 19,
+    /// The identical call is already sitting in the timelock queue (issue
+    /// #447); queueing it again would reset its execution clock.
+    AlreadyQueued = 20,
 }
 
 #[contracttype]
@@ -650,6 +662,52 @@ impl Governance {
         env.storage()
             .temporary()
             .has(&DataKey::Dissent(proposal_id, voter))
+    }
+
+    /// Queue a protocol upgrade in the 48-hour timelock (issue #447).
+    ///
+    /// `target::function(args)` — a Wasm swap or a parameter change — is
+    /// recorded against its call hash and cannot execute before
+    /// `timelock::TIMELOCK_DELAY` (34,560 ledgers ≈ 48 hours) have elapsed,
+    /// which is what gives users time to read the pending change and exit.
+    /// Only registered members may queue. Returns the call hash to hand to
+    /// [`execute_queued_transaction`](Self::execute_queued_transaction).
+    ///
+    /// # Errors
+    /// - `NotAMember`: `caller` is not a registered member.
+    /// - `AlreadyQueued`: the identical call is already queued.
+    pub fn queue_upgrade(
+        env: Env,
+        caller: Address,
+        target: Address,
+        function: Symbol,
+        args: Vec<Val>,
+    ) -> Result<BytesN<32>, Error> {
+        timelock::queue_transaction(&env, &caller, target, function, args)
+    }
+
+    /// Execute an upgrade queued by [`queue_upgrade`](Self::queue_upgrade),
+    /// once its 48-hour timelock has elapsed (issue #447).
+    ///
+    /// Callable by anyone, for the same reason [`execute`](Self::execute) is:
+    /// the queued call carries no authority beyond what this contract already
+    /// holds, so the only thing a caller chooses is *when* — and before the
+    /// delay that choice is refused outright.
+    ///
+    /// # Errors
+    /// - `NoQueuedTransaction`: nothing is queued under `call_hash`.
+    /// - `TimelockNotExpired`: the 48 hours have not fully elapsed.
+    pub fn execute_queued_transaction(env: Env, call_hash: BytesN<32>) -> Result<(), Error> {
+        timelock::execute_queued_transaction(&env, call_hash)
+    }
+
+    /// Read-only: the upgrade queued under `call_hash`, or
+    /// `NoQueuedTransaction` if there is none.
+    pub fn get_queued_transaction(
+        env: Env,
+        call_hash: BytesN<32>,
+    ) -> Result<timelock::QueuedTransaction, Error> {
+        timelock::get_queued_transaction(&env, call_hash)
     }
 
     fn member_deposit(env: &Env, member: &Address) -> Result<(), Error> {
