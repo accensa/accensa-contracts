@@ -17,7 +17,7 @@ if [ ! -f "$BUDGET_FILE" ]; then
   exit 1
 fi
 
-CONTRACTS=("receipt_anchor" "refund_vault" "refund_policy_time" "refund_policy_vdf" "refund_vault_factory" "governance" "multisig_account" "receipt_shard" "state_channel" "upto_authorization")
+CONTRACTS=("receipt_anchor" "refund_vault" "refund_policy_time" "refund_policy_vdf" "refund_vault_factory" "governance" "multisig_account" "receipt_shard" "state_channel" "stream_vault" "upto_authorization")
 
 echo "#### Binary Sizes vs Budget"
 echo ""
