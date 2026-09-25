@@ -150,18 +150,19 @@ breaking changes bump the **minor** version, and they are called out as such.
   for more than 90 days of ledgers. The swept `RefundV2` record is deleted to
   reclaim storage, and a `DustSweptEvent` is emitted. Treasury falls back to
   the fee recipient when unset.
-- **`refund-vault` (issue #410): streaming micro-disbursement schedules.**
-  New `create_stream(buyer, start_ledger, stop_ledger, rate_per_ledger,
+- **`stream-vault` (issue #410): streaming micro-disbursement schedules.**
+  New standalone contract, constructed with `(merchant, token)`.
+  `create_stream(buyer, start_ledger, stop_ledger, rate_per_ledger,
   deposit)` escrows a buyer's deposit and streams it linearly to the
   merchant; the claimable balance is `min(deposit, (ledger - start) * rate)`
   less prior claims. `claim_stream` is permissionless and closes the stream
   once the stop ledger is reached. The buyer can `pause_stream` /
   `resume_stream` (resuming shifts the schedule by the paused duration) or
   `cancel_stream`, which pays the merchant what has streamed and returns
-  unspent principal. Escrowed stream principal is excluded from the refund
-  float, so `refund`, `withdraw` and `deploy_to_yield` cannot spend it. Adds
-  `get_stream`, `get_stream_claimable`, `Error::StreamNotFound` and
-  `Error::StreamNotActive`.
+  unspent principal. Adds `get_stream` and `get_stream_claimable`. It is a
+  separate contract because `RefundVault` has no room left under the
+  128 KiB contract size limit, and it keeps buyer escrow apart from the
+  refund float.
 - **`multisig-account` (issue #425): Ed25519 signature malleability protection.**
   New `crypto` module rejects any signature whose `s` scalar is not strictly
   below the group order `L` (e.g. the malleated twin `(R, s + L)`) with
