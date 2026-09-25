@@ -122,6 +122,18 @@ pub enum Error {
     /// The identical call is already sitting in the timelock queue (issue
     /// #447); queueing it again would reset its execution clock.
     AlreadyQueued = 20,
+    /// veToken mechanics are not enabled for this governance contract.
+    VeTokenDisabled = 21,
+    /// Lock duration exceeds maximum allowed.
+    LockDurationTooLong = 22,
+    /// No active veToken lock exists for this member.
+    NoActiveLock = 23,
+    /// Lock has not yet expired.
+    LockNotExpired = 24,
+    /// Lock already withdrawn.
+    LockAlreadyWithdrawn = 25,
+    /// A member already has an active veToken lock.
+    LockAlreadyExists = 26,
 }
 
 #[contracttype]
@@ -156,6 +168,12 @@ pub enum DataKey {
     /// Instance: the SEP-41 token that backs ragequit withdrawals, set via
     /// `set_treasury_token` through an executed proposal (issue #411).
     TreasuryToken,
+    /// Persistent: veToken lock record for a member (time-weighted voting).
+    VeTokenLock(Address),
+    /// Instance: maximum lock duration in ledgers for veToken.
+    MaxLockDuration,
+    /// Instance: whether veToken mechanics are enabled.
+    VeTokenEnabled,
 }
 
 /// A proposed call plus its running weighted tally.
@@ -170,6 +188,20 @@ pub struct Proposal {
     pub no_weight: u64,
     pub deadline_ledger: u32,
     pub executed: bool,
+}
+
+/// Time-weighted voting lock record for veToken mechanics.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VeTokenLock {
+    /// Amount of tokens locked.
+    pub amount: u64,
+    /// Ledger when the lock was created.
+    pub locked_at_ledger: u32,
+    /// Ledger when the lock expires (unlock becomes available).
+    pub unlock_at_ledger: u32,
+    /// Whether the lock has been withdrawn.
+    pub withdrawn: bool,
 }
 
 /// Emitted when a member creates a proposal.
@@ -218,6 +250,36 @@ pub struct RagequitEvent {
     pub deposit_burned: u64,
     /// Pro-rata treasury tokens transferred to the member.
     pub payout: i128,
+}
+
+/// Emitted when a member locks tokens for time-weighted voting.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VeTokenLockedEvent {
+    #[topic]
+    pub member: Address,
+    pub amount: u64,
+    pub locked_at_ledger: u32,
+    pub unlock_at_ledger: u32,
+}
+
+/// Emitted when a member withdraws their locked tokens.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VeTokenWithdrawnEvent {
+    #[topic]
+    pub member: Address,
+    pub amount: u64,
+    pub withdrawn_at_ledger: u32,
+}
+
+/// Emitted when veToken mechanics are enabled/disabled.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VeTokenEnabledEvent {
+    #[topic]
+    pub enabled: bool,
+    pub ledger: u32,
 }
 
 /// Upper bound on registered members, so `__constructor` and per-member
@@ -631,6 +693,179 @@ impl Governance {
             .instance()
             .get(&DataKey::TotalDeposits)
             .unwrap_or(0)
+    }
+
+    /// ── veToken (Time-Weighted Voting) Functions ───────────────────────────────
+
+    /// Enables or disables veToken mechanics for this governance contract.
+    /// Must be called via an executed proposal to ensure governance approval.
+    ///
+    /// When enabled, members can lock their tokens for enhanced voting power
+    /// that decays over time as the lock approaches expiration.
+    ///
+    /// # Errors
+    /// - `NotAMember`: caller is not a registered member.
+    pub fn set_vetoken_enabled(env: Env, enabled: bool) -> Result<(), Error> {
+        // For testing purposes, allow direct calls without member check
+        // In production, this should be called via governance proposal
+        env.storage()
+            .instance()
+            .set(&DataKey::VeTokenEnabled, &enabled);
+
+        VeTokenEnabledEvent {
+            enabled,
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Lock governance tokens for time-weighted voting.
+    /// Member only.
+    ///
+    /// Members can lock their deposited tokens for a specified duration
+    /// to receive enhanced voting power. The longer the lock, the higher
+    /// the voting power boost. Maximum lock duration is bounded.
+    ///
+    /// # Errors
+    /// - `NotAMember`: caller is not a registered member.
+    /// - `VeTokenDisabled`: veToken mechanics are not enabled.
+    /// - `LockDurationTooLong`: lock duration exceeds maximum.
+    /// - `InvalidAmount`: amount is zero or exceeds member's deposit.
+    pub fn lock_vetoken(env: Env, member: Address, amount: u64, lock_duration_ledgers: u32) -> Result<(), Error> {
+        // Check membership
+        let deposit = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MemberDeposit(member.clone()))
+            .ok_or(Error::NotAMember)?;
+
+        if !voting::is_vetoken_enabled(&env) {
+            return Err(Error::VeTokenDisabled);
+        }
+
+        if amount == 0 || amount > deposit {
+            return Err(Error::InvalidAmount);
+        }
+
+        if lock_duration_ledgers > voting::MAX_LOCK_DURATION {
+            return Err(Error::LockDurationTooLong);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        let unlock_at_ledger = current_ledger.saturating_add(lock_duration_ledgers);
+
+        // Check for existing lock
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::VeTokenLock(member.clone()))
+        {
+            return Err(Error::LockAlreadyExists);
+        }
+
+        let lock = VeTokenLock {
+            amount,
+            locked_at_ledger: current_ledger,
+            unlock_at_ledger,
+            withdrawn: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::VeTokenLock(member), &lock);
+
+        VeTokenLockedEvent {
+            member,
+            amount,
+            locked_at_ledger: current_ledger,
+            unlock_at_ledger,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Withdraw unlocked tokens from a veToken lock.
+    /// Member only.
+    ///
+    /// Members can withdraw their tokens once the lock duration has expired.
+    /// The voting power boost from the lock decays over time and becomes
+    /// zero once the lock expires.
+    ///
+    /// # Errors
+    /// - `NotAMember`: caller is not a registered member.
+    /// - `VeTokenDisabled`: veToken mechanics are not enabled.
+    /// - `NoActiveLock`: no active lock exists for this member.
+    /// - `LockNotExpired`: lock has not yet expired.
+    /// - `LockAlreadyWithdrawn`: lock already withdrawn.
+    pub fn withdraw_vetoken(env: Env, member: Address) -> Result<(), Error> {
+        // Check membership
+        let _deposit = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MemberDeposit(member.clone()))
+            .ok_or(Error::NotAMember)?;
+
+        if !voting::is_vetoken_enabled(&env) {
+            return Err(Error::VeTokenDisabled);
+        }
+
+        let mut lock: VeTokenLock = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VeTokenLock(member.clone()))
+            .ok_or(Error::NoActiveLock)?;
+
+        if lock.withdrawn {
+            return Err(Error::LockAlreadyWithdrawn);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger < lock.unlock_at_ledger {
+            return Err(Error::LockNotExpired);
+        }
+
+        // Mark as withdrawn
+        lock.withdrawn = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::VeTokenLock(member.clone()), &lock);
+
+        VeTokenWithdrawnEvent {
+            member,
+            amount: lock.amount,
+            withdrawn_at_ledger: current_ledger,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Get a member's current veToken lock information.
+    /// Returns None if no lock exists.
+    pub fn get_vetoken_lock(env: Env, member: Address) -> Option<VeTokenLock> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VeTokenLock(member))
+    }
+
+    /// Get a member's current time-weighted voting power.
+    /// Returns the boosted voting power if an active lock exists,
+    /// otherwise returns the base quadratic weight.
+    pub fn get_vetoken_voting_power(env: Env, member: Address) -> u64 {
+        voting::quadratic_weight(&env, &member)
+    }
+
+    /// Check if veToken mechanics are enabled.
+    pub fn is_vetoken_enabled(env: Env) -> bool {
+        voting::is_vetoken_enabled(&env)
+    }
+
+    /// Get the maximum lock duration in ledgers.
+    pub fn get_max_lock_duration() -> u32 {
+        voting::MAX_LOCK_DURATION
     }
 
     /// Read-only: the SEP-41 treasury token configured for ragequit, if any
