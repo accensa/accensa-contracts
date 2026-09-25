@@ -176,6 +176,18 @@ pub enum Error {
     /// (issue #396). The operation was refused *before* any state changed;
     /// raw operators never run in the shared math helpers.
     MathOverflow = 321,
+    /// The emergency pause circuit was tripped but no guardian has been
+    /// appointed (`set_guardian`), so there is nobody to authorize the halt.
+    /// Only the admin can pause such a vault, via `pause`.
+    GuardianNotSet = 322,
+    /// `unpause` was called before the emergency cool-down elapsed. A paused
+    /// vault must stay halted for `UNPAUSE_DELAY_LEDGERS` after the pause that
+    /// tripped it, so an emergency halt cannot be flickered straight back off.
+    UnpauseCoolDownActive = 323,
+    /// An attempt was made to set the guardian to the same address as the
+    /// admin. This would defeat the purpose of the guardian (a separate key
+    /// with limited authority) and is rejected.
+    GuardianSameAsAdmin = 324,
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }
