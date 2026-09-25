@@ -5,8 +5,10 @@ mod multi_asset_test;
 #[cfg(test)]
 mod test;
 
+use accensa_common::storage::extend_instance_ttl;
 use accensa_common::Error;
 use multi_asset::{MultiAssetChannel, MultiAssetState};
+use nonce::NonceWindow;
 use soroban_sdk::{
     contract, contractevent, contractimpl, contractmeta, contracttype, Address, Bytes, BytesN, Env,
     Map,
@@ -758,6 +760,7 @@ impl StateChannel {
 pub mod dispute;
 pub mod epoch;
 pub mod multi_asset;
+pub mod nonce;
 
 /// HTLC parameters for cross-chain swaps.
 #[contracttype]

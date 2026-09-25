@@ -6,7 +6,7 @@
 //! "stale" even though both are valid, fresh commitments from the sender.
 //!
 //! [`NonceWindow`] tracks consumption over a 256-nonce sliding window with a
-//! single 256-bit bitmap (LSB-first within each byte — the same bit order as
+//! single 256-bit bitmap (LSB-first within each byte â€” the same bit order as
 //! [`accensa_common::nonce::NonceBitmap`], so revoked-nonce tooling reads
 //! both the same way). Any nonce inside the window may be consumed exactly
 //! once, in any order; once a nonce beyond the current window arrives, the
@@ -17,10 +17,8 @@
 //!
 //! The window lives inside the channel record itself (see `Channel` in
 //! [`crate`]), so it is written atomically with every accepted state and
-//! inherits the channel entry's TTL — no separate storage key, no chance of
+//! inherits the channel entry's TTL â€” no separate storage key, no chance of
 //! the window and the channel drifting apart.
-
-#![no_std]
 
 use accensa_common::Error;
 use soroban_sdk::{contracttype, BytesN, Env};
@@ -36,7 +34,7 @@ pub struct NonceWindow {
     /// [`WINDOW_SIZE`].
     pub base: u64,
     /// Consumption bitmap for nonces `base..base + WINDOW_SIZE`.
-    /// Bit `i` (byte `i / 8`, bit `i % 8` — LSB-first) set ⇒ nonce
+    /// Bit `i` (byte `i / 8`, bit `i % 8` â€” LSB-first) set â‡’ nonce
     /// `base + i` was already consumed.
     pub bitmap: BytesN<32>,
 }
@@ -46,7 +44,7 @@ impl NonceWindow {
     pub fn empty(env: &Env) -> Self {
         Self {
             base: 0,
-            bitmap: BytesN::zero(env),
+            bitmap: BytesN::from_array(env, &[0u8; 32]),
         }
     }
 
@@ -84,7 +82,7 @@ impl NonceWindow {
         if offset >= WINDOW_SIZE {
             // Slide the window to the 256-aligned bucket containing `nonce`.
             self.base = nonce - (nonce % WINDOW_SIZE);
-            self.bitmap = BytesN::zero(env);
+            self.bitmap = BytesN::from_array(env, &[0u8; 32]);
             offset = nonce - self.base;
         }
 

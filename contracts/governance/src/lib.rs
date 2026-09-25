@@ -45,8 +45,12 @@
 #[cfg(test)]
 mod test;
 
+mod math;
 mod quorum;
 mod ragequit;
+mod voting;
+
+pub mod optimistic;
 
 use quorum::current_quorum_bps;
 
@@ -110,6 +114,16 @@ pub enum Error {
     /// A checked arithmetic operation in the ragequit payout math
     /// over- or under-flowed, or a conversion would truncate (issue #411).
     MathOverflow = 17,
+    /// A veto was attempted after the optimistic proposal's challenge window
+    /// closed (issue #475).
+    ChallengeWindowClosed = 18,
+    /// No optimistic proposal exists with the given id (issue #475).
+    OptimisticNotFound = 19,
+    /// The optimistic proposal was vetoed by a supermajority; it cannot be
+    /// executed (issue #475).
+    OptimisticVetoed = 20,
+    /// The caller already vetoed this optimistic proposal (issue #475).
+    AlreadyVetoed = 21,
 }
 
 #[contracttype]
@@ -144,6 +158,15 @@ pub enum DataKey {
     /// Instance: the SEP-41 token that backs ragequit withdrawals, set via
     /// `set_treasury_token` through an executed proposal (issue #411).
     TreasuryToken,
+    /// Instance: number of optimistic proposals ever queued; also the next
+    /// id (issue #475).
+    OptimisticCount,
+    /// Persistent: an optimistic proposal's calldata and veto tally
+    /// (issue #475).
+    OptimisticProposal(u64),
+    /// Temporary: marks that `.1` vetoed optimistic proposal `.0`; lives
+    /// until that proposal's challenge window closes (issue #475).
+    OptimisticVeto(u64, Address),
 }
 
 /// A proposed call plus its running weighted tally.
@@ -262,16 +285,16 @@ impl Governance {
             if deposit == 0 {
                 return Err(Error::InvalidMembers);
             }
-            let key = DataKey::MemberDeposit(member);
+            let key = DataKey::MemberDeposit(member.clone());
             if env.storage().persistent().has(&key) {
                 return Err(Error::InvalidMembers);
             }
-            register_deposit(&env, member, deposit);
+            register_deposit(&env, &member, deposit);
             total_deposits = total_deposits
                 .checked_add(deposit)
                 .ok_or(Error::InvalidMembers)?;
             total_weight = total_weight
-                .checked_add(quadratic_weight(&env, member))
+                .checked_add(quadratic_weight(&env, &member))
                 .ok_or(Error::InvalidMembers)?;
         }
 
@@ -652,10 +675,50 @@ impl Governance {
             .has(&DataKey::Dissent(proposal_id, voter))
     }
 
+    /// Queue a routine operation for optimistic execution (issue #475).
+    /// `proposer`, a member, authorizes the queue; the proposal becomes
+    /// executable immediately and opens a 24-hour supermajority-veto window.
+    /// Returns the new optimistic proposal id.
+    pub fn optimistic_submit(
+        env: Env,
+        proposer: Address,
+        target: Address,
+        function: Symbol,
+        args: Vec<Val>,
+    ) -> Result<u64, Error> {
+        optimistic::submit(&env, &proposer, &target, &function, &args)
+    }
+
+    /// Cast `voter`'s weight against optimistic proposal `proposal_id`
+    /// (issue #475). Only valid inside the challenge window, only members,
+    /// once per member. When cumulative veto weight reaches a ~2/3
+    /// supermajority of total weight the proposal is locked and execution
+    /// reverts with [`Error::OptimisticVetoed`].
+    pub fn veto_optimistic(env: Env, voter: Address, proposal_id: u64) -> Result<(), Error> {
+        optimistic::veto(&env, &voter, proposal_id)
+    }
+
+    /// Execute queued optimistic proposal `proposal_id` against its target
+    /// (issue #475). Anyone may call, at any time, unless the proposal was
+    /// executed already or a supermajority vetoed it during the window.
+    pub fn execute_optimistic(env: Env, proposal_id: u64) -> Result<(), Error> {
+        optimistic::execute(&env, proposal_id)
+    }
+
+    /// Read-only: the current state of optimistic proposal `proposal_id`
+    /// (issue #475).
+    pub fn get_optimistic_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<optimistic::OptimisticProposal, Error> {
+        optimistic::get(&env, proposal_id)
+    }
+
     fn member_deposit(env: &Env, member: &Address) -> Result<(), Error> {
         env.storage()
             .persistent()
-            .get(&DataKey::MemberDeposit(member.clone()))
+            .get::<_, u64>(&DataKey::MemberDeposit(member.clone()))
+            .map(|_| ())
             .ok_or(Error::NotAMember)?;
         Ok(())
     }

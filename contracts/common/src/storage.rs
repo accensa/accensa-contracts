@@ -17,8 +17,6 @@
 //! - [`DEFAULT_TTL_BUMP`]: the TTL is extended *to* this many ledgers from
 //!   the current one (the host's `extend_to`) — ~30 days at ~5 s/ledger.
 
-#![no_std]
-
 use soroban_sdk::Env;
 
 /// Low-water mark (host `threshold`): the extension only fires once the

@@ -9,6 +9,39 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`refund-vault-factory` (issue #472): deterministic CREATE2-style vault
+  deployments.** New `deploy_for_participants(init, buyer)` derives the
+  deployment salt as `sha256(buyer ‖ merchant)` (a pure function of the escrow
+  participants) and deploys the vault through the existing
+  counter-independent `create_vault(salt)` path, reusing its `SaltCollision`
+  guard. `predict_address(buyer, merchant)` exposes
+  `with_current_contract(salt).deployed_address()`, so two parties can agree
+  on — and even pre-fund — an escrow address off-chain before the factory
+  deploys it.
+- **`refund-vault` (issue #474): NFT escrow.** New `deposit_nft`,
+  `claim_nft`, `refund_nft` and `get_nft_escrow` let a vault escrow Soroban
+  non-fungible tokens alongside the fungible float. NFTs go through the
+  standard non-fungible surface (`owner(token_id)`, `transfer(from, to,
+  token_id)`) rather than SEP-41, are keyed by exact `(contract, token_id)`,
+  and `claim_nft`/`refund_nft` return the very token id released. Reentrancy
+  and pause guards are shared with the fungible path; new errors
+  `NftAlreadyEscrowed`, `NftNotOwned`, `NftEscrowNotFound`.
+- **`refund-policy-vdf` (issue #469): dispute fallback oracle.** When the
+  primary arbitrators time out, `request_fallback_dispute` escalates a
+  dispute to an external optimistic-oracle-style fallback oracle;
+  `build_fallback_oracle_request` hands the dispute to it as an XDR payload;
+  and `settle_fallback_dispute` (oracle-authorized only) records the ruling.
+  Disputes live in a bounded persistent ledger inside the otherwise-stateless
+  policy contract, readable via `get_fallback_dispute`. New errors
+  `DisputeNotFound`, `DisputeClosed`.
+- **`governance` (issue #475): optimistic execution queue.** `optimistic_submit`
+  queues a routine call executable immediately by anyone; members can veto it
+  during a 24-hour window with `veto_optimistic`, and cumulative quadratic
+  veto weight reaching a ~2/3 supermajority of total weight locks it so
+  `execute_optimistic` reverts with `OptimisticVetoed`. Vetoes close after
+  the window (`ChallengeWindowClosed`), a proposal executes exactly once
+  (`AlreadyExecuted`), and a member vetoes once (`AlreadyVetoed`).
+  `get_optimistic_proposal` exposes the queue state.
 - **`state-channel` (issue #423): multi-asset collateral pooling.** New
   `open_multi_asset_channel` escrows several tokens in one channel, tracked
   per token as a `BalanceRecord`. Signed `MultiAssetState`s must name exactly

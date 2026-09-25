@@ -196,6 +196,92 @@ fn custom_salt_is_distinct_from_counter_family() {
 }
 
 #[test]
+fn deploy_for_participants_lands_on_predict_address() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let buyer = Address::generate(&env);
+
+    let expected = factory.predict_address(&buyer, &merchant);
+    let vault = factory.deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer);
+
+    assert_eq!(
+        vault, expected,
+        "deploy_for_participants must land on predict_address"
+    );
+    assert_eq!(
+        factory.predict_address(&buyer, &merchant),
+        expected,
+        "predict_address is deterministic"
+    );
+}
+
+#[test]
+fn reused_participant_pair_reverts_with_salt_collision() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let buyer = Address::generate(&env);
+
+    factory.deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer);
+
+    assert_eq!(
+        factory.try_deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer),
+        Err(Ok(Error::SaltCollision))
+    );
+}
+
+#[test]
+fn distinct_participants_get_distinct_vaults() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let a = factory.deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer_a);
+    let b = factory.deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer_b);
+
+    assert_ne!(a, b, "different buyers must mint different vault addresses");
+    assert_ne!(
+        factory.predict_address(&buyer_a, &merchant),
+        factory.predict_address(&buyer_b, &merchant)
+    );
+}
+
+#[test]
+fn predict_address_is_distinct_from_counter_family() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let buyer = Address::generate(&env);
+
+    let predicted = factory.predict_address(&buyer, &merchant);
+    let counted = factory.deploy_vault(&vault_init(&env, &merchant, &token, 100));
+
+    assert_ne!(
+        predicted, counted,
+        "participant-keyed salts must not alias the counter family"
+    );
+}
+
+#[test]
 fn factory_defaults_wire_policies_when_merchant_leaves_them_unset() {
     let Ctx {
         env,

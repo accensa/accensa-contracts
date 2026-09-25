@@ -37,7 +37,7 @@ pub fn isqrt(n: u64) -> u64 {
     let mut x: u64 = if bit_len <= 2 {
         1
     } else {
-        1u64 << ((bit_len + 1) / 2)
+        1u64 << (bit_len + 1).div_ceil(2)
     };
 
     // Newton-Raphson iteration
@@ -107,7 +107,7 @@ mod tests {
         // e.g., 1_0000000 units = 1 token
         assert_eq!(isqrt(1_0000000), 3162);
         assert_eq!(isqrt(100_000000), 10000);
-        // 10 million tokens (with 7 decimals) -> sqrt ~ 3162277
-        assert_eq!(isqrt(10_0000000), 100000);
+        // 10 million tokens (with 7 decimals) -> sqrt ~ 3162
+        assert_eq!(isqrt(10_0000000), 10000);
     }
 }
