@@ -188,6 +188,16 @@ pub enum Error {
     /// admin. This would defeat the purpose of the guardian (a separate key
     /// with limited authority) and is rejected.
     GuardianSameAsAdmin = 324,
+    /// Stealth address feature is disabled for this vault.
+    StealthAddressDisabled = 325,
+    /// The stealth address is not registered in the vault's registry.
+    StealthAddressNotFound = 326,
+    /// The stealth address has already been used for a deposit.
+    StealthAddressAlreadyUsed = 327,
+    /// Invalid stealth address key derivation or format.
+    InvalidStealthAddress = 328,
+    /// Stealth address registration limit exceeded.
+    StealthAddressLimitExceeded = 329,
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }

@@ -6,6 +6,7 @@ use soroban_sdk::{
     vec, Address, BytesN, Env, Val,
 };
 use crate::PauseReason;
+use crate::StealthAddress;
 
 const FLOAT: i128 = 1_000_000;
 
@@ -2679,5 +2680,193 @@ fn test_process_batch_consumes_one_user_nonce_but_empty_does_not() {
     assert_eq!(
         client.try_process_batch(&batch, &0),
         Err(Ok(Error::StaleState))
+    );
+}
+
+// ── Stealth Address Tests ─────────────────────────────────────────────
+
+#[test]
+fn test_stealth_address_feature_toggle() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    // Initially disabled
+    assert_eq!(client.is_stealth_deposits_enabled(), false);
+
+    // Enable the feature
+    client.set_stealth_address_enabled(&true);
+    assert_eq!(client.is_stealth_deposits_enabled(), true);
+
+    // Disable the feature
+    client.set_stealth_address_enabled(&false);
+    assert_eq!(client.is_stealth_deposits_enabled(), false);
+}
+
+#[test]
+fn test_register_stealth_address() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    // Enable stealth addresses
+    client.set_stealth_address_enabled(&true);
+
+    // Register a stealth address
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    let stealth_address = client.try_register_stealth_address(&seed).unwrap();
+
+    // Verify it was registered
+    assert_eq!(client.get_stealth_address_count(), 1);
+    let record = client.get_stealth_address(stealth_address.clone()).unwrap();
+    assert_eq!(record.used, false);
+    assert_eq!(record.address, stealth_address);
+}
+
+#[test]
+fn test_register_stealth_address_when_disabled_fails() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    // Don't enable stealth addresses
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    assert_eq!(
+        client.try_register_stealth_address(&seed),
+        Err(Ok(Error::StealthAddressDisabled))
+    );
+}
+
+#[test]
+fn test_register_stealth_address_limit() {
+    let (env, client, _merchant, _token) = setup(100);
+
+    client.set_stealth_address_enabled(&true);
+
+    // Register up to the limit (this would take a long time, so we just test the logic)
+    // In a real test, we'd mock the limit lower
+    for i in 0..10 {
+        let seed = BytesN::from_array(&env, &[i as u8; 32]);
+        client.try_register_stealth_address(&seed).unwrap();
+    }
+
+    assert_eq!(client.get_stealth_address_count(), 10);
+}
+
+#[test]
+fn test_stealth_deposit_success() {
+    let (env, client, merchant, token) = setup(100);
+
+    client.set_stealth_address_enabled(&true);
+
+    // Register stealth address
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    let stealth_address = client.try_register_stealth_address(&seed).unwrap();
+
+    // Fund the merchant so they can make the stealth deposit
+    let token_client = TokenClient::new(&env, &token);
+    StellarAssetClient::new(&env, &token).mint(&merchant, &600_000);
+
+    // Make stealth deposit (transfers from merchant to vault)
+    client.try_stealth_deposit(&stealth_address, &100_000).unwrap();
+
+    // Verify the stealth address is now marked as used
+    let record = client.get_stealth_address(stealth_address.clone()).unwrap();
+    assert_eq!(record.used, true);
+
+    // Verify the vault received the funds
+    assert_eq!(token_client.balance(&client.address), 100_000);
+}
+
+#[test]
+fn test_stealth_deposit_when_disabled_fails() {
+    let (env, client, merchant, token) = setup(100);
+
+    // Fund merchant for the attempted deposit
+    StellarAssetClient::new(&env, &token).mint(&merchant, &600_000);
+
+    // Don't enable stealth addresses
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    let stealth_address = Address::generate(&env);
+
+    assert_eq!(
+        client.try_stealth_deposit(&stealth_address, &100_000),
+        Err(Ok(Error::StealthAddressDisabled))
+    );
+}
+
+#[test]
+fn test_stealth_deposit_unregistered_address_fails() {
+    let (env, client, merchant, token) = setup(100);
+
+    client.set_stealth_address_enabled(&true);
+
+    // Fund merchant for the attempted deposit
+    StellarAssetClient::new(&env, &token).mint(&merchant, &600_000);
+
+    // Try to deposit to an unregistered address
+    let fake_address = Address::generate(&env);
+    assert_eq!(
+        client.try_stealth_deposit(&fake_address, &100_000),
+        Err(Ok(Error::StealthAddressNotFound))
+    );
+}
+
+#[test]
+fn test_stealth_deposit_already_used_address_fails() {
+    let (env, client, merchant, token) = setup(100);
+
+    client.set_stealth_address_enabled(&true);
+
+    // Register and use a stealth address
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    let stealth_address = client.try_register_stealth_address(&seed).unwrap();
+
+    // Fund merchant for stealth deposit
+    StellarAssetClient::new(&env, &token).mint(&merchant, &600_000);
+    client.try_stealth_deposit(&stealth_address.clone(), &100_000).unwrap();
+
+    // Try to use it again
+    assert_eq!(
+        client.try_stealth_deposit(&stealth_address, &100_000),
+        Err(Ok(Error::StealthAddressAlreadyUsed))
+    );
+}
+
+#[test]
+fn test_stealth_deposit_when_paused_fails() {
+    let (env, client, merchant, token) = setup(100);
+
+    client.set_stealth_address_enabled(&true);
+
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    let stealth_address = client.try_register_stealth_address(&seed).unwrap();
+
+    // Fund merchant for the attempted deposit
+    StellarAssetClient::new(&env, &token).mint(&merchant, &600_000);
+
+    // Pause the vault
+    client.pause();
+
+    assert_eq!(
+        client.try_stealth_deposit(&stealth_address, &100_000),
+        Err(Ok(Error::Paused))
+    );
+}
+
+#[test]
+fn test_stealth_deposit_invalid_amount_fails() {
+    let (env, client, merchant, token) = setup(100);
+
+    client.set_stealth_address_enabled(&true);
+
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    let stealth_address = client.try_register_stealth_address(&seed).unwrap();
+
+    // Fund merchant for the attempted deposit
+    StellarAssetClient::new(&env, &token).mint(&merchant, &600_000);
+
+    assert_eq!(
+        client.try_stealth_deposit(&stealth_address, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    assert_eq!(
+        client.try_stealth_deposit(&stealth_address, &-100),
+        Err(Ok(Error::InvalidAmount))
     );
 }

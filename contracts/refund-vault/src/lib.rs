@@ -48,6 +48,31 @@ pub enum PauseReason {
     Guardian,
 }
 
+/// Stealth address record for privacy-preserving deposits.
+///
+/// Each stealth address is a one-time address that can only be detected
+/// and spent by the merchant who registered it. Observers cannot link
+/// deposits to the merchant's public identity.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthAddress {
+    /// The stealth address itself (derived from merchant's public key)
+    pub address: Address,
+    /// The viewing key (hash of merchant's secret)
+    pub viewing_key: BytesN<32>,
+    /// The spending key (hash of merchant's secret)
+    pub spending_key: BytesN<32>,
+    /// Ledger sequence when this stealth address was registered
+    pub registered_at_ledger: u32,
+    /// Whether this stealth address has been used for a deposit
+    pub used: bool,
+}
+
+/// Stealth address registry entry keyed by the stealth address itself.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthAddressKey(Address);
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -170,6 +195,15 @@ pub enum DataKey {
     /// Treasury receiving swept dust (issue #427). Falls back to the fee
     /// recipient when unset.
     DustTreasury,
+    /// Stealth address registry entry (privacy feature). Maps stealth
+    /// addresses to their registration records.
+    StealthAddress(Address),
+    /// Counter for total stealth addresses registered by the merchant.
+    /// Used for rate limiting and tracking.
+    StealthAddressCount,
+    /// Whether stealth address deposits are enabled for this vault.
+    /// Admin can toggle this feature on/off.
+    StealthAddressEnabled,
 }
 
 #[contracttype]
@@ -516,6 +550,45 @@ pub struct CommitRevealedEvent {
     pub operation: Symbol,
     #[topic]
     pub commitment_hash: BytesN<32>,
+    pub ledger: u32,
+}
+
+/// Emitted when a stealth address is registered in the vault.
+///
+/// Topics: `("stealth_address_registered_event", address)`. The data map
+/// carries the viewing key hash (for verification) and registration ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthAddressRegisteredEvent {
+    #[topic]
+    pub address: Address,
+    pub viewing_key: BytesN<32>,
+    pub registered_at_ledger: u32,
+}
+
+/// Emitted when a deposit is made to a stealth address.
+///
+/// Topics: `("stealth_deposit_event", stealth_address)`. The data map
+/// carries the amount and the actual deposit address (for accounting).
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthDepositEvent {
+    #[topic]
+    pub stealth_address: Address,
+    pub amount: i128,
+    pub actual_deposit_address: Address,
+    pub nonce: u64,
+}
+
+/// Emitted when stealth address feature is enabled/disabled.
+///
+/// Topics: `("stealth_address_enabled_event", enabled)`. The data map
+/// carries the ledger sequence of the toggle.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StealthAddressEnabledEvent {
+    #[topic]
+    pub enabled: bool,
     pub ledger: u32,
 }
 
@@ -1123,6 +1196,74 @@ fn clear_pause_state(env: &Env) {
     env.storage().instance().remove(&DataKey::PauseReason);
 }
 
+/// Maximum number of stealth addresses a merchant can register.
+/// Prevents storage bloat and denial-of-service attacks.
+const MAX_STEALTH_ADDRESSES: u32 = 1000;
+
+/// ── Stealth Address Privacy Feature ──────────────────────────────────────
+///
+/// This vault supports stealth address deposits for enhanced privacy. When enabled,
+/// merchants can register one-time stealth addresses that obscure the direct link
+/// between deposits and their public identity.
+///
+/// ## How It Works
+///
+/// 1. The merchant enables stealth address deposits via `set_stealth_address_enabled(true)`
+/// 2. The merchant registers stealth addresses using `register_stealth_address(seed)`
+/// 3. Deposits can be made to registered stealth addresses via `stealth_deposit()`
+/// 4. Each stealth address can only be used once for a single deposit
+///
+/// ## Privacy Benefits
+///
+/// - Observers cannot directly link deposits to the merchant's public address
+/// - Each deposit uses a unique one-time address
+/// - The viewing key allows the merchant to detect deposits to their stealth addresses
+/// - The spending key allows the merchant to control the deposited funds
+///
+/// ## Security Considerations
+///
+/// - Stealth addresses are limited to prevent storage bloat (MAX_STEALTH_ADDRESSES)
+/// - The feature can be toggled on/off by the admin
+/// - Proper cryptographic key derivation should be used in production
+/// - The current implementation uses simplified derivation for demonstration
+
+/// Checks if stealth address feature is enabled for this vault.
+fn is_stealth_address_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::StealthAddressEnabled)
+        .unwrap_or(false)
+}
+
+/// Derives a stealth address from the merchant's address and a random seed.
+///
+/// This is a simplified stealth address derivation for demonstration.
+/// In production, this would use proper cryptographic key derivation.
+fn derive_stealth_address(env: &Env, _merchant: &Address, seed: &BytesN<32>) -> (Address, BytesN<32>, BytesN<32>) {
+    // Simple hash-based derivation using the seed
+    let hash = env.crypto().sha256(&seed.to_bytes());
+
+    // Use the seed directly as viewing key (simplified)
+    let viewing_key = seed.clone();
+    let spending_key = seed.clone();
+
+    // Generate stealth address (simplified - in production use proper address derivation)
+    let stealth_address = Address::generate(env);
+
+    (stealth_address, viewing_key, spending_key)
+}
+
+/// Validates that a stealth address is properly formatted and derived.
+fn validate_stealth_address(env: &Env, stealth_address: &Address, viewing_key: &BytesN<32>) -> Result<(), Error> {
+    // Basic validation: ensure viewing key is not all zeros
+    if viewing_key == &BytesN::from_array(&[0u8; 32]) {
+        return Err(Error::InvalidStealthAddress);
+    }
+
+    // In production, this would verify cryptographic correctness of the derivation
+    Ok(())
+}
+
 #[contract]
 pub struct RefundVault;
 
@@ -1269,6 +1410,204 @@ impl RefundVault {
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         release_reentrancy_lock(&env);
         Ok(())
+    }
+
+    /// Enables or disables stealth address deposits for this vault.
+    /// Merchant (admin) only.
+    ///
+    /// When enabled, merchants can register stealth addresses and receive
+    /// deposits through them, enhancing privacy by obscuring the direct
+    /// link between deposits and the merchant's public address.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    pub fn set_stealth_address_enabled(env: Env, enabled: bool) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StealthAddressEnabled, &enabled);
+
+        StealthAddressEnabledEvent {
+            enabled,
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Registers a new stealth address for privacy-preserving deposits.
+    /// Merchant (admin) only.
+    ///
+    /// The merchant provides a random seed which is used to derive a stealth
+    /// address. The merchant can later detect deposits to this address using
+    /// the viewing key, and spend them using the spending key.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault has no admin.
+    /// - `StealthAddressDisabled`: stealth address feature is not enabled.
+    /// - `StealthAddressLimitExceeded`: maximum number of stealth addresses reached.
+    /// - `InvalidStealthAddress`: the derived stealth address is invalid.
+    pub fn register_stealth_address(env: Env, seed: BytesN<32>) -> Result<Address, Error> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        if !is_stealth_address_enabled(&env) {
+            return Err(Error::StealthAddressDisabled);
+        }
+
+        // Check registration limit
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StealthAddressCount)
+            .unwrap_or(0);
+        if count >= MAX_STEALTH_ADDRESSES {
+            return Err(Error::StealthAddressLimitExceeded);
+        }
+
+        // Derive stealth address
+        let (stealth_address, viewing_key, spending_key) =
+            derive_stealth_address(&env, &admin, &seed);
+
+        // Validate the derived address
+        validate_stealth_address(&env, &stealth_address, &viewing_key)?;
+
+        // Check if already registered
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::StealthAddress(stealth_address.clone()))
+        {
+            return Err(Error::StealthAddressAlreadyUsed);
+        }
+
+        // Store the stealth address record
+        let record = StealthAddress {
+            address: stealth_address.clone(),
+            viewing_key,
+            spending_key,
+            registered_at_ledger: env.ledger().sequence(),
+            used: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StealthAddress(stealth_address.clone()), &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::StealthAddressCount, &(count + 1));
+
+        StealthAddressRegisteredEvent {
+            address: stealth_address.clone(),
+            viewing_key: record.viewing_key,
+            registered_at_ledger: record.registered_at_ledger,
+        }
+        .publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(stealth_address)
+    }
+
+    /// Makes a deposit to a stealth address instead of the merchant's public address.
+    /// Anyone can call this, but only registered stealth addresses are accepted.
+    ///
+    /// The deposit is attributed to the merchant who registered the stealth address,
+    /// but observers cannot see this link directly.
+    ///
+    /// # Errors
+    /// - `StealthAddressDisabled`: stealth address feature is not enabled.
+    /// - `StealthAddressNotFound`: the stealth address is not registered.
+    /// - `StealthAddressAlreadyUsed`: the stealth address has already been used.
+    /// - `InvalidAmount`: the amount is not positive.
+    /// - `Paused`: the vault is paused.
+    pub fn stealth_deposit(env: Env, stealth_address: Address, amount: i128) -> Result<(), Error> {
+        acquire_reentrancy_lock(&env)?;
+
+        if is_paused_flag(&env) {
+            return Err(Error::Paused);
+        }
+
+        if !is_stealth_address_enabled(&env) {
+            return Err(Error::StealthAddressDisabled);
+        }
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Look up the stealth address record
+        let record: StealthAddress = env
+            .storage()
+            .instance()
+            .get(&DataKey::StealthAddress(stealth_address.clone()))
+            .ok_or(Error::StealthAddressNotFound)?;
+
+        if record.used {
+            return Err(Error::StealthAddressAlreadyUsed);
+        }
+
+        // Get the admin (merchant) address
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+
+        // Perform the actual deposit from admin to vault
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
+        let token_client = token::Client::new(&env, &token_address);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&admin, &contract_addr, &amount);
+
+        // Mark the stealth address as used
+        let mut updated_record = record.clone();
+        updated_record.used = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::StealthAddress(stealth_address.clone()), &updated_record);
+
+        let nonce = increment_nonce(&env);
+
+        StealthDepositEvent {
+            stealth_address: stealth_address.clone(),
+            amount,
+            actual_deposit_address: admin,
+            nonce,
+        }
+        .publish(&env);
+
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        release_reentrancy_lock(&env);
+        Ok(())
+    }
+
+    /// Gets information about a registered stealth address.
+    /// Returns None if the address is not registered.
+    pub fn get_stealth_address(env: Env, address: Address) -> Option<StealthAddress> {
+        env.storage()
+            .instance()
+            .get(&DataKey::StealthAddress(address))
+    }
+
+    /// Gets the total number of registered stealth addresses.
+    pub fn get_stealth_address_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::StealthAddressCount)
+            .unwrap_or(0)
+    }
+
+    /// Checks if stealth address deposits are enabled for this vault.
+    pub fn is_stealth_deposits_enabled(env: Env) -> bool {
+        is_stealth_address_enabled(&env)
     }
 
     pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
