@@ -182,14 +182,6 @@ pub enum Error {
     /// The active yield strategy still holds deployed principal, so it cannot
     /// be replaced or revoked until that principal is recalled (issue #415).
     StrategyHasPrincipal = 323,
-    /// No disbursement stream exists under the given id (issue #410). A
-    /// stream that was cancelled or ran to completion is removed, so it also
-    /// reports this error.
-    StreamNotFound = 324,
-    /// The disbursement stream is not in the state this operation requires,
-    /// e.g. pausing an already-paused stream or resuming a running one
-    /// (issue #410).
-    StreamNotActive = 325,
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }

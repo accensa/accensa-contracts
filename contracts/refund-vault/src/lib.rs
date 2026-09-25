@@ -153,14 +153,6 @@ pub enum DataKey {
     /// rebate pool (issue #415). Falls back to the merchant when unset.
     /// Persistent.
     YieldRecipient,
-    /// A streaming micro-disbursement schedule, keyed by stream id
-    /// (issue #410). Persistent storage, TTL kept past the stop ledger.
-    Stream(u64),
-    /// Next stream id to assign (issue #410).
-    StreamCount,
-    /// Total stream principal held in escrow across all open streams
-    /// (issue #410). Excluded from the refund float.
-    StreamEscrow,
 }
 
 #[contracttype]
@@ -471,7 +463,6 @@ pub struct CommitRevealedEvent {
 pub mod dust;
 pub mod oracle;
 pub mod settlement;
-pub mod streaming;
 
 pub mod strategy;
 pub use strategy::{YieldStrategy, YieldStrategyClient};
@@ -853,17 +844,11 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
 
     // Token client: use the cached token address instead of reading from storage.
     let token_client = token::Client::new(env, &cache.token_addr);
-    // Escrowed stream principal belongs to buyers, not the refund float
-    // (issue #410), so the liquid balance must cover the claim on top of it.
-    let required = claim
-        .amount
-        .checked_add(streaming::escrowed(env))
-        .ok_or(Error::MathOverflow)?;
     let balance = token_client.balance(&env.current_contract_address());
     // Deployed principal stays instantly redeemable: recall any shortfall
     // from the yield strategy before the float check (issue #415).
-    let balance = strategy::ensure_liquidity(env, &token_client, balance, required)?;
-    if balance < required {
+    let balance = strategy::ensure_liquidity(env, &token_client, balance, claim.amount)?;
+    if balance < claim.amount {
         return Err(Error::InsufficientFloat);
     }
 
@@ -1344,19 +1329,13 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
 
-        // Escrowed stream principal belongs to buyers and must stay in the
-        // vault, so the merchant can only withdraw the balance above it
-        // (issue #410).
-        let required = amount
-            .checked_add(streaming::escrowed(&env))
-            .ok_or(Error::MathOverflow)?;
         // Recall deployed principal if the liquid float cannot cover this
         // withdrawal (issue #415).
         let contract_balance = token_client.balance(&env.current_contract_address());
         let contract_balance =
-            strategy::ensure_liquidity(&env, &token_client, contract_balance, required)?;
+            strategy::ensure_liquidity(&env, &token_client, contract_balance, amount)?;
 
-        if contract_balance < required {
+        if contract_balance < amount {
             return Err(Error::InsufficientFloat);
         }
 
@@ -2223,8 +2202,7 @@ impl RefundVault {
         let token_client = token::Client::new(&env, &token_addr);
         let token_balance = token_client.balance(&env.current_contract_address());
 
-        // Escrowed stream principal must stay liquid for claims and cancels.
-        if token_balance - streaming::escrowed(&env) < amount {
+        if token_balance < amount {
             return Err(Error::InsufficientFloat);
         }
 
@@ -2496,57 +2474,6 @@ impl RefundVault {
         dust::sweep_dust(&env, payment_ref)
     }
 
-    // Streaming micro-disbursements (issue #410). Entry-point docs are kept
-    // short because they are embedded in the WASM spec; see the `streaming`
-    // module for semantics and error conditions.
-
-    /// Open a linear stream of `deposit` from `buyer` to the merchant.
-    pub fn create_stream(
-        env: Env,
-        buyer: Address,
-        start_ledger: u32,
-        stop_ledger: u32,
-        rate_per_ledger: i128,
-        deposit: i128,
-    ) -> Result<u64, Error> {
-        streaming::create_stream(
-            &env,
-            buyer,
-            start_ledger,
-            stop_ledger,
-            rate_per_ledger,
-            deposit,
-        )
-    }
-
-    /// Pay the merchant the streamed-but-unclaimed balance. Permissionless.
-    pub fn claim_stream(env: Env, stream_id: u64) -> Result<i128, Error> {
-        streaming::claim_stream(&env, stream_id)
-    }
-
-    /// Pause a stream, freezing accrual. Buyer only.
-    pub fn pause_stream(env: Env, stream_id: u64) -> Result<(), Error> {
-        streaming::pause_stream(&env, stream_id)
-    }
-
-    /// Resume a paused stream. Buyer only.
-    pub fn resume_stream(env: Env, stream_id: u64) -> Result<(), Error> {
-        streaming::resume_stream(&env, stream_id)
-    }
-
-    /// Cancel a stream, returning unspent principal to the buyer. Buyer only.
-    pub fn cancel_stream(env: Env, stream_id: u64) -> Result<(i128, i128), Error> {
-        streaming::cancel_stream(&env, stream_id)
-    }
-
-    pub fn get_stream(env: Env, stream_id: u64) -> Option<streaming::DisbursementStream> {
-        streaming::get_stream(&env, stream_id)
-    }
-
-    pub fn get_stream_claimable(env: Env, stream_id: u64) -> Result<i128, Error> {
-        streaming::claimable(&env, stream_id)
-    }
-
     pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), Error> {
         let record: RefundRecord = env
             .storage()
@@ -2652,8 +2579,6 @@ mod settlement_test;
 /// Yield-bearing escrow strategy hook tests (issue #415).
 #[cfg(test)]
 mod strategy_tests;
-#[cfg(test)]
-mod streaming_tests;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
