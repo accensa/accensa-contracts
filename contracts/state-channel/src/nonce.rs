@@ -20,8 +20,6 @@
 //! inherits the channel entry's TTL — no separate storage key, no chance of
 //! the window and the channel drifting apart.
 
-#![no_std]
-
 use accensa_common::Error;
 use soroban_sdk::{contracttype, BytesN, Env};
 
@@ -46,7 +44,7 @@ impl NonceWindow {
     pub fn empty(env: &Env) -> Self {
         Self {
             base: 0,
-            bitmap: BytesN::zero(env),
+            bitmap: BytesN::from_array(env, &[0u8; 32]),
         }
     }
 
@@ -84,7 +82,7 @@ impl NonceWindow {
         if offset >= WINDOW_SIZE {
             // Slide the window to the 256-aligned bucket containing `nonce`.
             self.base = nonce - (nonce % WINDOW_SIZE);
-            self.bitmap = BytesN::zero(env);
+            self.bitmap = BytesN::from_array(env, &[0u8; 32]);
             offset = nonce - self.base;
         }
 

@@ -75,6 +75,7 @@ pub fn queue_transaction(
 /// Returns `Err(Error::TimelockNotExpired)` if the timelock has not yet elapsed.
 /// Returns `Err(Error::ProposalNotFound)` if the queue ID does not exist.
 pub fn execute_queued_transaction(env: &Env, queue_id: u64) -> Result<(), Error> {
+    crate::admin::require_not_paused(env)?;
     let queued = get_queued_transaction(env, queue_id)?;
 
     if env.ledger().sequence() < queued.execution_ledger {
@@ -262,6 +263,29 @@ mod tests {
         env.ledger().with_mut(|l| l.sequence_number += 11);
         env.as_contract(&id, || {
             assert!(execute_queued_transaction(&env, queue_id).is_ok());
+        });
+    }
+
+    #[test]
+    fn test_execute_while_paused_fails() {
+        let (env, id, signer) = setup();
+        let guardian = Address::generate(&env);
+
+        let queue_id = env.as_contract(&id, || {
+            let queue_id = queue_transaction(&env, hash(&env), 10, 1, guardian);
+            approve_queued_transaction(&env, queue_id, &signer).unwrap();
+            queue_id
+        });
+        env.ledger().with_mut(|l| l.sequence_number += 11);
+        crate::MultisigAccountClient::new(&env, &id).pause(&id);
+
+        env.as_contract(&id, || {
+            assert_eq!(
+                execute_queued_transaction(&env, queue_id),
+                Err(Error::Paused)
+            );
+            // Still queued: a paused execute must not consume the entry.
+            assert!(get_queued_transaction(&env, queue_id).is_ok());
         });
     }
 }

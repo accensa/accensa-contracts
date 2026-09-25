@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "contracts/common",
+    "contracts/cross-chain",
     "contracts/governance",
     "contracts/multisig-account",
     "contracts/receipt-anchor",
@@ -10,6 +11,7 @@ members = [
     "contracts/refund-vault",
     "contracts/state-channel",
     "contracts/refund-vault-factory",
+    "contracts/treasury",
     "contracts/testutils",
     "contracts/upto-authorization",
 ]

@@ -10,15 +10,20 @@ use soroban_sdk::{
 
 const TOKEN_SUPPLY: i128 = 10_000_000;
 
-fn setup() -> (
+pub(crate) type Setup = (
     Env,
     UptoAuthorizationClient<'static>,
     Address,
     Address,
     Address,
     Address,
-) {
-    let env = Env::default();
+);
+
+fn setup() -> Setup {
+    setup_in(Env::default())
+}
+
+pub(crate) fn setup_in(env: Env) -> Setup {
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
@@ -322,6 +327,7 @@ fn test_authorize_event_emitted() {
         m.set(Symbol::new(&env, "cap"), 1000i128.into_val(&env));
         m.set(Symbol::new(&env, "expiry"), 1000u32.into_val(&env));
         m.set(Symbol::new(&env, "from"), buyer.into_val(&env));
+        m.set(Symbol::new(&env, "max_slippage_bps"), 0u32.into_val(&env));
         m.set(Symbol::new(&env, "to"), recipient.into_val(&env));
         m.into_val(&env)
     };
@@ -546,6 +552,213 @@ fn test_settle_exact_cap() {
     let tc = TokenClient::new(&env, &token);
     assert_eq!(tc.balance(&recipient), 500);
     assert_eq!(tc.balance(&buyer), TOKEN_SUPPLY - 500);
+}
+
+// ── Slippage tolerance ─────────────────────────────────────────────────────
+
+#[test]
+fn test_zero_bps_is_strict_cap() {
+    let (env, client, _admin, buyer, _seller, token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    client.authorize_with_slippage(&p, &buyer, &recipient, &1000, &1000, &0);
+    assert_eq!(
+        client.try_settle(&p, &1001),
+        Err(Ok(Error::AmountExceedsCap))
+    );
+    client.settle(&p, &1000);
+    assert_eq!(TokenClient::new(&env, &token).balance(&recipient), 1000);
+}
+
+#[test]
+fn test_settle_within_slippage_succeeds() {
+    let (env, client, _admin, buyer, _seller, token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    // 2.5% on 10_000 → up to 10_250.
+    client.authorize_with_slippage(&p, &buyer, &recipient, &10_000, &1000, &250);
+    client.settle(&p, &10_100);
+
+    let tc = TokenClient::new(&env, &token);
+    assert_eq!(tc.balance(&recipient), 10_100);
+    assert_eq!(tc.balance(&buyer), TOKEN_SUPPLY - 10_100);
+    // The unused headroom does not linger as an allowance.
+    assert_eq!(tc.allowance(&buyer, &client.address), 0);
+}
+
+#[test]
+fn test_settle_at_slippage_boundary() {
+    let (env, client, _admin, buyer, _seller, token) = setup();
+    let recipient = Address::generate(&env);
+
+    // Exactly at cap + tolerance succeeds …
+    let p1 = pid(&env, 1);
+    client.authorize_with_slippage(&p1, &buyer, &recipient, &10_000, &1000, &250);
+    client.settle(&p1, &10_250);
+    assert_eq!(TokenClient::new(&env, &token).balance(&recipient), 10_250);
+
+    // … one unit above fails.
+    let p2 = pid(&env, 2);
+    client.authorize_with_slippage(&p2, &buyer, &recipient, &10_000, &1000, &250);
+    assert_eq!(
+        client.try_settle(&p2, &10_251),
+        Err(Ok(Error::AmountExceedsCap))
+    );
+}
+
+#[test]
+fn test_slippage_tolerance_rounds_down() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    // 1 bps of 9_999 is 0.9999 → floors to 0, so the cap stays strict.
+    client.authorize_with_slippage(&p, &buyer, &recipient, &9_999, &1000, &1);
+    assert_eq!(
+        client.try_settle(&p, &10_000),
+        Err(Ok(Error::AmountExceedsCap))
+    );
+    client.settle(&p, &9_999);
+}
+
+#[test]
+fn test_max_slippage_bps_allows_double_cap() {
+    let (env, client, _admin, buyer, _seller, token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    client.authorize_with_slippage(&p, &buyer, &recipient, &1000, &1000, &MAX_SLIPPAGE_BPS);
+    assert_eq!(
+        client.try_settle(&p, &2001),
+        Err(Ok(Error::AmountExceedsCap))
+    );
+    client.settle(&p, &2000);
+    assert_eq!(TokenClient::new(&env, &token).balance(&recipient), 2000);
+}
+
+#[test]
+fn test_slippage_above_max_rejected() {
+    let (env, client, _admin, buyer, _seller, token) = setup();
+    let recipient = Address::generate(&env);
+
+    for bps in [MAX_SLIPPAGE_BPS + 1, u32::MAX] {
+        assert_eq!(
+            client.try_authorize_with_slippage(
+                &pid(&env, 1),
+                &buyer,
+                &recipient,
+                &1000,
+                &1000,
+                &bps
+            ),
+            Err(Ok(Error::InvalidSlippage))
+        );
+    }
+    assert_eq!(client.get_authorization(&pid(&env, 1)), None);
+    assert_eq!(
+        TokenClient::new(&env, &token).allowance(&buyer, &client.address),
+        0
+    );
+}
+
+#[test]
+fn test_slippage_overflow_rejected() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let recipient = Address::generate(&env);
+
+    // i128::MAX with any non-zero tolerance cannot be represented.
+    assert_eq!(
+        client.try_authorize_with_slippage(
+            &pid(&env, 1),
+            &buyer,
+            &recipient,
+            &i128::MAX,
+            &1000,
+            &1
+        ),
+        Err(Ok(Error::AmountOverflow))
+    );
+    // With 0 bps the maximum is the cap itself — no overflow.
+    client.authorize_with_slippage(&pid(&env, 2), &buyer, &recipient, &i128::MAX, &1000, &0);
+}
+
+#[test]
+fn test_slippage_allowance_covers_tolerance() {
+    let (env, client, _admin, buyer, _seller, token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    client.authorize_with_slippage(&p, &buyer, &recipient, &10_000, &1000, &500);
+    assert_eq!(
+        TokenClient::new(&env, &token).allowance(&buyer, &client.address),
+        10_500
+    );
+    let record = client.get_authorization(&p).unwrap();
+    assert_eq!(record.cap, 10_000);
+    assert_eq!(record.max_slippage_bps, 500);
+}
+
+#[test]
+fn test_authorize_defaults_to_zero_slippage() {
+    let (env, client, _admin, buyer, _seller, token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    client.authorize(&p, &buyer, &recipient, &1000, &1000);
+    assert_eq!(client.get_authorization(&p).unwrap().max_slippage_bps, 0);
+    assert_eq!(
+        TokenClient::new(&env, &token).allowance(&buyer, &client.address),
+        1000
+    );
+}
+
+#[test]
+fn test_authorize_with_slippage_event() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    client.authorize_with_slippage(&p, &buyer, &recipient, &1000, &1000, &75);
+
+    let expected_data = {
+        let mut m = soroban_sdk::Map::<Symbol, Val>::new(&env);
+        m.set(Symbol::new(&env, "cap"), 1000i128.into_val(&env));
+        m.set(Symbol::new(&env, "expiry"), 1000u32.into_val(&env));
+        m.set(Symbol::new(&env, "from"), buyer.into_val(&env));
+        m.set(Symbol::new(&env, "max_slippage_bps"), 75u32.into_val(&env));
+        m.set(Symbol::new(&env, "to"), recipient.into_val(&env));
+        m.into_val(&env)
+    };
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "authorize_event"), p.clone()).into_val(&env),
+                expected_data
+            )
+        ]
+    );
+}
+
+#[test]
+fn test_max_settleable_extremes() {
+    assert_eq!(max_settleable(0, MAX_SLIPPAGE_BPS), Some(0));
+    assert_eq!(max_settleable(1, MAX_SLIPPAGE_BPS), Some(2));
+    assert_eq!(max_settleable(i128::MAX, 0), Some(i128::MAX));
+    assert_eq!(max_settleable(i128::MAX, 1), None);
+    // Largest cap that still doubles without overflow.
+    let half = i128::MAX / 2;
+    assert_eq!(max_settleable(half, MAX_SLIPPAGE_BPS), Some(half * 2));
+    assert_eq!(max_settleable(half + 1, MAX_SLIPPAGE_BPS), None);
+    // Caps far above i128::MAX / 10_000, where a naive cap * bps overflows.
+    let big = i128::MAX / 3;
+    assert_eq!(max_settleable(big, 5_000), Some(big + big / 2));
+    assert_eq!(max_settleable(-1, 0), None);
+    assert_eq!(max_settleable(1000, MAX_SLIPPAGE_BPS + 1), None);
 }
 
 // ── Domain-separated signatures (issue #416) ────────────────────────────────

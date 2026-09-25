@@ -14,15 +14,25 @@
 //! - `__check_auth` requires every attached delegated signer to be a registered
 //!   signer, and the count of distinct delegates to be at least `threshold`.
 //!
+//! - Governance may set a per-token daily allowance ([`limits`]); a routine
+//!   token transfer authorized by fewer than `threshold` signers is then
+//!   accepted while it fits in each signer's remaining daily quota.
+//!
 //! This is the piece referenced by `docs/SECURITY_MODEL.md` and
 //! `DEPLOYMENTS.md`: initialize an app contract with the multisig account's
 //! address, and privileged calls now need `threshold` approved signers.
 
 #![no_std]
 
+mod admin;
 pub mod crypto;
+mod errors;
+pub mod limits;
 mod signers;
 pub mod timelock;
+
+pub use admin::{GuardianSetEvent, PausedEvent, UnpausedEvent};
+pub use errors::Error;
 
 // The helpers are only needed by tests; gate them so the contract itself stays
 // minimal. Unit tests within this crate (`#[cfg(test)]`) and downstream
@@ -31,30 +41,13 @@ pub mod timelock;
 #[cfg(any(test, feature = "testutils"))]
 pub mod testutils;
 
-use soroban_sdk::{
-    auth::CustomAccountInterface, contract, contracterror, contractimpl, contracttype, Address,
-    Bytes, BytesN, Env, Vec,
-};
+#[cfg(test)]
+mod test;
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error {
-    /// A delegated signer is not a registered signer of this account.
-    UnknownSigner = 1,
-    /// Fewer than `threshold` distinct signers authorized the call.
-    InsufficientSignatures = 2,
-    /// The caller is not authorized to perform this action.
-    Unauthorized = 3,
-    /// The timelock period has not yet elapsed.
-    TimelockNotExpired = 4,
-    /// The requested proposal or queue entry was not found.
-    ProposalNotFound = 5,
-    /// The signer has already approved this transaction.
-    AlreadyVoted = 6,
-    /// An Ed25519 signature's `s` scalar is not canonical (`s >= L`), i.e.
-    /// it is a malleated form of some other valid signature.
-    NonCanonicalSignature = 7,
-}
+use soroban_sdk::{
+    auth::CustomAccountInterface, contract, contractimpl, contracttype, Address, Bytes, BytesN,
+    Env, Vec,
+};
 
 #[contracttype]
 pub enum DataKey {
@@ -70,6 +63,15 @@ pub enum DataKey {
     TimelockGuardian,
     /// Persistent: a queued transaction identified by its queue ID.
     QueuedTransaction(u64),
+    /// Instance: daily allowance for sub-threshold spends of a token (`i128`).
+    DailyLimit(Address),
+    /// Instance: a signer's spending of a token in the current window
+    /// ([`limits::SpendingLimit`]).
+    Spending(Address, Address),
+    /// Instance: `true` while the emergency pause is engaged.
+    Paused,
+    /// Instance: security guardian allowed to pause/unpause on its own.
+    PauseGuardian,
 }
 
 /// A threshold account enforcing that `threshold` distinct registered signers
@@ -133,6 +135,22 @@ impl MultisigAccount {
         signers::rotate_signers_and_threshold(&env, to_add, to_remove, new_threshold)
     }
 
+    /// Set the daily allowance for sub-threshold transfers of `token`
+    /// (`0` disables it). Requires the full threshold.
+    pub fn set_daily_limit(env: Env, token: Address, limit: i128) -> Result<(), Error> {
+        limits::set_daily_limit(&env, token, limit)
+    }
+
+    /// The daily allowance configured for `token` (`0` = none).
+    pub fn get_daily_limit(env: Env, token: Address) -> i128 {
+        limits::daily_limit(&env, &token)
+    }
+
+    /// What `signer` has spent of `token` in the current 24-hour window.
+    pub fn get_spent_today(env: Env, signer: Address, token: Address) -> i128 {
+        limits::spent_today(&env, &signer, &token)
+    }
+
     /// Verify an Ed25519 `signature` by `public_key` over `message`,
     /// rejecting malleable encodings.
     ///
@@ -147,6 +165,47 @@ impl MultisigAccount {
     ) -> Result<(), Error> {
         crypto::verify_ed25519_canonical(&env, &public_key, &message, &signature)
     }
+
+    /// Engage the emergency pause. While paused, `__check_auth` refuses every
+    /// authorization except this account's own `pause`, `unpause`,
+    /// `set_guardian` and `rotate_signers_and_threshold`.
+    ///
+    /// `caller` must be this account's own address (authorized by `threshold`
+    /// signers) or the security guardian; anyone else gets
+    /// [`Error::Unauthorized`].
+    ///
+    /// # Events emitted on success
+    /// - [`PausedEvent`]
+    pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
+        admin::pause(&env, caller)
+    }
+
+    /// Lift the emergency pause. Same authorization rules as [`Self::pause`].
+    ///
+    /// # Events emitted on success
+    /// - [`UnpausedEvent`]
+    pub fn unpause(env: Env, caller: Address) -> Result<(), Error> {
+        admin::unpause(&env, caller)
+    }
+
+    /// True while the emergency pause is engaged.
+    pub fn is_paused(env: Env) -> bool {
+        admin::is_paused(&env)
+    }
+
+    /// Set (`Some`) or clear (`None`) the security guardian. Requires this
+    /// account's own threshold authorization.
+    ///
+    /// # Events emitted on success
+    /// - [`GuardianSetEvent`]
+    pub fn set_guardian(env: Env, guardian: Option<Address>) {
+        admin::set_guardian(&env, guardian)
+    }
+
+    /// The current security guardian, if any.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        admin::get_guardian(&env)
+    }
 }
 
 #[contractimpl]
@@ -160,8 +219,18 @@ impl CustomAccountInterface for MultisigAccount {
         env: Env,
         _signature_payload: soroban_sdk::crypto::Hash<32>,
         _signatures: (),
-        _auth_contexts: Vec<soroban_sdk::auth::Context>,
+        auth_contexts: Vec<soroban_sdk::auth::Context>,
     ) -> Result<(), Error> {
+        // Circuit breaker: while paused, only this account's own recovery
+        // calls may be authorized — never an outbound call.
+        if admin::is_paused(&env)
+            && !auth_contexts
+                .iter()
+                .all(|ctx| admin::is_allowed_while_paused(&env, &ctx))
+        {
+            return Err(Error::Paused);
+        }
+
         let threshold = env
             .storage()
             .instance()
@@ -177,10 +246,11 @@ impl CustomAccountInterface for MultisigAccount {
         }
 
         if delegates.len() < threshold {
-            return Err(Error::InsufficientSignatures);
+            // Below threshold, only routine spends within the daily
+            // allowance are admitted (issue #413).
+            return limits::authorize_within_limits(&env, &delegates, &auth_contexts);
         }
 
         Ok(())
     }
 }
-// audit implementation
