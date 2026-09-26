@@ -718,7 +718,6 @@ impl Governance {
         env.storage()
             .persistent()
             .get::<_, u64>(&DataKey::MemberDeposit(member.clone()))
-            .map(|_| ())
             .ok_or(Error::NotAMember)?;
         Ok(())
     }

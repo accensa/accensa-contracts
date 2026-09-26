@@ -468,6 +468,7 @@ pub struct CommitRevealedEvent {
 pub mod dust;
 pub mod nft_escrow;
 pub mod oracle;
+pub mod settlement;
 
 pub mod strategy;
 pub use strategy::{YieldStrategy, YieldStrategyClient};
@@ -842,23 +843,10 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
     }
 
     // Ceiling check: cumulative refunds must not exceed the original amount.
-    // The ceiling is read from the (re)stored record, freshly minted on the
-    // first partial for this payment.
-    let existing: Option<RefundRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::RefundV2(claim.payment_ref.clone()));
-    let (previous_refunded, record_ceiling) = match existing {
-        Some(rec) => (rec.amount_refunded, rec.payment_amount),
-        None => (0i128, claim.payment_amount),
-    };
-
-    if previous_refunded.checked_add(claim.amount).is_none()
-        || record_ceiling <= 0
-        || previous_refunded + claim.amount > record_ceiling
-    {
-        return Err(Error::ExceedsPayment);
-    }
+    // The rule lives in `settlement::resolve_ceiling` so the live refund path
+    // and `preview_settlement` cannot disagree about it.
+    let (previous_refunded, record_ceiling) =
+        settlement::resolve_ceiling(env, &claim.payment_ref, claim.amount, claim.payment_amount)?;
 
     // Token client: use the cached token address instead of reading from storage.
     let token_client = token::Client::new(env, &cache.token_addr);
@@ -875,8 +863,7 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
     // exactly `amount`, so the float check above and the ceiling check against
     // the payment amount are unchanged. The fee rounds *up* (the
     // fractional-token remainder goes to the protocol).
-    let fee = refund_fee(claim.amount, cache.fee_bps);
-    let payout = claim.amount - fee;
+    let (fee, payout) = settlement::split_amount(claim.amount, cache.fee_bps);
 
     let fee_recipient = if fee > 0 {
         let r = active_fee_recipient(env);
@@ -2641,6 +2628,8 @@ mod fuzz_test;
 mod oracle_tests;
 #[cfg(test)]
 mod reentrancy_tests;
+#[cfg(test)]
+mod settlement_test;
 /// Yield-bearing escrow strategy hook tests (issue #415).
 #[cfg(test)]
 mod strategy_tests;

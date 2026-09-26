@@ -640,6 +640,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "max_slippage_bps"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "to"
                     },
                     "val": {
@@ -704,6 +712,14 @@
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_slippage_bps"
+                    },
+                    "val": {
+                      "u32": 0
                     }
                   },
                   {

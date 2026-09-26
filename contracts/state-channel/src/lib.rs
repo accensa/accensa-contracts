@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod close_test;
 #[cfg(test)]
+mod crypto_test;
+#[cfg(test)]
 mod multi_asset_test;
 #[cfg(test)]
 mod test;
@@ -792,6 +794,7 @@ impl StateChannel {
     }
 }
 pub mod close;
+pub mod crypto;
 pub mod dispute;
 pub mod epoch;
 pub mod multi_asset;

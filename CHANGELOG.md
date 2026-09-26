@@ -9,6 +9,89 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`refund-vault-factory` (issue #464): protocol TVL query.** New read-only
+  `get_tvl(asset)` sums the `asset` balance of every vault the factory has
+  deployed — read from the SEP-41 token contract rather than the vault's own
+  bookkeeping — so one call answers "how much value is locked?" for
+  DefiLlama-style analytics. A vault configured with a different token holds
+  no `asset` and contributes `0`, so a single factory can host vaults across
+  many assets.
+- **`treasury` (issue #467): token vesting schedules.** New contract
+  (`contracts/treasury`, `src/vesting.rs`) releasing team/investor
+  allocations linearly over four years after a one-year cliff. The admin
+  registers a `VestingSchedule` per beneficiary with `add_schedule` (or
+  `add_team_schedule` for the 1y-cliff/4y-window defaults) and the
+  beneficiary calls `claim_vested` to withdraw whatever has unlocked;
+  `vested_amount` / `claimable` preview the curve without changing state. A
+  schedule can never pay out more than its `total`, and a claim with nothing
+  new unlocked fails with `Error::NothingToClaim`.
+- **`state-channel` (issue #471): batched Ed25519 verification.** New `crypto`
+  module (`crypto::verify_signatures`) verifies a flat array of
+  signer/signature pairs against one canonical payload in a single pass, and
+  length-checks the pairing before touching the host (a mismatch returns
+  `Error::InvalidSignature`; a forged signature still traps). `mutual_close`
+  routes both of its signatures through it.
+- **`refund-vault` (issue #473): partial-refund settlement preview.** New
+  read-only `preview_settlement(payment_ref, amount, payment_amount)` reports
+  exactly how a partial refund would split — the buyer's payout, the fee, the
+  remainder the merchant retains, and the running cumulative total — including
+  the fee's round-up dust. The ceiling rule and fee split now live once, in
+  `settlement::resolve_ceiling` / `settlement::split_amount`, and are shared
+  with the live `refund` path so a preview can never disagree with the
+  transfer it describes.
+- **`multisig-account`: emergency pause circuit breaker.** `pause(caller)` /
+  `unpause(caller)` may be called by the account itself (`threshold` signers)
+  or a security guardian set with `set_guardian` (threshold only). While
+  paused, `__check_auth` refuses every outbound authorization, including
+  sub-threshold spends, with `Error::Paused` (10); only the account's own
+  `pause`, `unpause`, `set_guardian` and `rotate_signers_and_threshold` stay
+  authorizable, and queued timelock transactions cannot execute. Read-only
+  queries are unaffected. Adds `is_paused`, `get_guardian`, `PausedEvent`,
+  `UnpausedEvent` and `GuardianSetEvent`.
+- **`upto-authorization`: slippage tolerance.** New
+  `authorize_with_slippage(payment_id, from, to, cap, expiry, max_slippage_bps)`
+  lets `settle` charge up to `cap + floor(cap * bps / 10_000)`; the token
+  allowance covers that maximum. `authorize` and `authorize_signed` are
+  unchanged (0 bps). The bound is computed without forming `cap * bps`, so it
+  cannot overflow; `bps` above 10,000 fails with `Error::InvalidSlippage`
+  (11) and an unrepresentable maximum with `Error::AmountOverflow` (12).
+  `AuthorizationRecord` and `AuthorizeEvent` gain a `max_slippage_bps` field.
+- **`receipt-anchor`: `verify_receipt_leaf(shard_id, root, leaf, proof)`.**
+  Verifies a sorted-pair Merkle proof (ADR-001) against the shard's retained
+  roots. The fold lives in the new `merkle` module. Worst case (depth 10):
+  2.81M CPU instructions, 1.52 MB memory; see `docs/BENCHMARKS.md`.
+- **`receipt-shard` (issue #419): shard health diagnostics.** New read-only
+  `get_shard_diagnostics()` returns a `ShardDiagnostics` snapshot: assigned
+  range, pruning cursor (oldest unpruned batch), high-water batch id, live
+  batch and leaf counts, lifetime leaf total, live batches still inside the
+  retention window (`active_dispute_count`), deepest Merkle tree anchored,
+  persistent storage entries, and a `consistent` flag covering the shard's
+  internal invariants. The counters live in one `ShardStats` instance entry
+  kept up to date by `anchor_batch` and both pruning paths.
+- **`multisig-account` (issue #413): daily spending limits for sub-threshold
+  signers.** Governance sets a per-token allowance with
+  `set_daily_limit(token, limit)` (full threshold). After that, a
+  `transfer` of the account's own funds authorized by fewer than `threshold`
+  signers is accepted while it fits in each signer's remaining allowance for
+  the current 24-hour window (ledger timestamp). Anything else still needs
+  the full threshold (`Error::InsufficientSignatures` /
+  `Error::DailyLimitExceeded`). Adds `get_daily_limit`, `get_spent_today`
+  and `DailyLimitSet`.
+- **`state-channel` (issue #412): cooperative mutual close.** The receiver
+  registers an Ed25519 key with `register_receiver_key`. `mutual_close(final_state,
+  sig_a, sig_b)` then checks both signatures over a domain-separated
+  `MutualCloseState` (bound to the contract and channel id), requires the
+  split to add up to the escrow, pays both parties at once from `Open`,
+  `Closed` or `Disputed`, deletes the channel's storage entries and emits
+  `ChannelClosedCooperative`.
+- **`refund-policy-time` (issue #426): oracle-assisted dispute resolution.**
+  The time policy also accepts `TimeOraclePolicyParams` (`window`,
+  `deadline`, `oracle`, `max_report_age`). It asks the delivery oracle for
+  the payment's `DeliveryReport`: `Lost` admits the refund even outside the
+  window, `Delivered` rejects it with `Error::OraclePolicyDenied`, and
+  `Pending` falls back to the window/deadline check. So do stale, future-dated
+  or mismatched reports, and oracles that trap or do not exist. Emits
+  `OracleResolutionApplied`. Plain `TimePolicyParams` behave as before.
 - **`RefundVault` (issue #415): yield-bearing escrow strategy hook.** The
   `YieldStrategy` interface moves to `src/strategy.rs`. Strategies must be
   whitelisted with `approve_yield_strategy` (`revoke_yield_strategy`,
@@ -198,6 +281,16 @@ breaking changes bump the **minor** version, and they are called out as such.
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+- **Build fixes for code merged without compiling.** `governance` declares
+  its `voting` and `math` modules and no longer moves `member` before reuse;
+  stray `#![no_std]` attributes in submodules (`governance` `ragequit.rs` /
+  `voting.rs`, `upto-authorization` `domain.rs`) are removed; unit tests in
+  `governance::voting` run inside a contract context, and two `isqrt`
+  expectations that were off by 10x are corrected.
+- **Known issue, test ignored:** `governance::set_treasury_token` is reachable
+  only through `execute` invoking the contract itself, which Soroban rejects
+  ("Contract re-entry is not allowed"). Its test is `#[ignore]`d pending a
+  design fix.
 - **`state-channel`: restore the build.** The merge of #504 dropped the
   `extend_instance_ttl` and `NonceWindow` imports and the `nonce` module
   declaration, and `nonce.rs` used a non-existent `BytesN::zero` and a

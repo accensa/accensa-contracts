@@ -106,11 +106,21 @@ pub(crate) fn record_anchor(env: &Env, batch_id: u64, previous: Option<&BatchRec
     store(env, &stats);
 }
 
-/// Update the counters after `removed` was deleted from persistent storage.
-pub(crate) fn record_removal(env: &Env, removed: &BatchRecord) {
+/// Update the counters after `count` batches totalling `leaves` leaf counts
+/// were deleted from persistent storage, in a single storage write.
+///
+/// Both pruning paths delete many records in one call, so they accumulate the
+/// totals and settle the counters once here. Rewriting the entry per deletion
+/// would add a storage read and write to every removal on the hot prune path —
+/// CPU that scales with the batch size and buys nothing, since no reader can
+/// observe the counters part-way through the call.
+pub(crate) fn record_removals(env: &Env, count: u64, leaves: u64) {
+    if count == 0 {
+        return;
+    }
     let mut stats = load(env);
-    stats.live_batches = stats.live_batches.saturating_sub(1);
-    stats.live_leaves = stats.live_leaves.saturating_sub(removed.count as u64);
+    stats.live_batches = stats.live_batches.saturating_sub(count);
+    stats.live_leaves = stats.live_leaves.saturating_sub(leaves);
     store(env, &stats);
 }
 

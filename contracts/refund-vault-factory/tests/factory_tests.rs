@@ -465,3 +465,85 @@ fn deployed_vault_refuses_when_time_policy_unconfigured() {
         Err(Ok(CommonError::PolicyContractsNotConfigured))
     );
 }
+
+// ── Protocol TVL (issue #464) ────────────────────────────────────────────
+
+#[test]
+fn get_tvl_is_zero_for_an_empty_factory() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+
+    assert_eq!(factory.get_tvl(&token), 0);
+}
+
+#[test]
+fn get_tvl_sums_balances_of_multiple_funded_vaults() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let sac = StellarAssetClient::new(&env, &token);
+
+    let a = factory.deploy_vault(&vault_init(&env, &merchant, &token, 0));
+    let b = factory.deploy_vault(&vault_init(&env, &merchant, &token, 0));
+    // Deployed but unfunded: must contribute nothing to the total.
+    let _c = factory.deploy_vault(&vault_init(&env, &merchant, &token, 0));
+
+    sac.mint(&a, &400_000);
+    sac.mint(&b, &600_000);
+
+    assert_eq!(factory.get_tvl(&token), 1_000_000);
+}
+
+#[test]
+fn get_tvl_only_counts_the_queried_asset() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let usdc = token_for(&env, &merchant);
+    let other = token_for(&env, &Address::generate(&env));
+
+    let vault = factory.deploy_vault(&vault_init(&env, &merchant, &usdc, 0));
+    StellarAssetClient::new(&env, &usdc).mint(&vault, &250_000);
+
+    assert_eq!(factory.get_tvl(&usdc), 250_000);
+    assert_eq!(
+        factory.get_tvl(&other),
+        0,
+        "an asset no vault holds must not be counted"
+    );
+}
+
+#[test]
+fn get_tvl_drops_by_the_refunded_amount() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
+
+    let vault = factory.deploy_vault(&vault_init(&env, &merchant, &token, 0));
+    let client = RefundVaultClient::new(&env, &vault);
+    client.deposit(&merchant, &FLOAT);
+    assert_eq!(factory.get_tvl(&token), FLOAT);
+
+    let buyer = Address::generate(&env);
+    let payment_ref = BytesN::from_array(&env, &[5u8; 32]);
+    client.refund(&payment_ref, &buyer, &100_000, &0, &100_000, &None, &0);
+
+    assert_eq!(factory.get_tvl(&token), FLOAT - 100_000);
+}

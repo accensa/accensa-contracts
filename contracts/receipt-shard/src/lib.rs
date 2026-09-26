@@ -210,6 +210,11 @@ impl ReceiptShard {
 
         let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
         let mut pruned: u64 = 0;
+        // Counters are settled once after the loop rather than per deletion.
+        // `pruned` also counts already-absent ids, which never held a record,
+        // so the stats deltas are tracked separately.
+        let mut removed_batches: u64 = 0;
+        let mut removed_leaves: u64 = 0;
 
         while cursor < ceiling && pruned < max_batches as u64 {
             match env
@@ -219,7 +224,8 @@ impl ReceiptShard {
             {
                 Some(record) if record.anchored_ledger < before_ledger => {
                     env.storage().persistent().remove(&DataKey::Batch(cursor));
-                    diagnostics::record_removal(&env, &record);
+                    removed_batches += 1;
+                    removed_leaves += record.count as u64;
                     cursor += 1;
                     pruned += 1;
                 }
@@ -230,6 +236,8 @@ impl ReceiptShard {
                 }
             }
         }
+
+        diagnostics::record_removals(&env, removed_batches, removed_leaves);
 
         if pruned > 0 {
             env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);

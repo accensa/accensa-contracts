@@ -24,6 +24,8 @@ use soroban_sdk::{
     BytesN, Env, Symbol, Vec,
 };
 
+pub mod tvl;
+
 pub(crate) const KEY_ADMIN: Symbol = symbol_short!("admin");
 pub(crate) const KEY_VAULT_WASM: Symbol = symbol_short!("vwasm");
 pub(crate) const KEY_TIME: Symbol = symbol_short!("time");

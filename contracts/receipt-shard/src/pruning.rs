@@ -85,6 +85,11 @@ impl ReceiptShard {
         let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
 
         let mut pruned: u32 = 0;
+        // Counters are settled once after the loop rather than per deletion:
+        // a read+write of the stats entry per batch is CPU that scales with
+        // the cleanup volume for no observable benefit, since readers only
+        // ever see the counters between calls.
+        let mut removed_leaves: u64 = 0;
 
         // Scan forward from the cursor over the shard's assigned range.
         // The cursor is a contiguous prefix by construction (both pruning
@@ -102,7 +107,7 @@ impl ReceiptShard {
                         >= RETENTION_LEDGERS =>
                 {
                     env.storage().persistent().remove(&DataKey::Batch(cursor));
-                    crate::diagnostics::record_removal(&env, &record);
+                    removed_leaves += record.count as u64;
                     pruned += 1;
                     cursor += 1;
                 }
@@ -118,6 +123,8 @@ impl ReceiptShard {
                 None => break,
             }
         }
+
+        crate::diagnostics::record_removals(&env, pruned as u64, removed_leaves);
 
         if pruned > 0 {
             env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);

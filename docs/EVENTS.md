@@ -245,3 +245,31 @@ sub-threshold signers (issue #413).
 - **Topics**: `("daily_limit_set", token: Address)`
 - **Data Map**:
   - `limit` (`i128`): The new daily allowance. `0` means sub-threshold spending of this token is disabled.
+
+### `PausedEvent`
+Emitted when the account's emergency pause is engaged, by the account itself
+(`threshold` signers) or by its security guardian. While paused the account
+refuses to authorize any call except its own `pause`, `unpause`,
+`set_guardian` and `rotate_signers_and_threshold`.
+
+- **Topics**: `("paused_event", ledger: u32)`
+- **Data Map**:
+  - `by` (`Address`): The account's own address (threshold signers) or the guardian.
+
+### `UnpausedEvent`
+Emitted when the account's emergency pause is lifted.
+
+- **Topics**: `("unpaused_event", ledger: u32)`
+- **Data Map**:
+  - `by` (`Address`): The account's own address (threshold signers) or the guardian.
+
+The account is paused between a `paused_event` and the next `unpaused_event`.
+
+### `GuardianSetEvent`
+Emitted when the account's threshold signers set, replace or clear the security
+guardian.
+
+- **Topics**: `("guardian_set_event",)`
+- **Data Map**:
+  - `previous` (`Option<Address>`): The guardian before the change.
+  - `new` (`Option<Address>`): The guardian after the change; `None` = no guardian.
