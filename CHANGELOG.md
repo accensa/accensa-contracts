@@ -44,6 +44,19 @@ breaking changes bump the **minor** version, and they are called out as such.
   `vested_amount` / `claimable` preview the curve without changing state. A
   schedule can never pay out more than its `total`, and a claim with nothing
   new unlocked fails with `Error::NothingToClaim`.
+- **`treasury` (issue #466): diversified stablecoin yield strategies.** New
+  `strategies` module (`contracts/treasury/src/strategies.rs`) splitting idle
+  reserves across several whitelisted yield protocols. Governance approves
+  addresses with `whitelist_strategy` and sets percentages with
+  `set_allocations` (weights in basis points, summing to exactly `10_000`);
+  `rebalance_portfolio` then recalls every strategy and redeploys the balance
+  minus the liquid reserve (`set_reserve_bps`, 100% liquid by default), and
+  `recall_strategy` brings a single position — and the yield riding on it —
+  home early. A `Strategy` trait (`deposit` / `withdraw` / `total_balance` /
+  `accrued_yield`, mirroring `refund-vault`'s yield hook) is the adapter
+  interface. Strategies stay untrusted: returns are checked against the
+  treasury's own token balance delta (`Error::StrategyUnderpaid`) and every
+  strategy call runs under a reentrancy lock (`Error::ReentrancyBlocked`).
 - **`state-channel` (issue #471): batched Ed25519 verification.** New `crypto`
   module (`crypto::verify_signatures`) verifies a flat array of
   signer/signature pairs against one canonical payload in a single pass, and

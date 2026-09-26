@@ -1,10 +1,16 @@
-//! Token vesting treasury (issue #467).
+//! Token vesting treasury (issue #467) with diversified yield (issue #466).
 //!
 //! Deploys a token allocation contract that releases core team and investor
 //! allocations linearly over a four-year period after a one-year cliff. The
 //! admin funds the contract once and registers one [`VestingSchedule`] per
 //! beneficiary; from then on a beneficiary may call [`Treasury::claim_vested`]
 //! at any time to pull out whatever has unlocked but not yet been paid.
+//!
+//! Idle reserves — the balance that is not backing a live vesting claim — can
+//! additionally be parked in several whitelisted yield protocols. Governance
+//! picks the split; [`Treasury::rebalance_portfolio`] rotates the portfolio
+//! onto it and [`Treasury::recall_strategy`] brings any position home. See
+//! [`strategies`] for the model.
 //!
 //! # Model
 //!
@@ -37,10 +43,14 @@ use soroban_sdk::{
     Address, Env,
 };
 
+pub mod strategies;
+#[cfg(test)]
+mod strategies_test;
 #[cfg(test)]
 mod test;
 pub mod vesting;
 
+use strategies::{AllocationConfig, StrategyAllocation};
 use vesting::{VestingSchedule, FOUR_YEARS_SECS, ONE_YEAR_SECS};
 
 contractmeta!(key = "name", val = "Treasury");
@@ -61,6 +71,16 @@ pub enum DataKey {
     Token,
     /// A beneficiary's [`VestingSchedule`].
     Schedule(Address),
+    /// Whether a yield strategy is on the admin-approved whitelist (#466).
+    WhitelistedStrategy(Address),
+    /// A strategy's weight and deployed bookkeeping (#466).
+    Allocation(Address),
+    /// The allocated strategies, in governance-supplied order (#466).
+    AllocationOrder,
+    /// The share of the balance that must stay liquid, in basis points (#466).
+    ReserveBps,
+    /// Reentrancy guard held across a strategy call (#466).
+    ReentrancyLock,
 }
 
 /// Errors returned by [`Treasury`].
@@ -84,6 +104,32 @@ pub enum Error {
     NothingToClaim = 7,
     /// Checked vesting arithmetic over- or under-flowed.
     MathOverflow = 8,
+    /// The strategy has not been approved for yield deployment (issue #466).
+    StrategyNotWhitelisted = 9,
+    /// The strategy is already on the whitelist (issue #466).
+    StrategyAlreadyWhitelisted = 10,
+    /// No allocation exists for the strategy (issue #466).
+    StrategyNotAllocated = 11,
+    /// The strategy still holds principal or is owed yield, so it cannot be
+    /// dropped from the portfolio (issue #466).
+    StrategyHasFunds = 12,
+    /// The weight set was empty, over-long, contained a zero weight or a
+    /// duplicate, or did not sum to exactly 100% (issue #466).
+    InvalidAllocations = 13,
+    /// The requested recall exceeds what is deployed at the strategy
+    /// (issue #466).
+    RecallExceedsDeployed = 14,
+    /// Nothing is deployed at the strategy to recall (issue #466).
+    NothingToRecall = 15,
+    /// A strategy reported returning more than the treasury actually received
+    /// (issue #466).
+    StrategyUnderpaid = 16,
+    /// A guarded, strategy-calling entry point was re-entered (issue #466).
+    ReentrancyBlocked = 17,
+    /// A zero-amount deployment was requested (issue #466).
+    NothingToDeploy = 18,
+    /// The liquid reserve was set above 100% (issue #466).
+    InvalidReserve = 19,
 }
 
 /// Emitted when the admin registers a beneficiary's allocation.
@@ -167,7 +213,7 @@ impl Treasury {
             return Err(Error::ScheduleAlreadyExists);
         }
         env.storage().persistent().set(&key, &schedule);
-        bump_schedule_ttl(&env, &key);
+        bump_ttl(&env, &key);
 
         ScheduleCreatedEvent {
             beneficiary,
@@ -264,18 +310,29 @@ impl Treasury {
             .checked_add(amount)
             .ok_or(Error::MathOverflow)?;
         env.storage().persistent().set(&key, &schedule);
-        bump_schedule_ttl(&env, &key);
+        bump_ttl(&env, &key);
 
         let token_addr: Address = env
             .storage()
             .instance()
             .get(&DataKey::Token)
             .ok_or(Error::NotInitialized)?;
-        token::Client::new(&env, &token_addr).transfer(
-            &env.current_contract_address(),
-            &beneficiary,
-            &amount,
-        );
+        let token_client = token::Client::new(&env, &token_addr);
+
+        // A claim must never fail because governance parked the float in a
+        // yield strategy: recall the shortfall from the portfolio first
+        // (issue #466). The reserve policy is the routine buffer; this is what
+        // makes the promise above hold even at a 0% reserve.
+        strategies::with_lock(&env, || {
+            strategies::ensure_liquidity(
+                &env,
+                &token_client,
+                token_client.balance(&env.current_contract_address()),
+                amount,
+            )
+        })?;
+
+        token_client.transfer(&env.current_contract_address(), &beneficiary, &amount);
 
         ClaimedEvent {
             beneficiary,
@@ -296,6 +353,146 @@ impl Treasury {
     /// Read-only: the token this treasury vests.
     pub fn get_token(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Token)
+    }
+
+    // ── Diversified stablecoin yield (issue #466) ─────────────────────────
+
+    /// Admin-only: approve `strategy` to hold treasury tokens. Nothing can be
+    /// deployed to a strategy that is not whitelisted first.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotAuthorized`], or [`Error::StrategyAlreadyWhitelisted`].
+    pub fn whitelist_strategy(env: Env, strategy: Address) -> Result<(), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        strategies::whitelist(&env, strategy)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Admin-only: de-approve `strategy` and drop its allocation.
+    ///
+    /// Refused with [`Error::StrategyHasFunds`] while the strategy still holds
+    /// principal or is owed yield — recall it first, so the treasury never
+    /// loses the record of funds it can reclaim.
+    pub fn revoke_strategy(env: Env, strategy: Address) -> Result<(), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        strategies::revoke(&env, strategy)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Admin-only: replace the portfolio's weight set.
+    ///
+    /// `configs` must be non-empty, at most
+    /// [`strategies::MAX_STRATEGIES`] long, free of duplicates and zero
+    /// weights, and its `weight_bps` must sum to exactly
+    /// [`strategies::TOTAL_WEIGHT_BPS`] (100%). Every strategy must already be
+    /// whitelisted.
+    /// Bookkeeping for a retained strategy is preserved; only its weight
+    /// changes. A strategy dropped from the set must hold no funds.
+    ///
+    /// Returns the resulting allocations.
+    pub fn set_allocations(
+        env: Env,
+        configs: soroban_sdk::Vec<AllocationConfig>,
+    ) -> Result<soroban_sdk::Vec<StrategyAllocation>, Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        let stored = strategies::set_allocations(&env, configs)?;
+        extend_instance_ttl_default(&env);
+        Ok(stored)
+    }
+
+    /// Admin-only: set the share of the treasury balance that must stay liquid,
+    /// in basis points. `10_000` keeps everything liquid (the default), `0`
+    /// allows the whole balance to be deployed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidReserve`] above 100%.
+    pub fn set_reserve_bps(env: Env, reserve_bps: u32) -> Result<(), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        strategies::set_reserve_bps(&env, reserve_bps)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Admin-only: rotate the portfolio onto the current weights.
+    ///
+    /// Every strategy is recalled first (bringing principal and yield home),
+    /// then the treasury's balance — minus the liquid reserve — is split by
+    /// weight and redeployed. Because the recall comes first, a rebalance
+    /// doubles as the emergency exit: with the reserve at 100% it returns the
+    /// entire portfolio to cash. Returns the total principal now deployed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidAllocations`] if no weights are set, or any error a
+    /// strategy call raises (e.g. [`Error::StrategyUnderpaid`]).
+    pub fn rebalance_portfolio(env: Env) -> Result<i128, Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        let deployed = strategies::with_lock(&env, || strategies::rebalance(&env))?;
+        extend_instance_ttl_default(&env);
+        Ok(deployed)
+    }
+
+    /// Admin-only: recall `principal` from `strategy`, returning
+    /// `(principal_returned, yield_returned)`. The yield stays liquid in the
+    /// treasury (and is booked against the strategy) until the next rebalance.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::StrategyNotWhitelisted`] / [`Error::StrategyNotAllocated`];
+    /// - [`Error::NothingToRecall`] if nothing is deployed there;
+    /// - [`Error::RecallExceedsDeployed`] if `principal` is larger than the
+    ///   deployed principal.
+    pub fn recall_strategy(
+        env: Env,
+        strategy: Address,
+        principal: i128,
+    ) -> Result<(i128, i128), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        let recalled = strategies::with_lock(&env, || {
+            strategies::recall_strategy(&env, strategy, principal)
+        })?;
+        extend_instance_ttl_default(&env);
+        Ok(recalled)
+    }
+
+    /// Read-only: every allocation, in governance-supplied order.
+    pub fn get_allocations(env: Env) -> soroban_sdk::Vec<StrategyAllocation> {
+        strategies::allocations(&env)
+    }
+
+    /// Read-only: one strategy's allocation, if it has one.
+    pub fn get_allocation(env: Env, strategy: Address) -> Option<StrategyAllocation> {
+        strategies::allocation(&env, &strategy)
+    }
+
+    /// Read-only: whether `strategy` is approved to hold treasury tokens.
+    pub fn is_strategy_whitelisted(env: Env, strategy: Address) -> bool {
+        strategies::is_whitelisted(&env, &strategy)
+    }
+
+    /// Read-only: the liquid-reserve policy, in basis points.
+    pub fn get_reserve_bps(env: Env) -> u32 {
+        strategies::reserve_bps(&env)
+    }
+
+    /// Read-only: total principal currently deployed across all strategies.
+    pub fn get_deployed_total(env: Env) -> i128 {
+        strategies::deployed_total(&env)
+    }
+
+    /// Read-only: total yield recalled from all strategies, cumulatively.
+    pub fn get_yield_earned(env: Env) -> i128 {
+        strategies::yield_earned_total(&env)
     }
 }
 
@@ -334,10 +531,11 @@ fn load_schedule(env: &Env, beneficiary: &Address) -> Result<VestingSchedule, Er
         .ok_or(Error::ScheduleNotFound)
 }
 
-/// Keep a schedule entry alive using the shared TTL policy. A vesting schedule
-/// is long-lived, so both creation and every successful claim bump the entry
-/// (see [`accensa_common::storage`] for the policy values).
-fn bump_schedule_ttl(env: &Env, key: &DataKey) {
+/// Keep a long-lived persistent entry alive using the shared TTL policy. Both
+/// vesting schedules and strategy allocations are long-lived, so creation and
+/// every successful state change bump the entry (see
+/// [`accensa_common::storage`] for the policy values).
+pub(crate) fn bump_ttl(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, DEFAULT_TTL_LOW_WATER, DEFAULT_TTL_BUMP);
