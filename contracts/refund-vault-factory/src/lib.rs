@@ -34,6 +34,8 @@ pub(crate) const KEY_VAULTS: Symbol = symbol_short!("vaults");
 pub(crate) const KEY_NEXT_SALT: Symbol = symbol_short!("nsalt");
 pub(crate) const KEY_INITED: Symbol = symbol_short!("inited");
 
+mod deploy;
+
 /// Emitted with the merchant as a topic when `deploy_vault` mints a new vault
 /// instance.
 #[contractevent]
@@ -245,6 +247,31 @@ impl RefundVaultFactory {
         env.deployer()
             .with_current_contract(salt)
             .deployed_address()
+    }
+
+    /// Deploys a vault for an escrow between `init.merchant` and `buyer`
+    /// (CREATE2-style, issue #472). The salt is derived from the two
+    /// participants, so the deployment address is a pure function of
+    /// `(factory, buyer, merchant)` and can be predicted with
+    /// [`Self::predict_address`] before deploying.
+    pub fn deploy_for_participants(
+        env: Env,
+        init: VaultInit,
+        buyer: Address,
+    ) -> Result<Address, Error> {
+        let salt = deploy::participant_salt(&env, &buyer, &init.merchant);
+        Self::create_vault(env, init, Some(salt))
+    }
+
+    /// Read-only: the deterministic vault address for an escrow between
+    /// `buyer` and `merchant` (issue #472), before the factory deploys it.
+    ///
+    /// Identical to `compute_vault_address(participant_salt(buyer, merchant))`
+    /// and to the address `deploy_for_participants` will land on — so the two
+    /// parties can agree on an escrow address off-chain and pre-fund it, and
+    /// the factory will mint the vault there.
+    pub fn predict_address(env: Env, buyer: Address, merchant: Address) -> Address {
+        deploy::predict_address(&env, &buyer, &merchant)
     }
 }
 

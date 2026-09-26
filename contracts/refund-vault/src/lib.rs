@@ -146,6 +146,11 @@ pub enum DataKey {
     /// Treasury receiving swept dust (issue #427). Falls back to the fee
     /// recipient when unset.
     DustTreasury,
+    /// Escrow record for an NFT held by the vault (issue #474). Keyed by the
+    /// exact `(nft_contract, token_id)` pair so the released asset is always
+    /// the deposited one; the value is the escrow's parties
+    /// ([`nft_escrow::NftEscrowRecord`]).
+    NftEscrow(Address, u128),
     /// Whitelist flag for a yield strategy (issue #415). Only approved
     /// strategies can be registered or receive deployments. Persistent.
     ApprovedStrategy(Address),
@@ -461,6 +466,7 @@ pub struct CommitRevealedEvent {
 }
 
 pub mod dust;
+pub mod nft_escrow;
 pub mod oracle;
 pub mod settlement;
 
@@ -1094,6 +1100,54 @@ impl RefundVault {
         env.storage().instance().set(&DataKey::Token, &new_token);
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// Escrow a Soroban NFT into the vault alongside the fungible float
+    /// (issue #474). `merchant` (the vault admin) deposits `token_id` from
+    /// `nft_contract` and binds it to `buyer`; only `buyer` may later redeem
+    /// it via [`Self::refund_nft`], and only `merchant` may reclaim it via
+    /// [`Self::claim_nft`].
+    pub fn deposit_nft(
+        env: Env,
+        merchant: Address,
+        buyer: Address,
+        nft_contract: Address,
+        token_id: u128,
+    ) -> Result<(), Error> {
+        nft_escrow::deposit(&env, &merchant, &buyer, &nft_contract, token_id)
+    }
+
+    /// Reclaim an escrowed NFT (cancellation / return). Callable only by the
+    /// merchant who escrowed it. Returns the exact `token_id` released, so
+    /// the returned asset is always the deposited one (issue #474).
+    pub fn claim_nft(
+        env: Env,
+        merchant: Address,
+        nft_contract: Address,
+        token_id: u128,
+    ) -> Result<u128, Error> {
+        nft_escrow::claim(&env, &merchant, &nft_contract, token_id)
+    }
+
+    /// Refund an escrowed NFT to the buyer it was escrowed for. Callable only
+    /// by that buyer. Returns the exact `token_id` released (issue #474).
+    pub fn refund_nft(
+        env: Env,
+        buyer: Address,
+        nft_contract: Address,
+        token_id: u128,
+    ) -> Result<u128, Error> {
+        nft_escrow::refund(&env, &buyer, &nft_contract, token_id)
+    }
+
+    /// Read-only: the escrow record for `(nft_contract, token_id)`, or
+    /// `None` if that NFT is not escrowed.
+    pub fn get_nft_escrow(
+        env: Env,
+        nft_contract: Address,
+        token_id: u128,
+    ) -> Option<nft_escrow::NftEscrowRecord> {
+        nft_escrow::get(&env, &nft_contract, token_id)
     }
 
     /// Refund part (or all) of an original payment.

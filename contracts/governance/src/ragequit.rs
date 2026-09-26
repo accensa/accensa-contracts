@@ -219,6 +219,40 @@ mod tests {
         pub fn noop(_env: Env) {}
     }
 
+    /// Governed treasury: `set_treasury_token` authorizes via the governance
+    /// address (the caller inside `Governance::execute`), mirroring how
+    /// `ReceiptAnchor` accepts a contract address as merchant admin.
+    #[contract]
+    struct GovernedTreasury;
+
+    #[contractimpl]
+    impl GovernedTreasury {
+        pub fn init(env: Env, governance: Address) {
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "governance"), &governance);
+        }
+
+        pub fn set_treasury_token(env: Env, token: Address) {
+            let governance: Address = env
+                .storage()
+                .instance()
+                .get(&Symbol::new(&env, "governance"))
+                .unwrap();
+            governance.require_auth();
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "treasury_token"), &token);
+        }
+
+        pub fn get_treasury_token(env: Env) -> Address {
+            env.storage()
+                .instance()
+                .get(&Symbol::new(&env, "treasury_token"))
+                .unwrap()
+        }
+    }
+
     struct Harness {
         env: Env,
         gov: GovernanceClient<'static>,
@@ -412,22 +446,27 @@ mod tests {
         let gov_id = env.register(Governance, (members, deposits, 10_000u32, 100u32));
         let gov = GovernanceClient::new(&env, &gov_id);
 
+        let treasury_id = env.register(GovernedTreasury, ());
+        let treasury = GovernedTreasuryClient::new(&env, &treasury_id);
+        treasury.init(&gov_id);
+
         let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
         let token = sac.address();
 
-        // The governance contract calls *itself*: `execute`'s nested call
-        // satisfies `current_contract_address().require_auth()`.
+        // `execute` calls the governed contract, whose `set_treasury_token`
+        // requires authentication from the governance address (the direct
+        // caller) — the same convention `ReceiptAnchor` relies on.
         let args = Vec::from_array(&env, [token.into_val(&env)]);
         let id = gov.propose(
             &m1,
-            &gov_id,
+            &treasury_id,
             &Symbol::new(&env, "set_treasury_token"),
             &args,
         );
         gov.vote(&m1, &id, &true);
         gov.execute(&id);
 
-        assert_eq!(gov.get_treasury_token(), Some(token));
+        assert_eq!(treasury.get_treasury_token(), token);
     }
 
     #[test]
