@@ -13,8 +13,18 @@
 //!
 //! Statelessness: configuration arrives as the `params` blob of a
 //! [`accensa_common::PolicyEntry`] (an [`accensa_common::VdfPolicyParams`]
-//! XDR blob) and the claim facts as [`accensa_common::PolicyContext`]. It
-//! keeps no storage and must not call back into the vault.
+//! XDR blob) and the claim facts as [`accensa_common::PolicyContext`].
+//! `evaluate` keeps no storage and must not call back into the vault.
+//!
+//! # Statefulness
+//!
+//! The one exception to the stateless rule is the optional randomness registry
+//! in [`vrf`] (issue #429): [`VdfPolicy::generate_randomness`] verifies a
+//! Wesolowski proof and records the derived 256-bit seed under
+//! `DataKey::Randomness(vdf_id)` so consumer contracts can read it
+//! deterministically. That entry point is the *only* stateful surface here;
+//! it writes one persistent record (with its TTL extended) and never touches
+//! the vault.
 
 #![no_std]
 
@@ -23,6 +33,8 @@ use soroban_sdk::{contract, contractimpl, xdr::FromXdr, Bytes, Env};
 
 mod vdf;
 use vdf::verify_vdf;
+
+pub mod vrf;
 
 #[contract]
 pub struct VdfPolicy;

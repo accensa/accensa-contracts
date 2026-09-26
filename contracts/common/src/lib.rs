@@ -182,6 +182,14 @@ pub enum Error {
     /// The active yield strategy still holds deployed principal, so it cannot
     /// be replaced or revoked until that principal is recalled (issue #415).
     StrategyHasPrincipal = 323,
+    /// No verified randomness seed is recorded for the requested VDF
+    /// identifier (issue #429).
+    RandomnessNotFound = 324,
+    /// A merchant fee ladder was rejected: empty, longer than the vault's
+    /// `MAX_TIERS`, not starting at a `0` threshold, not strictly increasing,
+    /// or carrying a fee above `10_000` basis points (merchant tier
+    /// promotion).
+    InvalidTierLadder = 325,
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }
@@ -287,6 +295,7 @@ pub mod audit;
 pub mod blacklist;
 pub mod constant_time;
 pub mod events;
+pub mod keys;
 pub mod math;
 pub mod nonce;
 pub mod storage;

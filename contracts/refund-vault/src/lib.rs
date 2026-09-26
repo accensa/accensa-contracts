@@ -153,6 +153,15 @@ pub enum DataKey {
     /// rebate pool (issue #415). Falls back to the merchant when unset.
     /// Persistent.
     YieldRecipient,
+    /// The merchant's fee ladder: a strictly increasing `Vec<MerchantTier>`.
+    /// Instance storage. Absent until the merchant installs one, in which case
+    /// the flat [`DataKey::FeeBps`] rate applies unchanged.
+    TierLadder,
+    /// The merchant's cached position on the fee ladder. Instance storage;
+    /// mirrors the active rung's fee and the next promotion threshold so the
+    /// claim hot path reads one small value instead of decoding the whole
+    /// ladder on every claim. See `tiers`.
+    TierState,
 }
 
 #[contracttype]
@@ -467,6 +476,8 @@ pub mod settlement;
 pub mod strategy;
 pub use strategy::{YieldStrategy, YieldStrategyClient};
 
+pub mod tiers;
+
 /// Approximately 30 days of ledgers, assuming ~5 seconds per ledger.
 /// 60 * 60 * 24 * 30 / 5 = 518,400.
 /// This ensures refund records survive long-term audit use before requiring a TTL bump or restoration.
@@ -665,6 +676,10 @@ struct PolicyCache {
     vdf_policy_contract: Option<Address>,
     token_addr: Address,
     fee_bps: u32,
+    /// Whether a merchant fee ladder is installed. When `false` the claim path
+    /// skips tier bookkeeping entirely, so a vault with no ladder pays nothing
+    /// per claim for the tier feature.
+    tiers_active: bool,
 }
 
 /// Read all policy-level instance-storage keys once and return a
@@ -676,6 +691,21 @@ struct PolicyCache {
 /// their use sites, so `PolicyContractsNotConfigured` is still raised only
 /// when the corresponding gate is actually active.
 fn read_policy_cache(env: &Env) -> PolicyCache {
+    // Resolve the merchant fee ladder once. The effective fee and the
+    // "is a ladder installed?" flag come from the same tier-state read, so a
+    // vault without tiers pays one instance load per entry point — and nothing
+    // per claim, since `claim_single` skips tier bookkeeping when there is no
+    // ladder. With no ladder the flat `FeeBps` config applies, exactly as
+    // before. Sharing the resolved fee across a batch also makes promotion
+    // deterministic within a call: a rung crossed by claim N takes effect from
+    // claim N+1 on.
+    let tier_state = tiers::state(env);
+    let fee_bps = match &tier_state {
+        Some(state) => state.fee_bps,
+        None => env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0),
+    };
+    let tiers_active = tier_state.is_some();
+
     PolicyCache {
         refund_window: env
             .storage()
@@ -696,7 +726,8 @@ fn read_policy_cache(env: &Env) -> PolicyCache {
             .unwrap_or(0),
         vdf_policy_contract: env.storage().instance().get(&DataKey::VdfPolicyContract),
         token_addr: env.storage().instance().get(&DataKey::Token).unwrap(),
-        fee_bps: env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0),
+        fee_bps,
+        tiers_active,
     }
 }
 
@@ -918,6 +949,15 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
         nonce,
     }
     .publish(env);
+
+    // Merchant tier promotion: accrue the gross volume this claim settled and
+    // promote the merchant if it crossed the next rung. This runs only after
+    // the transfers and record write succeeded, so a claim that fails any gate
+    // above never counts toward a promotion. Skipped entirely when the vault
+    // has no ladder, so an untiered vault pays nothing extra per claim.
+    if cache.tiers_active {
+        tiers::on_settled(env, claim.amount);
+    }
 
     Ok(())
 }
@@ -2583,6 +2623,8 @@ mod strategy_tests;
 mod test;
 #[cfg(test)]
 mod test_helpers;
+#[cfg(test)]
+mod tier_tests;
 mod token_agnostic_tests;
 mod yield_tests;
 

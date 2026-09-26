@@ -9,7 +9,13 @@ use crypto_bigint::{
     modular::runtime_mod::{DynResidue, DynResidueParams},
     Encoding, NonZero, U1024,
 };
-use soroban_sdk::{testutils::EnvTestConfig, xdr::ToXdr, Bytes, BytesN, Env};
+use crate::vrf::RandomnessRecord;
+use crate::VdfPolicyClient;
+use soroban_sdk::{
+    testutils::{EnvTestConfig, Events},
+    xdr::ToXdr,
+    Bytes, BytesN, Env,
+};
 
 fn test_env() -> Env {
     let env = Env::new_with_config(EnvTestConfig {
@@ -252,6 +258,128 @@ fn test_verify_vdf_direct_rejects_degenerate_challenges() {
             "degenerate challenge must be rejected"
         );
     }
+}
+
+// ── Verifiable randomness (issue #429) ────────────────────────────────────
+
+fn vrf_id(env: &Env, slot: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[slot; 32])
+}
+
+fn register_vrf(env: &Env) -> VdfPolicyClient<'_> {
+    let id = env.register(VdfPolicy, ());
+    VdfPolicyClient::new(env, &id)
+}
+
+/// Recompute the seed exactly as the contract documents it:
+/// `sha256(output || vdf_id || delay_be)`.
+fn expected_seed(env: &Env, vdf_id: &BytesN<32>, output: &[u8; 128], delay: u32) -> BytesN<32> {
+    let mut buf = [0u8; 164];
+    buf[..128].copy_from_slice(output);
+    buf[128..160].copy_from_slice(&vdf_id.to_array());
+    buf[160..164].copy_from_slice(&delay.to_be_bytes());
+    env.crypto().sha256(&Bytes::from_slice(env, &buf))
+}
+
+#[test]
+fn test_generate_randomness_is_deterministic_from_transcript() {
+    let env = test_env();
+    let client = register_vrf(&env);
+    let vid = vrf_id(&env, 1);
+    let challenge = challenge_for(&env, &vid);
+    let (output, witness) = eval_vdf(&env, &challenge, 64);
+
+    let seed = client.generate_randomness(&vid, &64, &pack(&env, &output, &witness));
+    assert_eq!(seed, expected_seed(&env, &vid, &output, 64));
+
+    // Read paths agree with the derived value and are stable.
+    assert_eq!(client.get_verified_randomness(&vid), seed);
+    assert!(client.has_randomness(&vid));
+    let record: RandomnessRecord = client.get_randomness_record(&vid).unwrap();
+    assert_eq!(record.seed, seed);
+    assert_eq!(record.delay, 64);
+    assert_eq!(record.vdf_id, vid);
+}
+
+#[test]
+fn test_get_verified_randomness_missing_is_not_found() {
+    let env = test_env();
+    let client = register_vrf(&env);
+    let vid = vrf_id(&env, 2);
+    assert_eq!(
+        client.try_get_verified_randomness(&vid),
+        Err(Ok(Error::RandomnessNotFound))
+    );
+    assert!(!client.has_randomness(&vid));
+    assert!(client.get_randomness_record(&vid).is_none());
+}
+
+#[test]
+fn test_generate_randomness_rejects_tampered_proof_and_stores_nothing() {
+    let env = test_env();
+    let client = register_vrf(&env);
+    let vid = vrf_id(&env, 3);
+    let challenge = challenge_for(&env, &vid);
+    let (mut output, witness) = eval_vdf(&env, &challenge, 64);
+    output[127] ^= 0x01;
+
+    assert_eq!(
+        client.try_generate_randomness(&vid, &64, &pack(&env, &output, &witness)),
+        Err(Ok(Error::InvalidVdfProof))
+    );
+    assert!(
+        !client.has_randomness(&vid),
+        "a rejected proof must not record a seed"
+    );
+}
+
+#[test]
+fn test_randomness_is_bound_to_the_vdf_identifier() {
+    let env = test_env();
+    let client = register_vrf(&env);
+    let id_a = vrf_id(&env, 1);
+    let id_b = vrf_id(&env, 2);
+    let challenge_a = challenge_for(&env, &id_a);
+    let (output, witness) = eval_vdf(&env, &challenge_a, 64);
+
+    // A proof minted for proposal A cannot seed proposal B.
+    assert_eq!(
+        client.try_generate_randomness(&id_b, &64, &pack(&env, &output, &witness)),
+        Err(Ok(Error::InvalidVdfProof))
+    );
+}
+
+#[test]
+fn test_generate_randomness_is_idempotent() {
+    let env = test_env();
+    let client = register_vrf(&env);
+    let vid = vrf_id(&env, 4);
+    let challenge = challenge_for(&env, &vid);
+    let (output, witness) = eval_vdf(&env, &challenge, 64);
+
+    let first = client.generate_randomness(&vid, &64, &pack(&env, &output, &witness));
+
+    // Even a later, tampered proof must not replace an already-recorded seed:
+    // the first verified witness wins, so consumers cannot be re-targeted.
+    let mut tampered = output;
+    tampered[127] ^= 0x01;
+    let second = client.generate_randomness(&vid, &64, &pack(&env, &tampered, &witness));
+    assert_eq!(first, second);
+}
+
+#[test]
+fn test_generate_randomness_emits_event() {
+    let env = test_env();
+    let client = register_vrf(&env);
+    let vid = vrf_id(&env, 5);
+    let challenge = challenge_for(&env, &vid);
+    let (output, witness) = eval_vdf(&env, &challenge, 64);
+
+    client.generate_randomness(&vid, &64, &pack(&env, &output, &witness));
+    assert!(
+        !env.events().all().is_empty(),
+        "RandomnessGenerated must be published"
+    );
 }
 
 // ── Budget ────────────────────────────────────────────────────────────────
