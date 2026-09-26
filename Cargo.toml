@@ -37,7 +37,7 @@ repository = "https://github.com/accensa/accensa-contracts"
 edition = "2021"
 
 [workspace.dependencies]
-soroban-sdk = "27.0.6"
+soroban-sdk = "28.0.0"
 accensa-common = { path = "contracts/common" }
 
 [workspace.lints.rust]
