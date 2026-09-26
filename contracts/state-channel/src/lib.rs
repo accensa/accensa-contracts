@@ -7,9 +7,15 @@ mod crypto_test;
 #[cfg(test)]
 mod delegation_test;
 #[cfg(test)]
+mod htlc_test;
+#[cfg(test)]
 mod multi_asset_test;
 #[cfg(test)]
+mod splice_test;
+#[cfg(test)]
 mod test;
+#[cfg(test)]
+mod watchtower_test;
 
 use accensa_common::{storage::extend_instance_ttl, Error};
 use close::MutualCloseState;
@@ -100,6 +106,14 @@ pub enum DataKey {
     /// Instance: the receiver's Ed25519 key for a channel, used to verify
     /// its half of a mutual close (issue #412).
     ReceiverPubkey(u64),
+    /// Persistent: a single HTLC hop on a channel (issue #458).
+    Htlc(u64, u64),
+    /// Persistent: number of HTLC hops ever added to a channel.
+    HtlcCount(u64),
+    /// Persistent: total escrow reserved by a channel's pending HTLCs.
+    HtlcReserved(u64),
+    /// Instance: a channel's watchtower bounty configuration (issue #459).
+    Bounty(u64),
 }
 
 /// Emitted when a channel is opened.
@@ -296,7 +310,12 @@ impl StateChannel {
 
         Self::verify_state_signature(&env, &channel, &state, &signature)?;
 
-        if state.balance < 0 || state.balance > channel.amount {
+        if state.balance < 0
+            || state
+                .balance
+                .checked_add(htlc::reserved(&env, channel_id))
+                .is_none_or(|committed| committed > channel.amount)
+        {
             return Err(Error::ExceedsPayment);
         }
         // The receiver's entitlement may only grow: a signed state that
@@ -351,7 +370,12 @@ impl StateChannel {
             &cert_signature,
         )?;
 
-        if state.balance < 0 || state.balance > channel.amount {
+        if state.balance < 0
+            || state
+                .balance
+                .checked_add(htlc::reserved(&env, channel_id))
+                .is_none_or(|committed| committed > channel.amount)
+        {
             return Err(Error::ExceedsPayment);
         }
         if state.balance < channel.balance {
@@ -401,7 +425,12 @@ impl StateChannel {
 
         Self::verify_state_signature(&env, &channel, &state, &signature)?;
 
-        if state.balance < 0 || state.balance > channel.amount {
+        if state.balance < 0
+            || state
+                .balance
+                .checked_add(htlc::reserved(&env, channel_id))
+                .is_none_or(|committed| committed > channel.amount)
+        {
             return Err(Error::ExceedsPayment);
         }
 
@@ -466,7 +495,12 @@ impl StateChannel {
             &cert_signature,
         )?;
 
-        if state.balance < 0 || state.balance > channel.amount {
+        if state.balance < 0
+            || state
+                .balance
+                .checked_add(htlc::reserved(&env, channel_id))
+                .is_none_or(|committed| committed > channel.amount)
+        {
             return Err(Error::ExceedsPayment);
         }
 
@@ -514,7 +548,12 @@ impl StateChannel {
 
         Self::verify_state_signature(&env, &channel, &state, &signature)?;
 
-        if state.balance < 0 || state.balance > channel.amount {
+        if state.balance < 0
+            || state
+                .balance
+                .checked_add(htlc::reserved(&env, channel_id))
+                .is_none_or(|committed| committed > channel.amount)
+        {
             return Err(Error::ExceedsPayment);
         }
         // Disputed state must not regress the recorded balance (issue #374).
@@ -565,7 +604,12 @@ impl StateChannel {
 
         Self::verify_state_signature(&env, &channel, &state, &signature)?;
 
-        if state.balance < 0 || state.balance > channel.amount {
+        if state.balance < 0
+            || state
+                .balance
+                .checked_add(htlc::reserved(&env, channel_id))
+                .is_none_or(|committed| committed > channel.amount)
+        {
             return Err(Error::ExceedsPayment);
         }
         // Counter-evidence must advance the balance, not regress it.
@@ -613,8 +657,12 @@ impl StateChannel {
             .get(&DataKey::Token)
             .ok_or(Error::NotInitialized)?;
 
-        let receiver_payout = channel.balance;
+        let gross_receiver_payout = channel.balance;
         let sender_refund = channel.amount - channel.balance;
+        // A successful watchtower defense is paid out of the receiver's
+        // recovery, never the sender's refund (issue #459).
+        let (watchtower_reward, receiver_payout, watchtower_addr) =
+            watchtower::take_reward(&env, channel_id, gross_receiver_payout)?;
 
         let contract_addr = env.current_contract_address();
         let tok = soroban_sdk::token::Client::new(&env, &token);
@@ -623,6 +671,11 @@ impl StateChannel {
         }
         if sender_refund > 0 {
             tok.transfer(&contract_addr, &channel.sender, &sender_refund);
+        }
+        if watchtower_reward > 0 {
+            if let Some(watchtower) = watchtower_addr {
+                tok.transfer(&contract_addr, &watchtower, &watchtower_reward);
+            }
         }
 
         channel.phase = ChannelPhase::Finalized;
@@ -864,6 +917,104 @@ impl StateChannel {
         multi_asset::get(&env, channel_id)
     }
 
+    // ── Virtual multi-hop HTLCs (issue #458) ─────────────────────────────
+
+    /// Lock `amount` of the channel's free escrow against `hash_lock`,
+    /// expiring at `timeout_ledger`. `parent` optionally links this hop to an
+    /// upstream hop that must expire strictly later. Returns the new
+    /// `htlc_id`. Sender-authorized. See [`htlc`].
+    pub fn add_htlc(
+        env: Env,
+        channel_id: u64,
+        hash_lock: BytesN<32>,
+        amount: i128,
+        timeout_ledger: u32,
+        parent: Option<htlc::HtlcRef>,
+    ) -> Result<u64, Error> {
+        htlc::add(&env, channel_id, hash_lock, amount, timeout_ledger, parent)
+    }
+
+    /// Resolve a pending hop with `preimage`, crediting the receiver's
+    /// balance. Permissionless. See [`htlc`].
+    pub fn resolve_htlc(
+        env: Env,
+        channel_id: u64,
+        htlc_id: u64,
+        preimage: Bytes,
+    ) -> Result<(), Error> {
+        htlc::resolve(&env, channel_id, htlc_id, preimage)
+    }
+
+    /// Refund a timed-out hop back to the sender's free escrow.
+    /// Permissionless once `timeout_ledger` has passed. See [`htlc`].
+    pub fn refund_htlc(env: Env, channel_id: u64, htlc_id: u64) -> Result<(), Error> {
+        htlc::refund(&env, channel_id, htlc_id)
+    }
+
+    /// Read a single HTLC hop.
+    pub fn get_htlc(env: Env, channel_id: u64, htlc_id: u64) -> Result<htlc::Htlc, Error> {
+        htlc::get(&env, channel_id, htlc_id)
+    }
+
+    /// Read-only: total escrow currently reserved by a channel's pending
+    /// HTLCs.
+    pub fn get_htlc_reserved(env: Env, channel_id: u64) -> i128 {
+        htlc::reserved(&env, channel_id)
+    }
+
+    // ── Channel splicing (issue #460) ────────────────────────────────────
+
+    /// Add `amount` of new funds to an open channel's capacity. Requires both
+    /// the sender's and the receiver's authorization. See [`splice`].
+    pub fn splice_in(env: Env, channel_id: u64, amount: i128) -> Result<(), Error> {
+        splice::splice_in(&env, channel_id, amount)
+    }
+
+    /// Withdraw `amount` of the sender's free escrow from an open channel.
+    /// Requires both the sender's and the receiver's authorization.
+    /// See [`splice`].
+    pub fn splice_out(env: Env, channel_id: u64, amount: i128) -> Result<(), Error> {
+        splice::splice_out(&env, channel_id, amount)
+    }
+
+    /// Read-only: the sender's uncommitted escrow (capacity minus the
+    /// receiver's balance and any pending HTLC reservations).
+    pub fn get_channel_free_balance(env: Env, channel_id: u64) -> Result<i128, Error> {
+        let channel = Self::get_channel_internal(&env, channel_id)?;
+        splice::free_balance(&env, channel_id, &channel)
+    }
+
+    // ── Watchtower reward bounties (issue #459) ──────────────────────────
+
+    /// Configure the bounty paid to a watchtower for a successful
+    /// counter-proof on `channel_id`. Receiver-authorized; capped at
+    /// [`watchtower::MAX_REWARD_BPS`]. See [`watchtower`].
+    pub fn set_watchtower_bounty(env: Env, channel_id: u64, reward_bps: u32) -> Result<(), Error> {
+        watchtower::set_bounty(&env, channel_id, reward_bps)
+    }
+
+    /// Read-only: the configured watchtower reward for `channel_id`, in basis
+    /// points (`0` if unset).
+    pub fn get_watchtower_bounty(env: Env, channel_id: u64) -> u32 {
+        watchtower::reward_bps(&env, channel_id)
+    }
+
+    /// Submit sender-signed counter-evidence during an active dispute *as a
+    /// watchtower*, recording `watchtower` as the channel's defender so it is
+    /// paid the configured bounty at settlement. See [`watchtower`].
+    pub fn watchtower_counter_evidence(
+        env: Env,
+        channel_id: u64,
+        state: StateUpdate,
+        signature: BytesN<64>,
+        watchtower: Address,
+    ) -> Result<(), Error> {
+        watchtower.require_auth();
+        Self::submit_counter_evidence(env.clone(), channel_id, state, signature)?;
+        watchtower::record(&env, channel_id, watchtower);
+        Ok(())
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────
 
     fn get_channel_internal(env: &Env, channel_id: u64) -> Result<Channel, Error> {
@@ -932,8 +1083,11 @@ pub mod crypto;
 pub mod delegation;
 pub mod dispute;
 pub mod epoch;
+pub mod htlc;
 pub mod multi_asset;
 pub mod nonce;
+pub mod splice;
+pub mod watchtower;
 
 pub use delegation::DelegationCertificate;
 
