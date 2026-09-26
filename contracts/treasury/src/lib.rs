@@ -32,6 +32,9 @@
 //! Administered by a single admin address that creates schedules. There is no
 //! revoke path in this MVP: changing or clawing back a live allocation is a
 //! governance decision that this contract deliberately does not encode.
+//!
+//! The contract also hosts the protocol's governance-token **buyback and
+//! burn** hook (issue #465): see [`buyback`].
 
 #![no_std]
 
@@ -43,6 +46,9 @@ use soroban_sdk::{
     Address, Env,
 };
 
+pub mod buyback;
+#[cfg(test)]
+mod buyback_test;
 pub mod liquidation;
 #[cfg(test)]
 mod liquidation_test;
@@ -84,6 +90,8 @@ pub enum DataKey {
     ReserveBps,
     /// Reentrancy guard held across a strategy call (#466).
     ReentrancyLock,
+    /// The governance-token buyback configuration (issue #465).
+    BuybackConfig,
     /// The primary stablecoin liquidated fees are swapped into (#444).
     StableToken,
     /// The admin-approved AMM used for fee liquidation (#444).
@@ -139,6 +147,16 @@ pub enum Error {
     NothingToDeploy = 18,
     /// The liquid reserve was set above 100% (issue #466).
     InvalidReserve = 19,
+    /// A buyback ran before the admin configured it (`execute_buyback`, #465).
+    BuybackNotConfigured = 20,
+    /// The requested buyback is smaller than the configured minimum.
+    BelowBuybackThreshold = 21,
+    /// The DEX returned less than the caller's slippage floor.
+    SlippageExceeded = 22,
+    /// The buyback configuration parameters were invalid.
+    InvalidBuybackConfig = 23,
+    /// The treasury does not hold enough of the fee token to run the buyback.
+    InsufficientBuybackFloat = 24,
     /// Fee liquidation was requested before an AMM, stablecoin, or price feed
     /// was configured (issue #444).
     LiquidationNotConfigured = 20,
@@ -368,6 +386,43 @@ impl Treasury {
 
         extend_instance_ttl_default(&env);
         Ok(amount)
+    }
+
+    // ── Governance-token buyback & burn (issue #465) ─────────────────────
+
+    /// Admin-only: configure the buyback hook. `router` is a contract
+    /// implementing [`buyback::DexRouter`]; swaps of at least `min_amount_in`
+    /// fee tokens are routed through it and the governance tokens received are
+    /// sent to `burn_address`. See [`buyback`].
+    pub fn set_buyback_config(
+        env: Env,
+        fee_token: Address,
+        governance_token: Address,
+        router: Address,
+        burn_address: Address,
+        min_amount_in: i128,
+    ) -> Result<(), Error> {
+        buyback::set_config(
+            &env,
+            fee_token,
+            governance_token,
+            router,
+            burn_address,
+            min_amount_in,
+        )
+    }
+
+    /// Read-only: the configured buyback hook, if any.
+    pub fn get_buyback_config(env: Env) -> Option<buyback::BuybackConfig> {
+        buyback::config(&env)
+    }
+
+    /// Swap at least `min_amount_in` of the fee token for the governance token
+    /// through the configured DEX router and send the proceeds to the burn
+    /// address. `min_amount_out` is a slippage floor. Permissionless (keeper).
+    /// Returns the governance tokens burned. See [`buyback`].
+    pub fn execute_buyback(env: Env, amount_in: i128, min_amount_out: i128) -> Result<i128, Error> {
+        buyback::execute(&env, amount_in, min_amount_out)
     }
 
     /// Read-only: the admin that may create schedules.
@@ -612,7 +667,7 @@ fn init(env: &Env, admin: Address, token: Address) -> Result<(), Error> {
     Ok(())
 }
 
-fn require_initialized(env: &Env) -> Result<(), Error> {
+pub(crate) fn require_initialized(env: &Env) -> Result<(), Error> {
     if env.storage().instance().has(&DataKey::Admin) {
         Ok(())
     } else {
@@ -620,7 +675,7 @@ fn require_initialized(env: &Env) -> Result<(), Error> {
     }
 }
 
-fn require_admin(env: &Env) {
+pub(crate) fn require_admin(env: &Env) {
     let admin: Address = env
         .storage()
         .instance()
