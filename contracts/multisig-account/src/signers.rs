@@ -6,9 +6,16 @@
 //! Validates invariant: 1 <= new_threshold <= total_active_signers.
 //! Prevents duplicate public keys and zeroed addresses.
 //! Emits SignersRotated audit event.
+//!
+//! Rotation also maintains the issue #434 weighted bookkeeping: newly added
+//! signers receive [`DEFAULT_SIGNER_WEIGHT`](crate::weights::DEFAULT_SIGNER_WEIGHT)
+//! and are appended to the materialized signer list, removed signers are
+//! dropped from both, and the rotation is refused when the resulting aggregate
+//! signer weight would fall below `new_threshold`.
 
 use soroban_sdk::{contractevent, Address, Env, Vec};
 
+use crate::weights;
 use crate::DataKey;
 use crate::Error;
 
@@ -77,12 +84,57 @@ pub fn rotate_signers_and_threshold(
         .get(&DataKey::Threshold)
         .unwrap_or(1);
 
+    // Build the resulting signer set and its aggregate weight *before*
+    // writing anything, so a rejected rotation leaves storage untouched
+    // (returning `Err` does not roll back writes on its own).
+    let mut remaining = weights::signer_list(env);
+    let mut total = weights::total_weight(env);
+
     for addr in to_remove.iter() {
-        env.storage().persistent().remove(&DataKey::Signer(addr));
+        if !remaining.contains(&addr) {
+            return Err(Error::UnknownSigner);
+        }
+        total = total
+            .checked_sub(weights::signer_weight(env, &addr))
+            .ok_or(Error::TotalWeightBelowThreshold)?;
+        let mut kept = Vec::new(env);
+        for entry in remaining.iter() {
+            if entry != addr {
+                kept.push_back(entry);
+            }
+        }
+        remaining = kept;
+    }
+
+    for addr in to_add.iter() {
+        // Re-adding an existing signer would double-count its weight.
+        if remaining.contains(&addr) {
+            return Err(Error::SignerAlreadyRegistered);
+        }
+        remaining.push_back(addr.clone());
+        total = total
+            .checked_add(weights::DEFAULT_SIGNER_WEIGHT)
+            .ok_or(Error::TotalWeightBelowThreshold)?;
+    }
+
+    // Invariant: `total_signers_weight >= required_threshold`.
+    if total < new_threshold {
+        return Err(Error::TotalWeightBelowThreshold);
+    }
+
+    for addr in to_remove.iter() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Signer(addr.clone()));
+        weights::clear_signer_weight(env, &addr);
     }
     for addr in to_add.iter() {
-        env.storage().persistent().set(&DataKey::Signer(addr), &());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Signer(addr.clone()), &());
+        weights::store_signer_weight(env, &addr, weights::DEFAULT_SIGNER_WEIGHT);
     }
+    weights::store_signer_list(env, &remaining);
 
     env.storage()
         .instance()
