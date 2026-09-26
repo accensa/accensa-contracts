@@ -10,6 +10,7 @@ members = [
     "contracts/refund-policy-vdf",
     "contracts/refund-vault",
     "contracts/state-channel",
+    "contracts/stream-vault",
     "contracts/refund-vault-factory",
     "contracts/treasury",
     "contracts/testutils",
