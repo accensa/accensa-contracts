@@ -49,6 +49,9 @@ use soroban_sdk::{
 pub mod buyback;
 #[cfg(test)]
 mod buyback_test;
+pub mod liquidation;
+#[cfg(test)]
+mod liquidation_test;
 pub mod strategies;
 #[cfg(test)]
 mod strategies_test;
@@ -89,6 +92,12 @@ pub enum DataKey {
     ReentrancyLock,
     /// The governance-token buyback configuration (issue #465).
     BuybackConfig,
+    /// The primary stablecoin liquidated fees are swapped into (#444).
+    StableToken,
+    /// The admin-approved AMM used for fee liquidation (#444).
+    Amm,
+    /// The oracle price feed bounding liquidation slippage (#444).
+    PriceFeed,
 }
 
 /// Errors returned by [`Treasury`].
@@ -148,6 +157,22 @@ pub enum Error {
     InvalidBuybackConfig = 23,
     /// The treasury does not hold enough of the fee token to run the buyback.
     InsufficientBuybackFloat = 24,
+    /// Fee liquidation was requested before an AMM, stablecoin, or price feed
+    /// was configured (issue #444).
+    LiquidationNotConfigured = 20,
+    /// A liquidation request was malformed: a non-positive amount, a slippage
+    /// tolerance of 100% or more, or `token_in` equal to the stablecoin
+    /// (issue #444).
+    InvalidLiquidation = 21,
+    /// A swap delivered less than the oracle-derived minimum output
+    /// (issue #444).
+    SlippageExceeded = 22,
+    /// The treasury does not hold enough of the input token to liquidate
+    /// (issue #444).
+    InsufficientBalance = 23,
+    /// The price feed returned a non-positive or unusable price
+    /// (issue #444).
+    InvalidPrice = 24,
 }
 
 /// Emitted when the admin registers a beneficiary's allocation.
@@ -548,6 +573,86 @@ impl Treasury {
     /// Read-only: total yield recalled from all strategies, cumulatively.
     pub fn get_yield_earned(env: Env) -> i128 {
         strategies::yield_earned_total(&env)
+    }
+
+    // ── Automated fee liquidation (issue #444) ────────────────────────────
+
+    /// Admin-only: approve `amm` as the venue accumulated fee tokens are
+    /// swapped through. Until this, a stablecoin, and a price feed are all
+    /// set, [`Self::liquidate_fees`] fails closed with
+    /// [`Error::LiquidationNotConfigured`].
+    pub fn whitelist_amm(env: Env, amm: Address) -> Result<(), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        liquidation::whitelist_amm(&env, amm)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Admin-only: de-approve the AMM, disabling fee liquidation.
+    pub fn revoke_amm(env: Env) -> Result<(), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        liquidation::revoke_amm(&env)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Admin-only: set the primary stablecoin fee tokens are liquidated into.
+    pub fn set_stable_token(env: Env, token: Address) -> Result<(), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        liquidation::set_stable_token(&env, token)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Admin-only: set the oracle price feed that bounds liquidation slippage.
+    pub fn set_price_feed(env: Env, feed: Address) -> Result<(), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        liquidation::set_price_feed(&env, feed)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Admin-only: swap `amount_in` of `token_in` into the primary stablecoin
+    /// through the whitelisted AMM, with an oracle-derived minimum output.
+    /// Returns the stablecoin amount actually received.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LiquidationNotConfigured`], [`Error::InvalidLiquidation`],
+    /// [`Error::InsufficientBalance`], [`Error::InvalidPrice`], or
+    /// [`Error::SlippageExceeded`].
+    pub fn liquidate_fees(
+        env: Env,
+        token_in: Address,
+        amount_in: i128,
+        max_slippage_bps: u32,
+    ) -> Result<i128, Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        let received = strategies::with_lock(&env, || {
+            liquidation::liquidate_fees(&env, token_in, amount_in, max_slippage_bps)
+        })?;
+        extend_instance_ttl_default(&env);
+        Ok(received)
+    }
+
+    /// Read-only: the approved AMM, if any.
+    pub fn get_amm(env: Env) -> Option<Address> {
+        liquidation::amm(&env)
+    }
+
+    /// Read-only: the primary stablecoin, if configured.
+    pub fn get_stable_token(env: Env) -> Option<Address> {
+        liquidation::stable_token(&env)
+    }
+
+    /// Read-only: the liquidation price feed, if configured.
+    pub fn get_price_feed(env: Env) -> Option<Address> {
+        liquidation::price_feed(&env)
     }
 }
 

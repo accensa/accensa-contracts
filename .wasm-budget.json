@@ -8,6 +8,7 @@
   "multisig_account": 38000,
   "receipt_shard": 52500,
   "state_channel": 93000,
+  "multisig_account": 47000,
   "receipt_shard": 52000,
   "state_channel": 68000,
   "stream_vault": 38000,

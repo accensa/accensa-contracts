@@ -33,6 +33,36 @@ breaking changes bump the **minor** version, and they are called out as such.
   floor, and sends the proceeds to a configured burn address. Admin configures
   it once with `set_buyback_config`; anyone may trigger a swap with
   `execute_buyback` above the configured minimum size.
+- **`common` (issue #436): constant-time cryptographic comparison.** New
+  `constant_time_eq(a, b)` helper (`contracts/common/src/constant_time.rs`)
+  compares byte slices without short-circuiting: every byte and the length
+  difference are folded into one OR accumulator that is inspected exactly once
+  at the end, and `core::hint::black_box` stops the optimizer re-introducing the
+  early exit. Intended for MAC/token/digest equality where a shared-prefix
+  timing leak matters.
+- **`multisig-account` (issue #434): weight-based threshold voting.** Signers
+  now carry a `u32` weight (default `1`), and `__check_auth` admits a call when
+  the aggregate weight of the attached approvers reaches the threshold rather
+  than the raw signer count. Governance (the account's own threshold
+  authorization) updates a signer with `set_signer_weight`, adds/removes
+  weighted signers with `add_signer` / `remove_signer`, and every mutation
+  enforces the invariant `total_signers_weight >= threshold`.
+  `rotate_signers_and_threshold` keeps the weighted bookkeeping consistent and
+  refuses a rotation that would break that invariant.
+- **`upto-authorization` (issue #435): inactivity auto-cancellation.** New
+  `cancel_inactive_escrow(payment_id)` lets the buyer unilaterally release an
+  authorization that has gone unclaimed for the governance-set inactivity
+  window (`set_inactivity_timeout`, default ~30 days), zeroing the outstanding
+  allowance and deleting the record to reclaim its rent. Only the buyer's
+  authorization is required — never the facilitator's. Emits
+  `EscrowCancelledInactivity`.
+- **`treasury` (issue #444): automated AMM fee liquidation.** New `liquidation`
+  module (`contracts/treasury/src/liquidation.rs`) with abstracted `Amm` and
+  `PriceFeed` clients. Governance whitelists an AMM (`whitelist_amm`), sets the
+  primary stablecoin (`set_stable_token`) and price feed (`set_price_feed`);
+  `liquidate_fees(token_in, amount_in, max_slippage_bps)` derives a minimum
+  output from the oracle price, swaps through the AMM, and rejects any delivery
+  below that floor or below what the AMM reported.
 - **`common` (issue #463): standardized event emission for indexer subgraphs.**
   Defines canonical `[Protocol, Module, Action]` topic schema (`PROTOCOL = symbol_short!("accensa")`)
   and typed event payloads (`TransferEventPayload`, `RefundEventPayload`, `ChannelStatePayload`,

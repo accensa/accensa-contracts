@@ -18,6 +18,9 @@ pub struct AuthorizationRecord {
     /// Slippage the buyer tolerates above `cap`, in basis points. `0` keeps
     /// the strict `actual <= cap` rule.
     pub max_slippage_bps: u32,
+    /// Ledger at which the authorization was created (issue #435). Anchors
+    /// the dormancy window that `cancel_inactive_escrow` measures.
+    pub created_ledger: u32,
 }
 
 impl AuthorizationRecord {

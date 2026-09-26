@@ -84,7 +84,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Member"
+                    "symbol": "MemberDeposit"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -111,7 +111,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Member"
+                    "symbol": "MemberDeposit"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -138,7 +138,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Member"
+                    "symbol": "MemberDeposit"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -147,7 +147,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u64": "2"
+                "u64": "4"
               }
             }
           },
@@ -192,6 +192,18 @@
                       },
                       "val": {
                         "u32": 6000
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "TotalDeposits"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "6"
                       }
                     },
                     {
