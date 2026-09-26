@@ -9,36 +9,36 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
-- **`refund-policy-vdf` (issue #429): verifiable randomness from verified VDF
-  output.** New `vrf` module turns a verified Wesolowski proof into a 256-bit
-  randomness seed. `generate_randomness(vdf_id, delay, proof)` verifies the
-  proof against `challenge = sha256(vdf_id)`, derives the seed as
-  `sha256(output || vdf_id || delay)`, records it (persistent storage, TTL
-  extended) under `DataKey::Randomness(vdf_id)`, and emits
-  `RandomnessGenerated`. Derivation is deterministic and idempotent — the first
-  verified proof wins, so a consumer cannot be re-targeted — and the read paths
-  (`get_verified_randomness`, `has_randomness`, `get_randomness_record`) return
-  `Error::RandomnessNotFound` (324) until a seed has been recorded.
-- **`common` (issue #430): type-safe storage-key namespace partitioning.** New
-  `keys` module gives every contract a disjoint, compile-time-checked slice of
-  the storage key space: `KeyNamespace` partitions the `u64` key space into
-  `Vault` / `Admin` / `Auth` / `Oracle` / `Yield` blocks, `DataKey` tags each
-  module-local key with its owning namespace, and `DataKey::discriminant` folds
-  the two into one `u64`. `discriminants_are_distinct` is asserted in a
-  `const _` initializer, so two keys that alias the same `u64` fail `cargo
-  check` rather than silently sharing ledger entries after an upgrade.
-- **`refund-vault`: merchant fee tiers with volume-based promotion.** New
-  `tiers` module lets a merchant install a ladder of `MerchantTier` rungs
-  (`min_settled` volume → `fee_bps`). Every successful refund accrues its gross
-  amount into the merchant's settled volume; crossing a rung promotes the
-  merchant and emits `MerchantTierPromoted`, and the lower fee applies from the
-  next claim on (a claim is charged the tier it entered with, so a batch never
-  mixes rates). The ladder is optional and additive: without one the flat
-  `set_fee_bps` rate applies exactly as before, and `effective_fee_bps` is the
-  single resolution point shared by the claim path and `preview_settlement`.
-  A malformed ladder — empty, longer than `MAX_TIERS`, not starting at `0`, not
-  strictly increasing, or with a fee above `10_000` bps — is rejected with
-  `Error::InvalidTierLadder` (325).
+- **`common` (issue #436): constant-time cryptographic comparison.** New
+  `constant_time_eq(a, b)` helper (`contracts/common/src/constant_time.rs`)
+  compares byte slices without short-circuiting: every byte and the length
+  difference are folded into one OR accumulator that is inspected exactly once
+  at the end, and `core::hint::black_box` stops the optimizer re-introducing the
+  early exit. Intended for MAC/token/digest equality where a shared-prefix
+  timing leak matters.
+- **`multisig-account` (issue #434): weight-based threshold voting.** Signers
+  now carry a `u32` weight (default `1`), and `__check_auth` admits a call when
+  the aggregate weight of the attached approvers reaches the threshold rather
+  than the raw signer count. Governance (the account's own threshold
+  authorization) updates a signer with `set_signer_weight`, adds/removes
+  weighted signers with `add_signer` / `remove_signer`, and every mutation
+  enforces the invariant `total_signers_weight >= threshold`.
+  `rotate_signers_and_threshold` keeps the weighted bookkeeping consistent and
+  refuses a rotation that would break that invariant.
+- **`upto-authorization` (issue #435): inactivity auto-cancellation.** New
+  `cancel_inactive_escrow(payment_id)` lets the buyer unilaterally release an
+  authorization that has gone unclaimed for the governance-set inactivity
+  window (`set_inactivity_timeout`, default ~30 days), zeroing the outstanding
+  allowance and deleting the record to reclaim its rent. Only the buyer's
+  authorization is required — never the facilitator's. Emits
+  `EscrowCancelledInactivity`.
+- **`treasury` (issue #444): automated AMM fee liquidation.** New `liquidation`
+  module (`contracts/treasury/src/liquidation.rs`) with abstracted `Amm` and
+  `PriceFeed` clients. Governance whitelists an AMM (`whitelist_amm`), sets the
+  primary stablecoin (`set_stable_token`) and price feed (`set_price_feed`);
+  `liquidate_fees(token_in, amount_in, max_slippage_bps)` derives a minimum
+  output from the oracle price, swaps through the AMM, and rejects any delivery
+  below that floor or below what the AMM reported.
 - **`common` (issue #463): standardized event emission for indexer subgraphs.**
   Defines canonical `[Protocol, Module, Action]` topic schema (`PROTOCOL = symbol_short!("accensa")`)
   and typed event payloads (`TransferEventPayload`, `RefundEventPayload`, `ChannelStatePayload`,
