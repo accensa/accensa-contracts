@@ -43,6 +43,9 @@ use soroban_sdk::{
     Address, Env,
 };
 
+pub mod distribution;
+#[cfg(test)]
+mod distribution_test;
 pub mod liquidation;
 #[cfg(test)]
 mod liquidation_test;
@@ -90,6 +93,12 @@ pub enum DataKey {
     Amm,
     /// The oracle price feed bounding liquidation slippage (#444).
     PriceFeed,
+    /// The yield token distributed by the yield distribution module.
+    DistributionConfig,
+    /// The global yield distribution state (accumulator, totals).
+    DistributionState,
+    /// A user's yield distribution checkpoint and staking record.
+    UserDistribution(Address),
 }
 
 /// Errors returned by [`Treasury`].
@@ -155,6 +164,20 @@ pub enum Error {
     /// The price feed returned a non-positive or unusable price
     /// (issue #444).
     InvalidPrice = 24,
+    /// The yield distribution has not been initialized.
+    DistributionNotInitialized = 25,
+    /// The yield distribution is already initialized.
+    DistributionAlreadyInitialized = 26,
+    /// A zero-amount stake was requested.
+    NothingToStake = 27,
+    /// The user has nothing staked to unstake.
+    NothingToUnstake = 28,
+    /// The unstake amount exceeds the user's staked balance.
+    UnstakeExceedsStaked = 29,
+    /// A zero-amount yield distribution was requested.
+    NothingToDistribute = 30,
+    /// The user has no pending yield to claim.
+    NoYieldToClaim = 31,
 }
 
 /// Emitted when the admin registers a beneficiary's allocation.
@@ -598,6 +621,102 @@ impl Treasury {
     /// Read-only: the liquidation price feed, if configured.
     pub fn get_price_feed(env: Env) -> Option<Address> {
         liquidation::price_feed(&env)
+    }
+
+    // ── RageTrade-style treasury yield distribution ─────────────────────────
+
+    /// Admin-only: initialize the yield distribution with `token` as the
+    /// yield token. Must be called before any other distribution function.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DistributionAlreadyInitialized`].
+    pub fn initialize_distribution(env: Env, token: Address) -> Result<(), Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        distribution::initialize(&env, token)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Admin-only: distribute `amount` of yield tokens to stakers. The
+    /// accumulator is updated so each staked token's share is immediately
+    /// claimable. Returns the new accumulator value.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NothingToDistribute`] for a non-positive amount.
+    pub fn distribute_yield(env: Env, amount: i128) -> Result<i128, Error> {
+        require_initialized(&env)?;
+        require_admin(&env);
+        let accumulator = distribution::distribute_yield(&env, amount)?;
+        extend_instance_ttl_default(&env);
+        Ok(accumulator)
+    }
+
+    /// Stake `amount` of holding tokens to earn yield. Requires `user`'s
+    /// authorization.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NothingToStake`] for a non-positive amount.
+    pub fn stake(env: Env, user: Address, amount: i128) -> Result<(), Error> {
+        require_initialized(&env)?;
+        user.require_auth();
+        distribution::stake(&env, &user, amount)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Unstake `amount` of holding tokens. Requires `user`'s authorization.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NothingToUnstake`] for a non-positive amount or no stake;
+    /// [`Error::UnstakeExceedsStaked`] if `amount` exceeds the staked balance.
+    pub fn unstake(env: Env, user: Address, amount: i128) -> Result<(), Error> {
+        require_initialized(&env)?;
+        user.require_auth();
+        distribution::unstake(&env, &user, amount)?;
+        extend_instance_ttl_default(&env);
+        Ok(())
+    }
+
+    /// Claim accumulated yield. Requires `user`'s authorization. Returns the
+    /// amount claimed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NothingToClaim`] when there is no pending yield.
+    pub fn claim_yield(env: Env, user: Address) -> Result<i128, Error> {
+        require_initialized(&env)?;
+        user.require_auth();
+        let amount = distribution::claim_yield(&env, &user)?;
+        extend_instance_ttl_default(&env);
+        Ok(amount)
+    }
+
+    /// Read-only: pending yield for `user`, in yield-token smallest units.
+    pub fn pending_yield(env: Env, user: Address) -> Result<i128, Error> {
+        require_initialized(&env)?;
+        distribution::pending_yield(&env, &user)
+    }
+
+    /// Read-only: the current global accumulator value.
+    pub fn get_accumulator(env: Env) -> Result<i128, Error> {
+        require_initialized(&env)?;
+        distribution::accumulator(&env)
+    }
+
+    /// Read-only: the global distribution state.
+    pub fn get_distribution_state(env: Env) -> Result<distribution::DistributionState, Error> {
+        require_initialized(&env)?;
+        distribution::distribution_state(&env)
+    }
+
+    /// Read-only: a user's distribution state, if they have one.
+    pub fn get_user_distribution(env: Env, user: Address) -> Option<distribution::UserDistribution> {
+        distribution::get_user_distribution(&env, &user)
     }
 }
 
