@@ -139,7 +139,9 @@ impl RefundVault {
 
         let (previous_refunded, ceiling) =
             resolve_ceiling(&env, &payment_ref, amount, payment_amount)?;
-        let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
+        // Tier-aware: when the merchant has a fee ladder installed this is the
+        // active rung's rate, so the preview matches what `refund` will charge.
+        let fee_bps: u32 = crate::tiers::effective_fee_bps(&env);
         let (fee, recipient_amount) = split_amount(amount, fee_bps);
         let cumulative_refunded = previous_refunded + amount;
 

@@ -166,6 +166,11 @@ Holds merchant float and executes refunds bounded by an on-chain policy.
 | `set_fee_recipient(recipient)` | Sets the address that collects the refund fee; rejects the vault's own address. Merchant auth, emits `FeeConfigUpdatedEvent`. |
 | `get_fee_bps()` | Returns the configured fee rate in basis points (read-only). |
 | `get_fee_recipient()` | Returns the configured fee recipient, if any (read-only; falls back to the merchant at claim time). |
+| `set_tier_ladder(tiers)` | Installs (or replaces) the merchant fee ladder — a strictly increasing `Vec<MerchantTier>` (`min_settled` volume → `fee_bps`), first rung at volume `0`, at most `MAX_TIERS` (16) rungs. Merchant auth, emits `MerchantTierLadderUpdated`. While a ladder is installed it is the source of truth for the fee and overrides `set_fee_bps`. |
+| `clear_tier_ladder()` | Removes the ladder and its progress, restoring the flat `set_fee_bps` rate. Merchant auth. |
+| `get_tier_ladder() -> Option<Vec<MerchantTier>>` | Returns the installed fee ladder, if any (read-only). |
+| `get_tier_state() -> Option<MerchantTierState>` | Returns the merchant's settled refund volume, active rung, and next promotion threshold (read-only). |
+| `get_effective_fee_bps() -> u32` | Returns the fee the next claim will charge: the active tier's rate when a ladder is installed, otherwise `get_fee_bps()`. |
 | `get_refund(payment_ref) -> Option<RefundRecord>` | Looks up a refund. |
 | `get_user_nonce(caller) -> u64` | Returns the caller's current replay-protection nonce (issue #122) — the `nonce` the caller's next `refund`/`claim_batch`/`process_batch` call must supply. Starts at `0`; increments on every successful claim call. |
 | `set_time_policy_contract(address)` | Wires (or clears) the stateless time-policy contract the vault delegates its window/deadline gate to. Merchant auth. |
@@ -192,6 +197,22 @@ grows, and the `is_paused` distinction (missing admin ⇒ `NotInitialized`,
 initialized ⇒ `false`) could not be expressed faithfully in one struct anyway.
 The status quo is the supported way to read config; do not decode raw ledger
 entries by storage key (see issue #195).
+
+### Merchant fee tiers
+
+A merchant can be **promoted through a fee ladder** as the vault settles refund
+volume for them: `set_tier_ladder` installs a strictly increasing list of
+`MerchantTier` rungs (`min_settled` volume → `fee_bps`), the first of which must
+start at `0` so every merchant is always on some rung. Each successful refund
+accrues its gross amount into the merchant's settled volume; crossing a rung
+promotes the merchant and emits `MerchantTierPromoted`.
+
+The fee in force for a claim is resolved once at the start of the entry point
+and shared across a batch, so a rung crossed by claim *N* applies from claim
+*N + 1* on — never retroactively within the same call. Without a ladder the flat
+[`set_fee_bps`](#refund-vault) rate applies exactly as before, and the tier
+bookkeeping costs nothing beyond one cached instance-storage read. An invalid
+ladder is rejected with `Error::InvalidTierLadder` (325).
 
 Emits:
 
@@ -309,16 +330,26 @@ deployment and configuration steps.
 
 ### `RefundPolicy` (time and VDF)
 
-Stateless policy contracts that evaluate a single claim and return `Ok(())` or
-an error — kept outside the vault so per-vault storage and upgrade surface stay
-small, and so operators can adjust claim gating for every vault at once by
-repointing the factory default.
+Policy contracts that evaluate a single claim and return `Ok(())` or an error —
+kept outside the vault so per-vault storage and upgrade surface stay small, and
+so operators can adjust claim gating for every vault at once by repointing the
+factory default. Claim evaluation is stateless; the one stateful surface is
+`VdfPolicy`'s optional randomness registry (issue #429), described below.
 
 - **`TimePolicy`** (`contracts/refund-policy-time`): rejects a claim outside
   the configured refund window or past the configured wall-clock deadline.
 - **`VdfPolicy`** (`contracts/refund-policy-vdf`): requires a valid Wesolowski
   VDF proof bound to the payment (`challenge = sha256(payment_ref)`), enforcing
-  a *computational* delay a validator cannot shorten.
+  a *computational* delay a validator cannot shorten. It also exposes a
+  **verifiable-randomness registry** (issue #429) built on the same verifier:
+  `generate_randomness(vdf_id, delay, proof)` verifies a proof against
+  `sha256(vdf_id)` and records the 256-bit seed
+  `sha256(output || vdf_id || delay)` under `DataKey::Randomness(vdf_id)`, which
+  `get_verified_randomness` / `has_randomness` / `get_randomness_record` read
+  back. Derivation is deterministic and idempotent — the first verified proof
+  wins, so a consumer cannot be re-targeted to a different seed. The seed is
+  unpredictable and unbiasable until the delay elapses, so it can back lottery
+  draws, validator selection, and tie-breaking.
 
 Both implement the same minimal interface an arbitrary custom policy can
 implement: `evaluate(params: Bytes, ctx: PolicyContext) -> Result<(), Error>`.
