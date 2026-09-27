@@ -9,6 +9,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`receipt-shard` (issue #437): shard storage consolidation.** Router-authorized source shards can migrate exact `BatchRecord` values into a destination shard, verify the returned record before deletion, emit `ShardsConsolidated`, and mark drained sources inactive to stop further writes.
 - **`common` (issue #436): constant-time cryptographic comparison.** New
   `constant_time_eq(a, b)` helper (`contracts/common/src/constant_time.rs`)
   compares byte slices without short-circuiting: every byte and the length
