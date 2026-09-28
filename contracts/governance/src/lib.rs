@@ -43,11 +43,15 @@
 #![no_std]
 
 #[cfg(test)]
+extern crate alloc;
+
+#[cfg(test)]
 mod test;
 
 mod math;
 mod quorum;
 mod ragequit;
+mod ring_sig;
 pub mod simulation;
 mod voting;
 
@@ -56,8 +60,8 @@ pub mod optimistic;
 use quorum::current_quorum_bps;
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, Address, Env,
-    Symbol, Val, Vec,
+    contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, Address,
+    BytesN, Env, Symbol, Val, Vec,
 };
 
 use voting::{quadratic_weight, register_deposit};
@@ -136,6 +140,18 @@ pub enum Error {
     ChallengeWindowClosed = 24,
     /// This member already vetoed this optimistic proposal.
     AlreadyVetoed = 25,
+    /// A ring or LSAG signature is malformed or does not verify.
+    InvalidRingSignature = 26,
+    /// An LSAG key image has already voted on this proposal.
+    DuplicateKeyImage = 27,
+    /// The selected ring is not a valid registered anonymity set.
+    InvalidAnonymitySet = 28,
+    /// A vote would duplicate an address vote or follow an anonymous-mode lock.
+    VotingModeConflict = 29,
+    /// The member already registered a voting key or the key is already used.
+    VotingKeyAlreadyRegistered = 30,
+    /// A registered voting key is not a canonical Ristretto255 point.
+    InvalidVotingKey = 31,
 }
 
 #[contracttype]
@@ -182,6 +198,23 @@ pub enum DataKey {
     OptimisticProposal(u64),
     /// Temporary: marks that `.1` vetoed optimistic proposal `.0`.
     OptimisticVeto(u64, Address),
+    /// Persistent: the member's public LSAG voting key.
+    MemberVotingKey(Address),
+    /// Persistent reverse index for registered LSAG keys.
+    VotingKeyMember(BytesN<32>),
+    /// Temporary: a proposal has received an anonymous vote and cannot then
+    /// accept address-authenticated votes that could double-count a signer.
+    AnonymousVoting(u64),
+    /// Temporary: linkable LSAG image already used for a proposal.
+    KeyImage(u64, BytesN<32>),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RingSignature {
+    pub key_image: BytesN<32>,
+    pub initial_challenge: BytesN<32>,
+    pub responses: Vec<BytesN<32>>,
 }
 
 /// A proposed call plus its running weighted tally.
@@ -217,6 +250,16 @@ pub struct VoteCast {
     #[topic]
     pub proposal_id: u64,
     pub voter: Address,
+    pub support: bool,
+    pub weight: u64,
+}
+
+/// Emitted after an anonymous LSAG vote has verified. It contains no signer address or key image.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnonymousVoteCast {
+    #[topic]
+    pub proposal_id: u64,
     pub support: bool,
     pub weight: u64,
 }
@@ -410,6 +453,13 @@ impl Governance {
     /// member's deposited governance tokens.
     pub fn vote(env: Env, voter: Address, proposal_id: u64, support: bool) -> Result<(), Error> {
         voter.require_auth();
+        if env
+            .storage()
+            .temporary()
+            .has(&DataKey::AnonymousVoting(proposal_id))
+        {
+            return Err(Error::VotingModeConflict);
+        }
         let weight = quadratic_weight(&env, &voter);
         if weight == 0 {
             return Err(Error::NotAMember);
@@ -469,6 +519,150 @@ impl Governance {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Register a member's Ristretto255 LSAG public key. A member can register
+    /// one unique key; the secret key remains off-chain. Authentication proves
+    /// authority to bind the key to the member, while later LSAG proofs prove
+    /// secret-key possession without identifying the member.
+    pub fn register_voting_key(
+        env: Env,
+        member: Address,
+        public_key: BytesN<32>,
+    ) -> Result<(), Error> {
+        member.require_auth();
+        Self::member_deposit(&env, &member)?;
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::MemberVotingKey(member.clone()))
+            || env
+                .storage()
+                .persistent()
+                .has(&DataKey::VotingKeyMember(public_key.clone()))
+        {
+            return Err(Error::VotingKeyAlreadyRegistered);
+        }
+        if !ring_sig::valid_public_key(&public_key) {
+            return Err(Error::InvalidVotingKey);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::MemberVotingKey(member.clone()), &public_key);
+        env.storage()
+            .persistent()
+            .set(&DataKey::VotingKeyMember(public_key), &member);
+        Ok(())
+    }
+
+    /// Cast a linkable-ring-signature vote without supplying or storing the
+    /// signer's address. Every key in `ring` must belong to a registered
+    /// member and all ring members must have equal quadratic weight. This
+    /// preserves exact tally weights while preventing the tally from revealing
+    /// which member in the ring signed. A member who has already voted
+    /// transparently cannot be in this ring; after an anonymous vote, the
+    /// proposal no longer accepts transparent votes. Anonymous dissent does
+    /// not create an address-keyed ragequit marker.
+    pub fn vote_anonymous(
+        env: Env,
+        proposal_id: u64,
+        support: bool,
+        ring: Vec<BytesN<32>>,
+        signature: RingSignature,
+    ) -> Result<(), Error> {
+        if ring.len() < 2 || ring.len() > MAX_MEMBERS {
+            return Err(Error::InvalidAnonymitySet);
+        }
+        let key = DataKey::Proposal(proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProposalNotFound)?;
+        if proposal.executed {
+            return Err(Error::AlreadyExecuted);
+        }
+        let now = env.ledger().sequence();
+        if now > proposal.deadline_ledger {
+            return Err(Error::VotingClosed);
+        }
+        let mut weight: Option<u64> = None;
+        for i in 0..ring.len() {
+            let public_key = ring.get(i).unwrap();
+            let Some(member) = env
+                .storage()
+                .persistent()
+                .get::<_, Address>(&DataKey::VotingKeyMember(public_key.clone()))
+            else {
+                return Err(Error::InvalidAnonymitySet);
+            };
+            // Do not let a previously transparent voter hide behind an
+            // anonymity ring that includes their registered key.
+            if env
+                .storage()
+                .temporary()
+                .has(&DataKey::Voted(proposal_id, member.clone()))
+            {
+                return Err(Error::VotingModeConflict);
+            }
+            let member_weight = quadratic_weight(&env, &member);
+            if member_weight == 0
+                || weight.is_some_and(|w| w != member_weight)
+                || (0..i).any(|j| ring.get(j).as_ref() == Some(&public_key))
+            {
+                return Err(Error::InvalidAnonymitySet);
+            }
+            weight = Some(member_weight);
+        }
+        let weight = weight.ok_or(Error::InvalidAnonymitySet)?;
+        let message = ring_sig::vote_message(&env, proposal_id, support, &ring);
+        if !ring_sig::verify(&env, proposal_id, &ring, &message, &signature) {
+            return Err(Error::InvalidRingSignature);
+        }
+        let image_key = DataKey::KeyImage(proposal_id, signature.key_image.clone());
+        if env.storage().temporary().has(&image_key) {
+            return Err(Error::DuplicateKeyImage);
+        }
+
+        // All validation is complete; mutations begin here.
+        let remaining_ttl = proposal.deadline_ledger.saturating_sub(now);
+        env.storage()
+            .temporary()
+            .set(&DataKey::AnonymousVoting(proposal_id), &());
+        env.storage().temporary().extend_ttl(
+            &DataKey::AnonymousVoting(proposal_id),
+            remaining_ttl,
+            remaining_ttl,
+        );
+        env.storage().temporary().set(&image_key, &());
+        env.storage()
+            .temporary()
+            .extend_ttl(&image_key, remaining_ttl, remaining_ttl);
+        if support {
+            proposal.yes_weight = proposal.yes_weight.saturating_add(weight);
+        } else {
+            proposal.no_weight = proposal.no_weight.saturating_add(weight);
+        }
+        env.storage().persistent().set(&key, &proposal);
+        AnonymousVoteCast {
+            proposal_id,
+            support,
+            weight,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Return the exact domain-separated bytes that `vote_anonymous` verifies.
+    /// Off-chain signers should sign this value rather than reimplementing its
+    /// XDR and network encoding.
+    pub fn get_anonymous_vote_message(
+        env: Env,
+        proposal_id: u64,
+        support: bool,
+        ring: Vec<BytesN<32>>,
+    ) -> soroban_sdk::Bytes {
+        ring_sig::vote_message(&env, proposal_id, support, &ring)
     }
 
     /// Execute a proposal that has cleared quorum. Callable by anyone —
