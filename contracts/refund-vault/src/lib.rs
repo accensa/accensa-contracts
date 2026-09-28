@@ -502,32 +502,6 @@ const MAX_BATCH_SIZE: u32 = 100;
 /// call — into the same entry point or a different one — observes the flag
 /// set and is rejected with [`Error::ReentrancyBlocked`] instead of racing
 /// ahead of the pending state update.
-///
-/// Because a `Result::Err` returned from a contract entry point rolls back
-/// every storage write that invocation made (including the flag itself),
-/// callers do not need to clear the flag on error paths — only the success
-/// path needs an explicit `release_reentrancy_lock` call.
-fn acquire_reentrancy_lock(env: &Env) -> Result<(), Error> {
-    let locked: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::ReentrancyLock)
-        .unwrap_or(false);
-    if locked {
-        return Err(Error::ReentrancyBlocked);
-    }
-    env.storage()
-        .instance()
-        .set(&DataKey::ReentrancyLock, &true);
-    Ok(())
-}
-
-fn release_reentrancy_lock(env: &Env) {
-    env.storage()
-        .instance()
-        .set(&DataKey::ReentrancyLock, &false);
-}
-
 /// Increment the monotonic nonce and return its *previous* value (issue #136).
 fn increment_nonce(env: &Env) -> u64 {
     let current: u64 = env.storage().instance().get(&DataKey::Nonce).unwrap_or(0);
@@ -1028,7 +1002,7 @@ impl RefundVault {
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -1072,7 +1046,7 @@ impl RefundVault {
         .publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -1124,7 +1098,7 @@ impl RefundVault {
         vdf_proof: Option<BytesN<256>>,
         nonce: u64,
     ) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -1155,7 +1129,7 @@ impl RefundVault {
         let cache = read_policy_cache(&env);
         claim_single(&env, &cache, &claim)?;
 
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -1188,7 +1162,7 @@ impl RefundVault {
             return Err(Error::BatchTooLarge);
         }
 
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -1213,7 +1187,7 @@ impl RefundVault {
         for claim in claims.iter() {
             claim_single(&env, &cache, &claim)?;
         }
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -1296,7 +1270,7 @@ impl RefundVault {
     }
 
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -1351,7 +1325,7 @@ impl RefundVault {
         .publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -2086,7 +2060,7 @@ impl RefundVault {
     /// Pay all harvested yield to the yield recipient (issue #415). Admin
     /// only. Returns the amount distributed.
     pub fn distribute_yield(env: Env) -> Result<i128, Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
         if env
             .storage()
             .instance()
@@ -2097,7 +2071,7 @@ impl RefundVault {
         }
         let amount = strategy::distribute(&env)?;
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(amount)
     }
 
@@ -2106,10 +2080,10 @@ impl RefundVault {
     /// while the vault is paused, so capital can always be brought home.
     /// Returns the principal recalled.
     pub fn emergency_exit_yield(env: Env) -> Result<i128, Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
         let principal = strategy::emergency_exit(&env)?;
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(principal)
     }
 
@@ -2167,7 +2141,7 @@ impl RefundVault {
     /// - Post-deployment liquid balance >= reserve_ratio * total_value
     /// - Total deployed <= max_deploy_ratio * total_value
     pub fn deploy_to_yield(env: Env, amount: i128) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -2267,7 +2241,7 @@ impl RefundVault {
         .publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -2276,7 +2250,7 @@ impl RefundVault {
     ///
     /// `principal` is the amount of originally-deployed principal to reclaim.
     pub fn withdraw_from_yield(env: Env, principal: i128) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -2310,14 +2284,14 @@ impl RefundVault {
         strategy::recall_principal(&env, &strategy, principal)?;
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
     /// Harvest accrued yield from the strategy without touching deployed principal.
     /// Yield tokens are transferred to the vault and tracked for operator withdrawal.
     pub fn harvest_yield(env: Env) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -2367,7 +2341,7 @@ impl RefundVault {
         .publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 

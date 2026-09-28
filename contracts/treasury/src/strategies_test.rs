@@ -411,18 +411,16 @@ fn only_whitelisted_strategies_can_be_allocated() {
 
     ctx.client.whitelist_strategy(&ctx.aave);
     assert!(ctx.client.is_strategy_whitelisted(&ctx.aave));
-    assert_eq!(
-        ctx.client
-            .try_set_allocations(&vec![
-                &ctx.env,
-                AllocationConfig {
-                    strategy: ctx.aave.clone(),
-                    weight_bps: 10_000,
-                }
-            ])
-            .is_ok(),
-        true
-    );
+    assert!(ctx
+        .client
+        .try_set_allocations(&vec![
+            &ctx.env,
+            AllocationConfig {
+                strategy: ctx.aave.clone(),
+                weight_bps: 10_000,
+            }
+        ])
+        .is_ok());
 }
 
 #[test]

@@ -6,6 +6,7 @@ members = [
     "contracts/multisig-account",
     "contracts/receipt-anchor",
     "contracts/receipt-shard",
+    "contracts/reputation",
     "contracts/refund-policy-time",
     "contracts/refund-policy-vdf",
     "contracts/refund-vault",

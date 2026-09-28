@@ -9,8 +9,70 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
-- **`governance` (issue #441): anonymous weighted voting with Ristretto255 LSAG.** Members register a one-time voting key; `vote_anonymous` verifies a linkable ring signature over a network-, contract-, proposal-, choice-, and ring-bound message, tracks proposal-scoped key images, and emits `AnonymousVoteCast` without a signer address. Anonymous rings require equal quadratic weights so the existing proposal tally and execution rules remain valid. A prior address vote prevents its member from appearing in a later anonymous ring, and the first anonymous vote prevents subsequent address votes.
-- **`receipt-shard` (issue #437): shard storage consolidation.** Router-authorized source shards can migrate exact `BatchRecord` values into a destination shard, verify the returned record before deletion, emit `ShardsConsolidated`, and mark drained sources inactive to stop further writes.
+- **`reputation` (issue #450): soulbound tokens for verified merchants.** New
+  `sbt` module mints non-transferable KYC / volume-tier credentials
+  (`Verified` / `Trusted` / `Premium`) bound to one address each, issued and
+  governed by the contract authority (`issue` / `revoke` / `slash`).
+  `transfer` and `approve` exist only to revert with typed errors
+  (`SbtNonTransferable` / `SbtApprovalDisabled`), so a credential can never
+  be bought, borrowed or farmed; a revoke burns the credential and writes a
+  permanent tombstone that blocks re-issue, while a slash flags it in place
+  as a public record.
+- **`reputation` (issue #452): on-chain credit scoring for buyers.** New
+  `credit_score` module maintains a dynamic 0–1000 score per buyer: the
+  escrow authority records successful completions (growth of 25% of the
+  remaining headroom per completion, `record_completion` with replay-protected
+  escrow ids) and fraudulent dispute losses (a 50%-of-current-score penalty,
+  `record_fraud`); scores decay 1% of the headroom above a floor of 100 per
+  ~10 days of inactivity and start neutral at 500. `get_score` is read-only,
+  and zero-fee tiers unlock by score (half fee at the gold cut-off, zero at
+  `zero_fee_tier`, both re-tunable by the authority via `set_score_config`).
+- **`reputation` (issue #451): tiered NFT dispute-resolution badges for
+  arbitrators.** New `accensa-reputation` contract tracks each arbitrator's
+  lifetime accurate dispute resolutions — recorded only by the arbiter
+  authority bound at initialization, keyed by caller-supplied dispute ids
+  with replay protection — and mints a non-transferable Bronze badge on the
+  first accepted resolution, upgrading it in place to Silver at 50 and Gold
+  at 100 accurate resolutions (`BadgeMintedEvent` / `BadgeUpgradedEvent`).
+- **Tiered Fee Hook**: Implemented Tiered Fee Assessment Hook in Refund-Vault-Factory Deployments (issue #375).
+- **Batch Transaction Pipeline**: Added Batch Transaction Execution Pipeline to Multisig-Account (issue #385).
+- **Zero-Knowledge Commitments**: Implemented Zero-Knowledge Commitment Verification for State-Channel Off-Chain Settlements (issue #386).
+- **Reentrancy Guard Protocol**: Implemented Cross-Contract Call Reentrancy Guard Protocol (issue #388).
+- **`state-channel` (issue #458): virtual multi-hop HTLCs.** New `htlc` module
+  locks slices of a channel's free escrow against a SHA-256 hash lock and
+  settles them with a preimage (`add_htlc` / `resolve_htlc` / `refund_htlc`).
+  Hops may be linked to an upstream parent, and a linked hop's timeout must be
+  **strictly smaller** than its parent's, so a route's timeouts decrease
+  downstream and an intermediary can always pull the upstream hop through
+  before it expires. Pending reservations are excluded from the sender's free
+  balance, and refunds release them permissionlessly after the timeout.
+- **`state-channel` (issue #459): watchtower reward bounties.** The receiver
+  may attach a bounty (`set_watchtower_bounty`, capped at 20%) that pays a
+  fraction of the recovered balance to the watchtower that files a successful
+  counter-proof on their behalf (`watchtower_counter_evidence`). The reward is
+  carved out of the receiver's settlement payout at `finalize_dispute` and is
+  one-shot, so escrow still balances exactly.
+- **`state-channel` (issue #460): channel splicing.** `splice_in` / `splice_out`
+  resize an open channel's capacity in place — adding sender funds or
+  withdrawing only the sender's uncommitted escrow — while the off-chain state
+  keeps running. Both parties must authorize the new capacity limit.
+- **`treasury` (issue #465): automated governance-token buyback & burn.** New
+  `buyback` module spends accumulated protocol fees on the governance token via
+  a pluggable `DexRouter`, verifies the swap against a caller-supplied slippage
+  floor, and sends the proceeds to a configured burn address. Admin configures
+  it once with `set_buyback_config`; anyone may trigger a swap with
+  `execute_buyback` above the configured minimum size.
+- **`common`: standardized read-only telemetry view for frontend dashboards.**
+  New `telemetry` module (`contracts/common/src/telemetry.rs`) defines the
+  canonical `Telemetry` response struct — total/open/closed/disputed/finalized
+  channel counts, active escrow sum, and cumulative fees collected, stamped
+  with the ledger sequence and wall-clock timestamp — plus the
+  `TelemetryProvider` trait and generated `TelemetryClient` so dashboards pull
+  one aggregated snapshot cross-contract. The view is strictly read-only:
+  no writes, no TTL extension, no authorization, and O(1) targeted storage
+  reads (one `instance().get` per field, never record iteration), so the CPU
+  cost is independent of channel/refund volume. Includes unit, read-only
+  property, and completeness tests.
 - **`common` (issue #436): constant-time cryptographic comparison.** New
   `constant_time_eq(a, b)` helper (`contracts/common/src/constant_time.rs`)
   compares byte slices without short-circuiting: every byte and the length
