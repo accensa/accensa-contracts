@@ -9,6 +9,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`governance` (issue #441): anonymous weighted voting with Ristretto255 LSAG.** Members register a one-time voting key; `vote_anonymous` verifies a linkable ring signature over a network-, contract-, proposal-, choice-, and ring-bound message, tracks proposal-scoped key images, and emits `AnonymousVoteCast` without a signer address. Anonymous rings require equal quadratic weights so the existing proposal tally and execution rules remain valid. A prior address vote prevents its member from appearing in a later anonymous ring, and the first anonymous vote prevents subsequent address votes.
 - **`receipt-shard` (issue #437): shard storage consolidation.** Router-authorized source shards can migrate exact `BatchRecord` values into a destination shard, verify the returned record before deletion, emit `ShardsConsolidated`, and mark drained sources inactive to stop further writes.
 - **`common` (issue #436): constant-time cryptographic comparison.** New
   `constant_time_eq(a, b)` helper (`contracts/common/src/constant_time.rs`)
@@ -854,4 +855,3 @@ the transactions that created them are recorded in
 
 ## [Unreleased]
 - Fixed issues
-

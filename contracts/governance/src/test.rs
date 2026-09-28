@@ -8,7 +8,7 @@ extern crate std;
 use crate::{Error, Governance, GovernanceClient};
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     Address, Env, IntoVal, Symbol, Val, Vec,
 };
 
@@ -349,4 +349,231 @@ fn quadratic_weight_prevents_whale_domination() {
     assert_eq!(gov.get_member_weight(&m1), 10);
     assert_eq!(gov.get_member_weight(&m2), 100);
     assert_eq!(gov.get_total_weight(), 110);
+}
+
+fn register_test_key(
+    h: &Harness,
+    member: &Address,
+    secret: &soroban_sdk::BytesN<32>,
+) -> soroban_sdk::BytesN<32> {
+    let public_key = crate::ring_sig::test_support::public(&h.env, secret);
+    h.gov.register_voting_key(member, &public_key);
+    public_key
+}
+
+fn test_ring(
+    h: &Harness,
+) -> (
+    Vec<soroban_sdk::BytesN<32>>,
+    soroban_sdk::BytesN<32>,
+    soroban_sdk::BytesN<32>,
+) {
+    let sk1 = crate::ring_sig::test_support::secret(&h.env, 10);
+    let sk2 = crate::ring_sig::test_support::secret(&h.env, 20);
+    let pk1 = register_test_key(h, &h.m1, &sk1);
+    let pk2 = register_test_key(h, &h.m2, &sk2);
+    (Vec::from_array(&h.env, [pk1, pk2]), sk1, sk2)
+}
+
+fn sign_for_harness(
+    h: &Harness,
+    proposal_id: u64,
+    support: bool,
+    ring: &Vec<soroban_sdk::BytesN<32>>,
+    secrets: &[soroban_sdk::BytesN<32>],
+    signer: usize,
+) -> crate::RingSignature {
+    h.env.as_contract(&h.gov.address, || {
+        crate::ring_sig::test_support::sign(&h.env, proposal_id, support, ring, secrets, signer)
+    })
+}
+
+#[test]
+fn anonymous_lsag_vote_updates_tally_without_storing_or_emitting_signer_address() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 42);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    let signature = sign_for_harness(&h, id, true, &ring, &[sk1, sk2], 1);
+
+    h.gov.vote_anonymous(&id, &true, &ring, &signature);
+
+    let events = h.env.events().all().filter_by_contract(&h.gov.address);
+    assert_eq!(events.events().len(), 1);
+    assert!(!std::format!("{:?}", events).contains(&std::format!("{:?}", h.m2)));
+    assert_eq!(h.gov.get_proposal(&id).yes_weight, 1);
+    assert!(!h.gov.has_voted(&id, &h.m2));
+    let image = signature.key_image.clone();
+    assert!(h.env.as_contract(&h.gov.address, || {
+        h.env
+            .storage()
+            .temporary()
+            .has(&crate::DataKey::KeyImage(id, image))
+    }));
+}
+
+#[test]
+fn anonymous_votes_use_existing_quorum_and_execution_rules() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 73);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    for signer in 0..2 {
+        let signature = sign_for_harness(&h, id, true, &ring, &[sk1.clone(), sk2.clone()], signer);
+        h.gov.vote_anonymous(&id, &true, &ring, &signature);
+    }
+    assert_eq!(h.gov.get_proposal(&id).yes_weight, 2);
+    assert_eq!(h.gov.try_execute(&id), Err(Ok(Error::QuorumNotMet)));
+    h.env.ledger().with_mut(|l| l.sequence_number += 50);
+    h.gov.execute(&id);
+    assert_eq!(TargetClient::new(&h.env, &h.target).get_value(), 73);
+}
+
+#[test]
+fn invalid_anonymous_signature_leaves_tally_storage_and_events_unchanged() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 8);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    let mut signature = sign_for_harness(&h, id, true, &ring, &[sk1, sk2], 0);
+    signature
+        .responses
+        .set(0, soroban_sdk::BytesN::from_array(&h.env, &[0u8; 32]));
+
+    assert_eq!(
+        h.gov.try_vote_anonymous(&id, &true, &ring, &signature),
+        Err(Ok(Error::InvalidRingSignature))
+    );
+    assert_eq!(h.gov.get_proposal(&id).yes_weight, 0);
+    assert_eq!(h.gov.get_proposal(&id).no_weight, 0);
+    assert_eq!(
+        h.env
+            .events()
+            .all()
+            .filter_by_contract(&h.gov.address)
+            .events()
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn duplicate_key_image_is_rejected_without_a_second_tally_or_event() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 8);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    let signature = sign_for_harness(&h, id, true, &ring, &[sk1, sk2], 0);
+    h.gov.vote_anonymous(&id, &true, &ring, &signature);
+    let before = h.gov.get_proposal(&id);
+
+    assert_eq!(
+        h.gov.try_vote_anonymous(&id, &true, &ring, &signature),
+        Err(Ok(Error::DuplicateKeyImage))
+    );
+    assert_eq!(h.gov.get_proposal(&id).yes_weight, before.yes_weight);
+    assert_eq!(
+        h.env
+            .events()
+            .all()
+            .filter_by_contract(&h.gov.address)
+            .events()
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn ring_verifier_accepts_each_member_and_rejects_unregistered_keys_or_wrong_message() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 8);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    let message = h.gov.get_anonymous_vote_message(&id, &true, &ring);
+    for signer in 0..2 {
+        let signature = sign_for_harness(&h, id, true, &ring, &[sk1.clone(), sk2.clone()], signer);
+        assert!(h
+            .env
+            .as_contract(&h.gov.address, || crate::ring_sig::verify(
+                &h.env, id, &ring, &message, &signature
+            )));
+    }
+    let outsider = crate::ring_sig::test_support::secret(&h.env, 99);
+    let forged = sign_for_harness(&h, id, false, &ring, &[outsider, sk2], 0);
+    assert_eq!(
+        h.gov.try_vote_anonymous(&id, &false, &ring, &forged),
+        Err(Ok(Error::InvalidRingSignature))
+    );
+    assert_eq!(h.gov.get_proposal(&id).no_weight, 0);
+}
+
+#[test]
+fn same_member_can_cast_again_on_another_proposal_with_proposal_scoped_key_image() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 8);
+    let first = h.gov.propose(&h.m1, &target, &function, &args);
+    let second = h.gov.propose(&h.m2, &target, &function, &args);
+    let first_sig = sign_for_harness(&h, first, true, &ring, &[sk1.clone(), sk2.clone()], 1);
+    let second_sig = sign_for_harness(&h, second, true, &ring, &[sk1, sk2], 1);
+
+    assert_ne!(first_sig.key_image, second_sig.key_image);
+    h.gov.vote_anonymous(&first, &true, &ring, &first_sig);
+    h.gov.vote_anonymous(&second, &true, &ring, &second_sig);
+    assert_eq!(h.gov.get_proposal(&first).yes_weight, 1);
+    assert_eq!(h.gov.get_proposal(&second).yes_weight, 1);
+}
+
+#[test]
+fn registered_keys_reject_invalid_points_and_rings_reject_mixed_weights() {
+    let h = setup();
+    let malformed = soroban_sdk::BytesN::from_array(&h.env, &[0xff; 32]);
+    assert_eq!(
+        h.gov.try_register_voting_key(&h.m1, &malformed),
+        Err(Ok(Error::InvalidVotingKey))
+    );
+
+    let (ring, sk1, _sk2) = test_ring(&h);
+    let m3_secret = crate::ring_sig::test_support::secret(&h.env, 30);
+    let m3_key = register_test_key(&h, &h.m3, &m3_secret);
+    let mixed_ring = Vec::from_array(&h.env, [ring.get(0).unwrap(), m3_key]);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 8);
+    let id = h.gov.propose(&h.m1, &target, &function, &args);
+    let signature = sign_for_harness(&h, id, true, &mixed_ring, &[sk1, m3_secret], 0);
+    assert_eq!(
+        h.gov
+            .try_vote_anonymous(&id, &true, &mixed_ring, &signature),
+        Err(Ok(Error::InvalidAnonymitySet))
+    );
+    assert_eq!(h.gov.get_proposal(&id).yes_weight, 0);
+}
+
+#[test]
+fn anonymous_and_transparent_votes_cannot_be_mixed() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 8);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    let signature = sign_for_harness(&h, id, true, &ring, &[sk1, sk2], 0);
+    h.gov.vote_anonymous(&id, &true, &ring, &signature);
+    assert_eq!(
+        h.gov.try_vote(&h.m1, &id, &true),
+        Err(Ok(Error::VotingModeConflict))
+    );
+}
+
+#[test]
+fn prior_transparent_vote_prevents_that_member_from_entering_an_anonymous_ring() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 8);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    h.gov.vote(&h.m1, &id, &true);
+    let signature = sign_for_harness(&h, id, true, &ring, &[sk1, sk2], 1);
+
+    assert_eq!(
+        h.gov.try_vote_anonymous(&id, &true, &ring, &signature),
+        Err(Ok(Error::VotingModeConflict))
+    );
+    assert_eq!(h.gov.get_proposal(&id).yes_weight, 1);
 }
