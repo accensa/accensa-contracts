@@ -7,6 +7,8 @@ mod crypto_test;
 #[cfg(test)]
 mod delegation_test;
 #[cfg(test)]
+mod hashlock_test;
+#[cfg(test)]
 mod htlc_test;
 #[cfg(test)]
 mod multi_asset_test;
@@ -114,6 +116,14 @@ pub enum DataKey {
     HtlcReserved(u64),
     /// Instance: a channel's watchtower bounty configuration (issue #459).
     Bounty(u64),
+    /// Persistent: a Lightning-style hashlock payment on a channel
+    /// (issue #488).
+    HashlockPayment(u64, u64),
+    /// Persistent: number of hashlock payments ever added to a channel.
+    HashlockPaymentCount(u64),
+    /// Persistent: total escrow reserved by a channel's pending hashlock
+    /// payments.
+    HashlockReserved(u64),
 }
 
 /// Emitted when a channel is opened.
@@ -314,6 +324,7 @@ impl StateChannel {
             || state
                 .balance
                 .checked_add(htlc::reserved(&env, channel_id))
+                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
                 .is_none_or(|committed| committed > channel.amount)
         {
             return Err(Error::ExceedsPayment);
@@ -374,6 +385,7 @@ impl StateChannel {
             || state
                 .balance
                 .checked_add(htlc::reserved(&env, channel_id))
+                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
                 .is_none_or(|committed| committed > channel.amount)
         {
             return Err(Error::ExceedsPayment);
@@ -429,6 +441,7 @@ impl StateChannel {
             || state
                 .balance
                 .checked_add(htlc::reserved(&env, channel_id))
+                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
                 .is_none_or(|committed| committed > channel.amount)
         {
             return Err(Error::ExceedsPayment);
@@ -499,6 +512,7 @@ impl StateChannel {
             || state
                 .balance
                 .checked_add(htlc::reserved(&env, channel_id))
+                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
                 .is_none_or(|committed| committed > channel.amount)
         {
             return Err(Error::ExceedsPayment);
@@ -552,6 +566,7 @@ impl StateChannel {
             || state
                 .balance
                 .checked_add(htlc::reserved(&env, channel_id))
+                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
                 .is_none_or(|committed| committed > channel.amount)
         {
             return Err(Error::ExceedsPayment);
@@ -608,6 +623,7 @@ impl StateChannel {
             || state
                 .balance
                 .checked_add(htlc::reserved(&env, channel_id))
+                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
                 .is_none_or(|committed| committed > channel.amount)
         {
             return Err(Error::ExceedsPayment);
@@ -978,6 +994,131 @@ impl StateChannel {
         htlc::reserved(&env, channel_id)
     }
 
+    // ── Hashlock pre-image reveal payments (issue #488) ─────────────────
+
+    /// Lock `amount` of the channel's free escrow against `hashlock`
+    /// (`sha256` of the preimage), Lightning-invoice style. Sender-authorized;
+    /// returns the new `payment_id`. See [`hashlock`].
+    pub fn add_hashlock_payment(
+        env: Env,
+        channel_id: u64,
+        hashlock: BytesN<32>,
+        amount: i128,
+    ) -> Result<u64, Error> {
+        hashlock::add(&env, channel_id, hashlock, amount)
+    }
+
+    /// Reveal `preimage` for a pending hashlock payment. Verifies
+    /// `sha256(preimage) == hashlock`, releases the reservation and credits
+    /// the receiver's balance. Permissionless. See [`hashlock`].
+    pub fn reveal_preimage(
+        env: Env,
+        channel_id: u64,
+        payment_id: u64,
+        preimage: Bytes,
+    ) -> Result<i128, Error> {
+        hashlock::resolve_payment(&env, channel_id, payment_id, &preimage)
+    }
+
+    /// Close the channel with the sender's signed final state while settling
+    /// a hashlock payment in the same call: the receiver supplies the
+    /// `payment_id` and its `preimage`, both are verified, and the receiver's
+    /// payout becomes `state.balance + amount` before the challenge window
+    /// starts. See [`hashlock`].
+    pub fn close_channel_with_preimage(
+        env: Env,
+        channel_id: u64,
+        state: StateUpdate,
+        signature: BytesN<64>,
+        payment_id: u64,
+        preimage: Bytes,
+    ) -> Result<(), Error> {
+        let mut channel = Self::get_channel_internal(&env, channel_id)?;
+
+        if channel.phase != ChannelPhase::Open {
+            return Err(Error::ChannelNotOpen);
+        }
+
+        let max_lifetime: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxChannelLifetime)
+            .unwrap_or(DEFAULT_MAX_CHANNEL_LIFETIME);
+        if env.ledger().sequence() > channel.opened_at + max_lifetime {
+            return Err(Error::ChannelExpired);
+        }
+
+        Self::verify_state_signature(&env, &channel, &state, &signature)?;
+
+        if state.balance < 0
+            || state
+                .balance
+                .checked_add(htlc::reserved(&env, channel_id))
+                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
+                .is_none_or(|committed| committed > channel.amount)
+        {
+            return Err(Error::ExceedsPayment);
+        }
+
+        // Reveal the invoice before recording the close: verification and
+        // credit happen exactly as in `reveal_preimage`, and the released
+        // reservation is what keeps the ceiling check above exact. The
+        // receiver's final entitlement is the signed balance **plus** the
+        // just-revealed payment.
+        let revealed = hashlock::resolve_for_close(&env, channel_id, payment_id, &preimage)?;
+        let final_receiver_balance = state
+            .balance
+            .checked_add(revealed)
+            .ok_or(Error::ExceedsPayment)?;
+
+        let _ = channel.nonce_window.consume(&env, state.nonce);
+        channel.nonce = channel.nonce.max(state.nonce);
+        channel.balance = final_receiver_balance;
+        channel.phase = ChannelPhase::Closed;
+        channel.closed_at = env.ledger().sequence();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+
+        ChannelClosedEvent {
+            channel_id,
+            balance: final_receiver_balance,
+            closed_at: channel.closed_at,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Read a single hashlock payment.
+    pub fn get_hashlock_payment(
+        env: Env,
+        channel_id: u64,
+        payment_id: u64,
+    ) -> Result<hashlock::HashlockPayment, Error> {
+        hashlock::get(&env, channel_id, payment_id)
+    }
+
+    /// Read-only: total escrow currently reserved by a channel's pending
+    /// hashlock payments.
+    pub fn get_hashlock_reserved(env: Env, channel_id: u64) -> i128 {
+        hashlock::reserved(&env, channel_id)
+    }
+
+    /// Read-only: the receiver's committed balance plus every pending
+    /// reservation (HTLC hops and hashlock payments) — the figure every
+    /// escrow ceiling check bounds.
+    pub fn get_reserved_escrow(env: Env, channel_id: u64) -> Result<i128, Error> {
+        let channel = Self::get_channel_internal(&env, channel_id)?;
+        Ok(channel
+            .balance
+            .checked_add(htlc::reserved(&env, channel_id))
+            .and_then(|b| b.checked_add(hashlock::reserved(&env, channel_id)))
+            .ok_or(Error::MathOverflow)?)
+    }
+
     // ── Channel splicing (issue #460) ────────────────────────────────────
 
     /// Add `amount` of new funds to an open channel's capacity. Requires both
@@ -1131,6 +1272,7 @@ pub mod crypto;
 pub mod delegation;
 pub mod dispute;
 pub mod epoch;
+pub mod hashlock;
 pub mod htlc;
 pub mod multi_asset;
 pub mod nonce;

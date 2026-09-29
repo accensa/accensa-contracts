@@ -52,6 +52,7 @@ mod math;
 mod quorum;
 mod ragequit;
 mod ring_sig;
+pub mod simulation;
 mod voting;
 
 use quorum::current_quorum_bps;
@@ -116,18 +117,31 @@ pub enum Error {
     /// A checked arithmetic operation in the ragequit payout math
     /// over- or under-flowed, or a conversion would truncate (issue #411).
     MathOverflow = 17,
+    /// A proposal was submitted without the simulation report the current
+    /// configuration requires (issue #483).
+    SimulationRequired = 18,
+    /// The submitted simulation report failed verification: wrong simulator,
+    /// stale binding hash, or not bound to this proposal's calldata
+    /// (issue #483).
+    SimulationMismatch = 19,
+    /// The simulation report's outcome says the proposal would revert
+    /// (issue #483).
+    SimulationFailed = 20,
+    /// Simulation is required but no simulator contract is registered
+    /// (issue #483).
+    SimulationNotConfigured = 21,
     /// A ring or LSAG signature is malformed or does not verify.
-    InvalidRingSignature = 18,
+    InvalidRingSignature = 22,
     /// An LSAG key image has already voted on this proposal.
-    DuplicateKeyImage = 19,
+    DuplicateKeyImage = 23,
     /// The selected ring is not a valid registered anonymity set.
-    InvalidAnonymitySet = 20,
+    InvalidAnonymitySet = 24,
     /// A vote would duplicate an address vote or follow an anonymous-mode lock.
-    VotingModeConflict = 21,
+    VotingModeConflict = 25,
     /// The member already registered a voting key or the key is already used.
-    VotingKeyAlreadyRegistered = 22,
+    VotingKeyAlreadyRegistered = 26,
     /// A registered voting key is not a canonical Ristretto255 point.
-    InvalidVotingKey = 23,
+    InvalidVotingKey = 27,
 }
 
 #[contracttype]
@@ -171,6 +185,12 @@ pub enum DataKey {
     AnonymousVoting(u64),
     /// Temporary: linkable LSAG image already used for a proposal.
     KeyImage(u64, BytesN<32>),
+    /// Persistent: whether proposals must carry a simulation report and
+    /// which simulator accepts reports (issue #483).
+    SimulationConfig,
+    /// Persistent: the verified simulation report stored with a proposal
+    /// created through `propose_with_simulation` (issue #483).
+    SimAttestation(u64),
 }
 
 #[contracttype]
@@ -340,6 +360,11 @@ impl Governance {
     /// Propose a call to `target::function(args)`. Any member may propose;
     /// the voting window opens immediately and runs for
     /// `voting_period_ledgers` ledgers.
+    ///
+    /// When simulation is configured as required (see
+    /// [`simulation`]), this path is refused with
+    /// [`Error::SimulationRequired`] — use
+    /// [`propose_with_simulation`](Self::propose_with_simulation) instead.
     pub fn propose(
         env: Env,
         proposer: Address,
@@ -349,6 +374,12 @@ impl Governance {
     ) -> Result<u64, Error> {
         proposer.require_auth();
         Self::member_deposit(&env, &proposer)?;
+
+        // Simulation hook (issue #483): when a proposal-simulation oracle is
+        // registered as mandatory, the un-reported path is closed.
+        if simulation::is_required(&env) {
+            return Err(Error::SimulationRequired);
+        }
 
         let id: u64 = env
             .storage()
@@ -743,6 +774,55 @@ impl Governance {
     pub fn ragequit(env: Env, voter_auth: Address, proposal_id: u64) -> Result<(), Error> {
         voter_auth.require_auth();
         ragequit::process(&env, &voter_auth, proposal_id)
+    }
+
+    // ── Proposal simulation hooks (issue #483) ──────────────────────────
+
+    /// Propose a call with a verified simulation report. The report must
+    /// come from the registered simulator, be bound to this exact proposal
+    /// id and calldata (`sim_hash`), and report a non-reverting dry-run
+    /// (`outcome == 0`). When simulation is configured as required, this is
+    /// the only accepted proposal path; the report is stored alongside the
+    /// proposal so voters can inspect it. See [`simulation`].
+    pub fn propose_with_simulation(
+        env: Env,
+        proposer: Address,
+        target: Address,
+        function: Symbol,
+        args: Vec<Val>,
+        report: simulation::SimulationReport,
+    ) -> Result<u64, Error> {
+        proposer.require_auth();
+        simulation::propose_with_simulation(&env, &proposer, target, function, args, report)
+    }
+
+    /// Configure proposal simulation (member auth): which simulator contract
+    /// accepts reports, and whether every new proposal must carry a
+    /// successful one. Pass `None` to unregister the simulator (only
+    /// allowed while `required` is false).
+    pub fn set_simulation_config(
+        env: Env,
+        member: Address,
+        simulator: Option<Address>,
+        required: bool,
+    ) -> Result<(), Error> {
+        member.require_auth();
+        Self::member_deposit(&env, &member)?;
+        simulation::set_config(&env, simulator, required)
+    }
+
+    /// Read-only: the current simulation configuration, if any.
+    pub fn get_simulation_config(env: Env) -> Option<simulation::SimulationConfig> {
+        simulation::config(&env)
+    }
+
+    /// Read-only: the simulation report stored for `proposal_id`, if the
+    /// proposal was created through [`propose_with_simulation`].
+    pub fn get_simulation_report(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<simulation::SimulationReport> {
+        simulation::get_report(&env, proposal_id)
     }
 
     /// Read-only: fetch a proposal's calldata and current tally.

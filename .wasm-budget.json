@@ -7,7 +7,7 @@
   "governance": 55000,
   "multisig_account": 47000,
   "receipt_shard": 52500,
-  "state_channel": 95000,
+  "state_channel": 106000,
   "stream_vault": 39000,
   "upto_authorization": 40000
 }

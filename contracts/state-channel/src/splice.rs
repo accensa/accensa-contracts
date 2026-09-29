@@ -73,13 +73,15 @@ fn token_address(env: &Env) -> Result<Address, Error> {
 }
 
 /// The sender's uncommitted escrow: capacity minus the receiver's balance and
-/// any pending HTLC reservations.
+/// any pending reservations (HTLC hops and hashlock payments).
 pub(crate) fn free_balance(env: &Env, channel_id: u64, channel: &Channel) -> Result<i128, Error> {
     channel
         .amount
         .checked_sub(channel.balance)
         .ok_or(Error::MathOverflow)?
         .checked_sub(htlc::reserved(env, channel_id))
+        .ok_or(Error::MathOverflow)?
+        .checked_sub(crate::hashlock::reserved(env, channel_id))
         .ok_or(Error::MathOverflow)
 }
 
