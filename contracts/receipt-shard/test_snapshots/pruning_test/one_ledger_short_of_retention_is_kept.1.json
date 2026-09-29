@@ -198,12 +198,36 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "Active"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "EndBatchId"
                           }
                         ]
                       },
                       "val": {
                         "u64": "1001"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "ExpiryScanUpTo"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "65"
                       }
                     },
                     {
@@ -316,7 +340,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 104095
+        "live_until": 3214494
       }
     ]
   },

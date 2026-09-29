@@ -8,6 +8,8 @@
     [],
     [],
     [],
+    [],
+    [],
     []
   ],
   "ledger": {
@@ -20,6 +22,45 @@
     "min_temp_entry_ttl": 16,
     "max_entry_ttl": 6312000,
     "ledger_entries": [
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "storage": [
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Shard"
+                          },
+                          {
+                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
       {
         "entry": {
           "last_modified_ledger_seq": 0,
@@ -57,6 +98,18 @@
                       },
                       "val": {
                         "u64": "201"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "ExpiryScanUpTo"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "1"
                       }
                     },
                     {
@@ -141,6 +194,18 @@
                       },
                       "val": {
                         "u64": "2"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "ExpiryScanUpTo"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "1"
                       }
                     },
                     {

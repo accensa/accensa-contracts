@@ -382,6 +382,23 @@ fn test_get_shard_address_missing_fails() {
 }
 
 #[test]
+fn test_is_registered_shard_checks_router_managed_addresses() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+    client.anchor_batch(
+        &DEFAULT_SHARD,
+        &BytesN::from_array(&env, &[21u8; 32]),
+        &1,
+        &0,
+        &1,
+    );
+    let address = client.get_shard_address(&DEFAULT_SHARD, &0);
+
+    assert!(client.is_registered_shard(&address));
+    assert!(!client.is_registered_shard(&Address::generate(&env)));
+}
+
+#[test]
 fn test_anchor_batch_crosses_shard_boundary() {
     let (env, client, merchant) = setup();
     init(&env, &client, &merchant);

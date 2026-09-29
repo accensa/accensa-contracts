@@ -1,42 +1,15 @@
 {
   "generators": {
-    "address": 2,
+    "address": 4,
     "nonce": 0,
     "mux_id": 0
   },
   "auth": [
     [],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "function_name": "anchor_batch",
-              "args": [
-                {
-                  "u64": "1"
-                },
-                {
-                  "bytes": "0909090909090909090909090909090909090909090909090909090909090909"
-                },
-                {
-                  "u32": 42
-                },
-                {
-                  "u64": "1000"
-                },
-                {
-                  "u64": "2000"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
+    [],
+    [],
+    [],
+    [],
     []
   ],
   "ledger": {
@@ -56,80 +29,31 @@
             "contract_data": {
               "ext": "v0",
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "801925984706572462"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "Batch"
-                  },
-                  {
-                    "u64": "1"
-                  }
-                ]
-              },
+              "key": "ledger_key_contract_instance",
               "durability": "persistent",
               "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "anchored_ledger"
-                    },
-                    "val": {
-                      "u32": 0
-                    }
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                   },
-                  {
-                    "key": {
-                      "symbol": "count"
-                    },
-                    "val": {
-                      "u32": 42
+                  "storage": [
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Shard"
+                          },
+                          {
+                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": true
+                      }
                     }
-                  },
-                  {
-                    "key": {
-                      "symbol": "period_end"
-                    },
-                    "val": {
-                      "u64": "2000"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "period_start"
-                    },
-                    "val": {
-                      "u64": "1000"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "root"
-                    },
-                    "val": {
-                      "bytes": "0909090909090909090909090909090909090909090909090909090909090909"
-                    }
-                  }
-                ]
+                  ]
+                }
               }
             }
           },
@@ -173,7 +97,7 @@
                         ]
                       },
                       "val": {
-                        "u64": "1001"
+                        "u64": "201"
                       }
                     },
                     {
@@ -216,53 +140,96 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "ShardStats"
+                            "symbol": "StartBatchId"
                           }
                         ]
                       },
                       "val": {
-                        "map": [
+                        "u64": "1"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "storage": [
+                    {
+                      "key": {
+                        "vec": [
                           {
-                            "key": {
-                              "symbol": "high_water"
-                            },
-                            "val": {
-                              "u64": "2"
-                            }
-                          },
-                          {
-                            "key": {
-                              "symbol": "live_batches"
-                            },
-                            "val": {
-                              "u64": "1"
-                            }
-                          },
-                          {
-                            "key": {
-                              "symbol": "live_leaves"
-                            },
-                            "val": {
-                              "u64": "42"
-                            }
-                          },
-                          {
-                            "key": {
-                              "symbol": "max_batch_count"
-                            },
-                            "val": {
-                              "u32": 42
-                            }
-                          },
-                          {
-                            "key": {
-                              "symbol": "total_leaves"
-                            },
-                            "val": {
-                              "u64": "42"
-                            }
+                            "symbol": "Active"
                           }
                         ]
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "EndBatchId"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "201"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "ExpiryScanUpTo"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "1"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PrunedUpTo"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "1"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Router"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                       }
                     },
                     {

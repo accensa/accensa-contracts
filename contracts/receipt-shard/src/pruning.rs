@@ -43,6 +43,11 @@ use soroban_sdk::{contractevent, contractimpl, token::Client as TokenClient, Add
 /// (180 * 17,280 = 3,110,400).
 pub const RETENTION_LEDGERS: u32 = 3_110_400;
 
+/// Bound the number of persistent IDs inspected per policy-pruning call. The
+/// shard remembers scan progress so sparse ranges can be covered over several
+/// calls without exceeding the invocation footprint limit.
+const MAX_PRUNE_SCAN: u32 = 64;
+
 /// Bounty accrued to the cleanup caller per pruned batch, in stroops,
 /// claimable from the contract's own token balance.
 pub const PRUNE_BOUNTY_PER_BATCH: i128 = 100;
@@ -65,8 +70,9 @@ impl ReceiptShard {
     /// Policy-driven eviction entry point (issue #395).
     ///
     /// Deletes up to `max_count` batch records whose anchor ledger is at
-    /// least [`RETENTION_LEDGERS`] old, advancing the shard's `PrunedUpTo`
-    /// cursor over exactly the batches it deleted. Anyone may call this —
+    /// least [`RETENTION_LEDGERS`] old. The cursor advances over consecutive
+    /// deletions at its current position, while sparse holes remain available
+    /// for later anchors. Anyone may call this —
     /// the retention check is the authorization for *what* gets deleted —
     /// and `pruner` accrues [`PRUNE_BOUNTY_PER_BATCH`] stroops per pruned
     /// batch, claimable via `claim_prune_bounty`.
@@ -84,6 +90,15 @@ impl ReceiptShard {
         let current_ledger = env.ledger().sequence();
         let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
         let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
+        let mut scan_cursor: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ExpiryScanUpTo)
+            .unwrap_or(cursor)
+            .max(cursor);
+        if scan_cursor >= end {
+            scan_cursor = cursor;
+        }
 
         let mut pruned: u32 = 0;
         // Counters are settled once after the loop rather than per deletion:
@@ -92,46 +107,42 @@ impl ReceiptShard {
         // ever see the counters between calls.
         let mut removed_leaves: u64 = 0;
 
-        // Scan forward from the cursor over the shard's assigned range.
-        // The cursor is a contiguous prefix by construction (both pruning
-        // paths advance it only over batches they consumed), so already
-        // pruned batches are skipped in O(1).
-        while cursor < end && pruned < max_count {
+        // Scan a bounded slice from the independent progress marker.
+        // Migrations can leave holes, and later records may still be expired;
+        // a hole or a retained record must not hide them.
+        let mut scanned: u32 = 0;
+        while scan_cursor < end && pruned < max_count && scanned < MAX_PRUNE_SCAN {
             match env
                 .storage()
                 .persistent()
-                .get::<_, BatchRecord>(&DataKey::Batch(cursor))
+                .get::<_, BatchRecord>(&DataKey::Batch(scan_cursor))
             {
                 // Expired: older than the retention window, delete it.
                 Some(record)
                     if current_ledger.saturating_sub(record.anchored_ledger)
                         >= RETENTION_LEDGERS =>
                 {
-                    env.storage().persistent().remove(&DataKey::Batch(cursor));
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::Batch(scan_cursor));
                     removed_leaves += record.count as u64;
                     pruned += 1;
-                    cursor += 1;
+                    if scan_cursor == cursor {
+                        cursor += 1;
+                    }
                 }
-                // Present but still within retention: the policy keeps
-                // this receipt. The prefix is age-ordered, so nothing
-                // further along can be older — stop scanning.
-                Some(_) => break,
-                // Already deleted (e.g. by the router's cursor pruning) or
-                // never anchored: nothing further along can exist — the
-                // cursor is a contiguous prefix by construction, so stop
-                // scanning instead of consuming footprint entries for the
-                // rest of the shard's range.
-                None => break,
+                // Migrated records need not be ordered by anchor ledger, so
+                // continue past retained entries and sparse holes.
+                Some(_) | None => {}
             }
+            scan_cursor += 1;
+            scanned += 1;
         }
 
         crate::diagnostics::record_removals(&env, pruned as u64, removed_leaves);
 
         if pruned > 0 {
             env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
-            env.storage()
-                .instance()
-                .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
 
             let accrued: i128 = env
                 .storage()
@@ -142,6 +153,17 @@ impl ReceiptShard {
                 &DataKey::PruneBounty(pruner.clone()),
                 &(accrued + PRUNE_BOUNTY_PER_BATCH * pruned as i128),
             );
+        }
+
+        if scanned > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::ExpiryScanUpTo, &scan_cursor);
+        }
+        if pruned > 0 || scanned > 0 {
+            env.storage()
+                .instance()
+                .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         }
 
         ReceiptsPrunedEvent {

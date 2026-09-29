@@ -23,6 +23,11 @@ pub trait ConsolidationTargetInterface {
     ) -> Result<BatchRecord, Error>;
 }
 
+#[contractclient(name = "ConsolidationRouterClient")]
+pub trait ConsolidationRouterInterface {
+    fn is_registered_shard(env: Env, shard_address: Address) -> bool;
+}
+
 /// Emitted after one or more batch records have been moved from a drained
 /// source shard to a destination shard.
 ///
@@ -47,9 +52,9 @@ impl ReceiptShard {
     /// whole operation is atomic, so a failed destination write leaves the
     /// source unchanged.
     ///
-    /// If all records have been drained, the source is automatically marked
-    /// inactive. Its contract address remains valid for historical discovery,
-    /// while state-changing entry points reject further writes.
+    /// Draining records does not deactivate the shard: its assigned range may
+    /// still receive anchors. The router may explicitly decommission it once
+    /// it has stopped assigning IDs to this source.
     pub fn consolidate(
         env: Env,
         destination: Address,
@@ -82,10 +87,6 @@ impl ReceiptShard {
             migrated += 1;
         }
 
-        if migrated > 0 && !Self::has_live_records(&env) {
-            Self::decommission_internal(&env);
-        }
-
         if migrated > 0 {
             ShardsConsolidated {
                 source_shard_id,
@@ -112,6 +113,11 @@ impl ReceiptShard {
     ) -> Result<BatchRecord, Error> {
         assert!(Self::is_active(env.clone()), "shard is inactive");
         source.require_auth();
+        let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
+        assert!(
+            ConsolidationRouterClient::new(&env, &router).is_registered_shard(&source),
+            "source is not a registered shard"
+        );
 
         let start: u64 = env
             .storage()
@@ -123,6 +129,8 @@ impl ReceiptShard {
             batch_id >= start && batch_id < end,
             "batch_id out of shard range"
         );
+        let pruned_up_to: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
+        assert!(batch_id >= pruned_up_to, "batch id is already pruned");
         assert!(
             !env.storage().persistent().has(&DataKey::Batch(batch_id)),
             "batch already exists in destination shard"
@@ -134,6 +142,9 @@ impl ReceiptShard {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Batch(batch_id), TTL_THRESHOLD, TTL_EXTEND);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         crate::diagnostics::record_migration(&env, batch_id, record.count);
 
         Ok(record)

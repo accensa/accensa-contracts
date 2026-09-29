@@ -138,31 +138,21 @@ pub(crate) fn record_migration(env: &Env, batch_id: u64, count: u32) {
     store(env, &stats);
 }
 
-/// Number of batches in `[cursor, high_water)` still inside the retention
-/// window.
-///
-/// The router anchors batch ids in increasing order, so `anchored_ledger` is
-/// non-decreasing across the live range and the expired batches form a
-/// prefix of it. A binary search finds the first still-retained batch in
-/// `O(log n)` storage reads instead of a full scan. A missing record is
-/// treated as expired (it can only sit in the pruned prefix).
+/// Number of records in `[cursor, high_water)` still inside the retention
+/// window. Migrated IDs can be sparse and may come from independent streams,
+/// so neither ledger order nor a contiguous set of stored records is assumed.
 fn count_retained(env: &Env, cursor: u64, high_water: u64) -> u64 {
     let now = env.ledger().sequence();
-    let (mut lo, mut hi) = (cursor, high_water);
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        let retained = env
-            .storage()
-            .persistent()
-            .get::<_, BatchRecord>(&DataKey::Batch(mid))
-            .is_some_and(|r| now.saturating_sub(r.anchored_ledger) < RETENTION_LEDGERS);
-        if retained {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    high_water - lo
+    (cursor..high_water)
+        .filter(|batch_id| {
+            env.storage()
+                .persistent()
+                .get::<_, BatchRecord>(&DataKey::Batch(*batch_id))
+                .is_some_and(|record| {
+                    now.saturating_sub(record.anchored_ledger) < RETENTION_LEDGERS
+                })
+        })
+        .count() as u64
 }
 
 #[contractimpl]

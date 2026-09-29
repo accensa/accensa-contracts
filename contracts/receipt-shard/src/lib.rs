@@ -28,6 +28,9 @@ pub enum DataKey {
     EndBatchId,
     Batch(u64),
     PrunedUpTo,
+    /// Progress marker for bounded policy-pruning scans; unlike
+    /// `PrunedUpTo`, this may pass sparse IDs without consuming them.
+    ExpiryScanUpTo,
     /// Accrued, unclaimed storage-pruning bounty per cleanup caller
     /// (issue #395). Instance storage, keyed by the caller that evicted
     /// expired batches.
@@ -84,6 +87,9 @@ impl ReceiptShard {
         env.storage()
             .instance()
             .set(&DataKey::PrunedUpTo, &start_batch_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::ExpiryScanUpTo, &start_batch_id);
         env.storage().instance().set(&DataKey::Active, &true);
         env.storage()
             .instance()
@@ -116,6 +122,8 @@ impl ReceiptShard {
             batch_id >= start && batch_id < end,
             "batch_id out of shard range"
         );
+        let pruned_up_to: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
+        assert!(batch_id >= pruned_up_to, "batch id is already pruned");
 
         let record = BatchRecord {
             root,

@@ -849,6 +849,40 @@ impl ReceiptAnchor {
             .ok_or(Error::BatchNotFound)
     }
 
+    /// Whether `shard_address` is present in this router's managed shard map.
+    /// Used by receipt shards to authenticate migration sources in addition
+    /// to requiring contract authorization from the source address.
+    pub fn is_registered_shard(env: Env, shard_address: Address) -> bool {
+        let ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ShardIds)
+            .unwrap_or_else(|| Vec::new(&env));
+        for shard_id in ids.iter() {
+            let batch_count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ShardBatchCount(shard_id))
+                .unwrap_or(0);
+            let shard_count = if batch_count == 0 {
+                0
+            } else {
+                (batch_count - 1) / SHARD_CAPACITY + 1
+            };
+            for shard_index in 0..shard_count {
+                if env
+                    .storage()
+                    .instance()
+                    .get::<_, Address>(&DataKey::Shard(shard_id, shard_index))
+                    .is_some_and(|address| address == shard_address)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Returns the current anchor rate-limit configuration (read-only).
     /// Returns `{0, 0}` (rate limiting disabled) if unset or the contract is
     /// not yet initialized.

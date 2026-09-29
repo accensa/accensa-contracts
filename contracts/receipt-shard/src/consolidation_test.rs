@@ -2,14 +2,40 @@
 
 use crate::{BatchRecord, ReceiptShard, ReceiptShardClient};
 use soroban_sdk::{
-    testutils::{Address as _, Events},
+    contract, contractimpl, contracttype,
+    testutils::{Address as _, Events, Ledger},
     Address, BytesN, Env, IntoVal, Map, Symbol, Val,
 };
 
+#[contract]
+struct TestRouter;
+
+#[contracttype]
+enum TestRouterKey {
+    Shard(Address),
+}
+
+#[contractimpl]
+impl TestRouter {
+    pub fn register_shard(env: Env, address: Address) {
+        env.storage()
+            .instance()
+            .set(&TestRouterKey::Shard(address), &true);
+    }
+
+    pub fn is_registered_shard(env: Env, address: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&TestRouterKey::Shard(address))
+            .unwrap_or(false)
+    }
+}
+
 fn setup(env: &Env) -> (ReceiptShardClient<'static>, Address) {
     env.mock_all_auths();
-    let router = Address::generate(env);
+    let router = env.register(TestRouter, ());
     let id = env.register(ReceiptShard, (router.clone(), 1u64, 201u64));
+    TestRouterClient::new(env, &router).register_shard(&id);
     (ReceiptShardClient::new(env, &id), router)
 }
 
@@ -48,6 +74,8 @@ fn consolidation_preserves_records_and_roots() {
         source.try_get_batch(&2),
         Err(Ok(crate::Error::BatchNotFound))
     );
+    assert!(source.is_active());
+    source.decommission();
     assert!(!source.is_active());
 
     let source_stats = source.get_shard_diagnostics();
@@ -94,6 +122,52 @@ fn destination_rejects_batch_outside_its_range() {
     let record = record(&env, 9, 1);
     let result = target.try_insert_migrated_batch(&source.address, &2, &record);
     assert!(result.is_err());
+}
+
+#[test]
+fn destination_rejects_authenticated_unregistered_source() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 201u64));
+    let target = ReceiptShardClient::new(&env, &target_id);
+    let attacker = Address::generate(&env);
+
+    assert!(target
+        .try_insert_migrated_batch(&attacker, &1, &record(&env, 9, 1))
+        .is_err());
+}
+
+#[test]
+fn sparse_migrated_expired_record_is_pruned_after_a_gap() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 201u64));
+    let target = ReceiptShardClient::new(&env, &target_id);
+    source.anchor_batch(&3, &BytesN::from_array(&env, &[3u8; 32]), &1, &0, &1);
+    source.consolidate(&target_id, &1, &2, &soroban_sdk::vec![&env, 3u64]);
+
+    env.ledger()
+        .with_mut(|ledger| ledger.sequence_number = crate::pruning::RETENTION_LEDGERS + 1);
+    let pruner = Address::generate(&env);
+    assert_eq!(target.prune_expired_receipts(&pruner, &1), 1);
+    assert_eq!(
+        target.get_shard_diagnostics().oldest_unpruned_batch_id,
+        1,
+        "a sparse leading gap must remain available for a future anchor"
+    );
+    assert_eq!(target.get_shard_diagnostics().live_batches, 0);
+}
+
+#[test]
+fn diagnostics_count_retained_sparse_migrated_records() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 201u64));
+    let target = ReceiptShardClient::new(&env, &target_id);
+    source.anchor_batch(&3, &BytesN::from_array(&env, &[4u8; 32]), &1, &0, &1);
+    source.consolidate(&target_id, &1, &2, &soroban_sdk::vec![&env, 3u64]);
+
+    assert_eq!(target.get_shard_diagnostics().active_dispute_count, 1);
 }
 
 #[test]

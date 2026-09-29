@@ -20,41 +20,10 @@
               "function_name": "anchor_batch",
               "args": [
                 {
-                  "u64": "1"
+                  "u64": "3"
                 },
                 {
                   "bytes": "0404040404040404040404040404040404040404040404040404040404040404"
-                },
-                {
-                  "u32": 1
-                },
-                {
-                  "u64": "0"
-                },
-                {
-                  "u64": "1"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "function_name": "anchor_batch",
-              "args": [
-                {
-                  "u64": "2"
-                },
-                {
-                  "bytes": "0505050505050505050505050505050505050505050505050505050505050505"
                 },
                 {
                   "u32": 1
@@ -85,15 +54,15 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
-                  "u64": "11"
+                  "u64": "1"
                 },
                 {
-                  "u64": "12"
+                  "u64": "2"
                 },
                 {
                   "vec": [
                     {
-                      "u64": "1"
+                      "u64": "3"
                     }
                   ]
                 }
@@ -104,8 +73,6 @@
         }
       ]
     ],
-    [],
-    [],
     []
   ],
   "ledger": {
@@ -186,26 +153,6 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "1033654523790656264"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "ledger_key_nonce": {
                   "nonce": "5541220902715666415"
                 }
               },
@@ -216,74 +163,6 @@
           "ext": "v0"
         },
         "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "Batch"
-                  },
-                  {
-                    "u64": "2"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "anchored_ledger"
-                    },
-                    "val": {
-                      "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "count"
-                    },
-                    "val": {
-                      "u32": 1
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "period_end"
-                    },
-                    "val": {
-                      "u64": "1"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "period_start"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "root"
-                    },
-                    "val": {
-                      "bytes": "0505050505050505050505050505050505050505050505050505050505050505"
-                    }
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
       },
       {
         "entry": {
@@ -375,7 +254,7 @@
                               "symbol": "high_water"
                             },
                             "val": {
-                              "u64": "3"
+                              "u64": "4"
                             }
                           },
                           {
@@ -383,7 +262,7 @@
                               "symbol": "live_batches"
                             },
                             "val": {
-                              "u64": "1"
+                              "u64": "0"
                             }
                           },
                           {
@@ -391,7 +270,7 @@
                               "symbol": "live_leaves"
                             },
                             "val": {
-                              "u64": "1"
+                              "u64": "0"
                             }
                           },
                           {
@@ -407,7 +286,7 @@
                               "symbol": "total_leaves"
                             },
                             "val": {
-                              "u64": "2"
+                              "u64": "1"
                             }
                           }
                         ]
@@ -447,7 +326,7 @@
                     "symbol": "Batch"
                   },
                   {
-                    "u64": "1"
+                    "u64": "3"
                   }
                 ]
               },
@@ -592,7 +471,7 @@
                               "symbol": "high_water"
                             },
                             "val": {
-                              "u64": "2"
+                              "u64": "4"
                             }
                           },
                           {
