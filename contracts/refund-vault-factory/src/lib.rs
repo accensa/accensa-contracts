@@ -18,6 +18,7 @@
 
 #![no_std]
 
+mod fee;
 use accensa_common::VaultInit;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, xdr::ToXdr, Address,
@@ -56,6 +57,7 @@ pub enum Error {
     InvalidWasmHash = 4,
     /// The merchant attempted to deploy with a pre-emptive salt collision.
     SaltCollision = 5,
+    FeeExceedsHardcap = 6,
 }
 
 #[contract]
@@ -111,6 +113,7 @@ impl RefundVaultFactory {
     ) -> Result<Address, Error> {
         require_initialized(&env)?;
         init.merchant.require_auth();
+        crate::fee::validate_fee_cap(&env, init.fee_bps)?;
 
         let time_policy = init
             .time_policy

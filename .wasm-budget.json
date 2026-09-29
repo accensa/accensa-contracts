@@ -2,12 +2,12 @@
   "receipt_anchor": 83000,
   "refund_vault": 127000,
   "refund_policy_time": 25000,
-  "refund_policy_vdf": 44000,
-  "refund_vault_factory": 33000,
+  "refund_policy_vdf": 45000,
+  "refund_vault_factory": 34000,
   "governance": 55000,
   "multisig_account": 47000,
-  "receipt_shard": 52000,
-  "state_channel": 68000,
-  "stream_vault": 38000,
+  "receipt_shard": 52500,
+  "state_channel": 106000,
+  "stream_vault": 39000,
   "upto_authorization": 40000
 }

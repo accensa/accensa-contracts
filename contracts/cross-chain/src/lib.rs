@@ -1,16 +1,23 @@
 #![no_std]
 
 use accensa_common::Error;
+pub use layerzero::{
+    encode_dispute_payload, parse_dispute_payload, DisputeResolution, DisputeResolvedEvent,
+    PeerAddress,
+};
 pub use outbound::{EvmAddress, OutboundBridgePayload};
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env};
 pub use wormhole::{
     hash_vaa_body, parse_vaa, pubkey_to_address, verify_vaa, GuardianAddress, GuardianSet,
     GuardianSignature, ParsedVaa, VaaBody,
 };
 
+pub mod layerzero;
 pub mod outbound;
 pub mod wormhole;
 
+#[cfg(test)]
+mod layerzero_test;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -26,6 +33,9 @@ pub enum DataKey {
     Paused,
     GuardianSet(u32),
     CurrentGuardianSetIndex,
+    /// Instance: the admin-configured LayerZero endpoint allowed to deliver
+    /// packets to `lz_receive` (issue #455).
+    LzEndpoint,
 }
 
 #[contract]
@@ -154,14 +164,7 @@ impl CrossChainBridge {
     /// Pause the bridge contract (admin only).
     pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
+        Self::require_admin(&env, &admin)?;
         env.storage().instance().set(&DataKey::Paused, &true);
         Ok(())
     }
@@ -169,15 +172,21 @@ impl CrossChainBridge {
     /// Unpause the bridge contract (admin only).
     pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    /// Verify `admin` matches the stored admin (call after `require_auth`).
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
         let stored_admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        if admin != stored_admin {
+        if admin != &stored_admin {
             return Err(Error::Unauthorized);
         }
-        env.storage().instance().set(&DataKey::Paused, &false);
         Ok(())
     }
 
@@ -214,5 +223,126 @@ impl CrossChainBridge {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
+    }
+
+    // ── LayerZero omnichain dispute bridging (issue #455) ────────────────
+
+    /// Register (admin) the LayerZero endpoint contract allowed to deliver
+    /// packets to [`lz_receive`](Self::lz_receive). Calling it again with a
+    /// different address rotates the trusted endpoint.
+    pub fn set_layerzero_endpoint(
+        env: Env,
+        admin: Address,
+        endpoint: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::LzEndpoint, &endpoint);
+        Ok(())
+    }
+
+    /// The registered LayerZero endpoint, if any. `lz_receive` fails closed
+    /// with [`Error::NotInitialized`] until one is configured.
+    pub fn get_layerzero_endpoint(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LzEndpoint)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// Register (admin) a trusted peer contract on a remote chain that may
+    /// deliver dispute resolutions. Only packets whose
+    /// `(src_eid, sender_address)` names a registered peer are accepted.
+    pub fn set_trusted_peer(env: Env, admin: Address, peer: PeerAddress) -> Result<(), Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+        let key = layerzero::DataKey::TrustedPeer(peer.chain_id, peer.sender.clone());
+        env.storage().persistent().set(&key, &true);
+        Ok(())
+    }
+
+    /// Whether `(src_eid, sender)` is a registered trusted peer.
+    pub fn is_trusted_peer(env: Env, src_eid: u32, sender: BytesN<32>) -> bool {
+        env.storage()
+            .persistent()
+            .has(&layerzero::DataKey::TrustedPeer(src_eid, sender))
+    }
+
+    /// Highest accepted LayerZero packet nonce for a peer channel (`0` when
+    /// nothing has been delivered yet).
+    pub fn get_peer_nonce(env: Env, src_eid: u32, sender: BytesN<32>) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&layerzero::DataKey::PeerNonce(src_eid, sender))
+            .unwrap_or(0)
+    }
+
+    /// Whether the dispute has already been settled through the bridge.
+    pub fn is_dispute_settled(env: Env, dispute_id: BytesN<32>) -> bool {
+        env.storage()
+            .persistent()
+            .has(&layerzero::DataKey::DisputeSettled(dispute_id))
+    }
+
+    /// Receive a dispute resolution from a remote chain through the
+    /// registered LayerZero endpoint.
+    ///
+    /// The endpoint calls this while processing its `lzReceive` message;
+    /// the `endpoint` argument names the endpoint contract and its
+    /// `require_auth` authenticates the delivery (in tests, the real auth
+    /// path is proven with a mock endpoint contract calling in). The
+    /// Soroban contract validates what LayerZero cannot guarantee about the
+    /// payload itself: that the packet names a trusted peer, carries a
+    /// fresh, strictly-advancing nonce, encodes a well-formed dispute
+    /// payload, and settles a dispute that has never been settled before.
+    /// See [`layerzero`] for the threat model.
+    pub fn lz_receive(
+        env: Env,
+        endpoint: Address,
+        src_eid: u32,
+        sender: BytesN<32>,
+        nonce: u64,
+        payload: Bytes,
+    ) -> Result<DisputeResolution, Error> {
+        // Only the registered LayerZero endpoint may deliver packets. The
+        // caller must demonstrate the endpoint's identity by providing its
+        // authorization — an unconfigured endpoint fails closed.
+        endpoint.require_auth();
+        let registered: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::LzEndpoint)
+            .ok_or(Error::NotInitialized)?;
+        if endpoint != registered {
+            return Err(Error::Unauthorized);
+        }
+
+        if Self::is_paused(&env) {
+            return Err(Error::Paused);
+        }
+
+        // The packet must come from a peer the admin has trusted on this
+        // source chain. Unknown peers are rejected, not merely ignored.
+        if !Self::is_trusted_peer(env.clone(), src_eid, sender.clone()) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Packet nonces only move forward per peer channel; a replayed or
+        // stale packet cannot be re-processed.
+        let last = Self::get_peer_nonce(env.clone(), src_eid, sender.clone());
+        if nonce <= last {
+            return Err(Error::StaleState);
+        }
+
+        // Fully bounds-check the wire format before touching state.
+        let mut resolution = layerzero::parse_dispute_payload(&env, &payload)?;
+        resolution.src_chain_id = src_eid;
+        resolution.peer = sender;
+
+        layerzero::record_dispute_resolution(&env, resolution.clone(), nonce)?;
+
+        Ok(resolution)
     }
 }

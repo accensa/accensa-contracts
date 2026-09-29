@@ -155,7 +155,7 @@ fn test_withdraw_when_paused_rejected() {
 
     // Pause contract
     client.pause(&admin);
-    assert_eq!(client.is_paused(), true);
+    assert!(client.is_paused());
 
     // Attempt withdrawal while paused
     assert_eq!(
@@ -165,7 +165,7 @@ fn test_withdraw_when_paused_rejected() {
 
     // Unpause contract
     client.unpause(&admin);
-    assert_eq!(client.is_paused(), false);
+    assert!(!client.is_paused());
 }
 
 #[test]
