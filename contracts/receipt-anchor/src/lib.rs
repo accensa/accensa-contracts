@@ -274,10 +274,10 @@ const _: () = assert!(
 );
 
 /// Maximum number of batches to delete in a single `prune_batches` call.
-/// Keeps per-transaction compute bounded; callers resume by invoking again
-/// (the `PrunedUpTo` cursor advances across calls, potentially across shards).
+/// Leaves headroom under Soroban ledger-entry limits for cursor, diagnostics,
+/// and event writes; callers resume by invoking again.
 #[allow(dead_code)]
-const MAX_PRUNE_BATCHES: u32 = 100;
+const MAX_PRUNE_BATCHES: u32 = 90;
 
 /// Maximum number of historical roots retained in the ring buffer.
 /// Proofs are valid against any root still in the buffer.
@@ -1085,6 +1085,7 @@ impl ReceiptAnchor {
         let start_batch_id = cursor;
 
         while cursor <= batch_count && (pruned_count as u32) < MAX_PRUNE_BATCHES {
+            let shard_index = (cursor - 1) / SHARD_CAPACITY;
             let shard_addr = match Self::shard_for_batch(&env, shard_id, cursor) {
                 Ok(addr) => addr,
                 Err(_) => {
@@ -1103,6 +1104,9 @@ impl ReceiptAnchor {
                 break;
             }
             cursor = next_cursor;
+            if cursor <= batch_count && (cursor - 1) / SHARD_CAPACITY != shard_index {
+                break;
+            }
         }
 
         env.storage()

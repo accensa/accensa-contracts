@@ -66,17 +66,14 @@ fn consolidation_preserves_records_and_roots() {
 
     assert_eq!(target.get_batch(&1).root, root1);
     assert_eq!(target.get_batch(&2).root, root2);
-    assert_eq!(
-        source.try_get_batch(&1),
-        Err(Ok(crate::Error::BatchNotFound))
-    );
-    assert_eq!(
-        source.try_get_batch(&2),
-        Err(Ok(crate::Error::BatchNotFound))
-    );
+    assert_eq!(source.get_batch(&1).root, root1);
+    assert_eq!(source.get_batch(&2).root, root2);
+    assert!(source.verify_receipt(&1, &root1, &soroban_sdk::vec![&env]));
+    source.extend_batch_ttl(&1);
     assert!(source.is_active());
     source.decommission();
     assert!(!source.is_active());
+    assert_eq!(source.get_batch(&1).root, root1);
 
     let source_stats = source.get_shard_diagnostics();
     assert_eq!(source_stats.live_batches, 0);
@@ -105,6 +102,7 @@ fn partial_consolidation_keeps_source_active() {
         1
     );
     assert!(source.is_active());
+    assert_eq!(source.get_batch(&1).root, root1);
     assert_eq!(source.get_batch(&2).root, root2);
     assert_eq!(
         ReceiptShardClient::new(&env, &target_id).get_batch(&1).root,

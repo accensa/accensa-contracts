@@ -1,5 +1,6 @@
 use super::*;
 use crate::events::SCHEMA_VERSION;
+use receipt_shard::{ReceiptShard, ReceiptShardClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     vec, Address, Bytes, BytesN, Env,
@@ -140,6 +141,33 @@ fn test_get_batch_returns_stored_record() {
     assert_eq!(record.count, 42);
     assert_eq!(record.period_start, 1000);
     assert_eq!(record.period_end, 2000);
+}
+
+#[test]
+fn test_router_reads_batches_after_partial_shard_consolidation() {
+    let (env, client, merchant) = setup();
+    init(&env, &client, &merchant);
+
+    let root1 = BytesN::from_array(&env, &[21u8; 32]);
+    let root2 = BytesN::from_array(&env, &[22u8; 32]);
+    client.anchor_batch(&DEFAULT_SHARD, &root1, &1, &0, &1);
+    client.anchor_batch(&DEFAULT_SHARD, &root2, &1, &2, &3);
+
+    let source_id = client.get_shard_address(&DEFAULT_SHARD, &0);
+    let destination_id = env.register(
+        ReceiptShard,
+        (client.address.clone(), 1u64, SHARD_CAPACITY + 1),
+    );
+    ReceiptShardClient::new(&env, &source_id).consolidate(
+        &destination_id,
+        &DEFAULT_SHARD,
+        &DEFAULT_SHARD,
+        &vec![&env, 1u64],
+    );
+
+    assert_eq!(client.get_batch(&DEFAULT_SHARD, &1).root, root1);
+    assert!(client.verify_receipt(&DEFAULT_SHARD, &1, &root1, &vec![&env]));
+    assert_eq!(client.get_batch(&DEFAULT_SHARD, &2).root, root2);
 }
 
 #[test]
@@ -734,9 +762,10 @@ fn test_prune_batches_crosses_shard_boundary() {
 
     env.ledger().with_mut(|li| li.sequence_number = 1_000_000);
 
-    // MAX_PRUNE_BATCHES caps each call at 100 deletions, so draining shard 0
-    // (SHARD_CAPACITY = 1000 batches) takes 10 calls.
-    for _ in 0..(SHARD_CAPACITY / (MAX_PRUNE_BATCHES as u64)) {
+    // MAX_PRUNE_BATCHES caps each call at 90 deletions, so draining shard 0
+    // takes ceil(SHARD_CAPACITY / 90) calls without crossing the shard boundary.
+    let drain_calls = (SHARD_CAPACITY + MAX_PRUNE_BATCHES as u64 - 1) / MAX_PRUNE_BATCHES as u64;
+    for _ in 0..drain_calls {
         client.prune_batches(&DEFAULT_SHARD, &1_000_000);
     }
     assert_eq!(

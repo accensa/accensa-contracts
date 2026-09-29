@@ -21,6 +21,8 @@ pub trait ConsolidationTargetInterface {
         batch_id: u64,
         record: BatchRecord,
     ) -> Result<BatchRecord, Error>;
+    fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error>;
+    fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error>;
 }
 
 #[contractclient(name = "ConsolidationRouterClient")]
@@ -82,7 +84,16 @@ impl ReceiptShard {
             let stored = target.insert_migrated_batch(&source, &batch_id, &record);
             assert!(stored == record, "migrated batch record mismatch");
 
+            env.storage()
+                .persistent()
+                .set(&DataKey::ForwardedBatch(batch_id), &destination);
+            env.storage().persistent().extend_ttl(
+                &DataKey::ForwardedBatch(batch_id),
+                TTL_THRESHOLD,
+                TTL_EXTEND,
+            );
             env.storage().persistent().remove(&DataKey::Batch(batch_id));
+            crate::pruning::advance_pruned_cursor(&env);
             crate::diagnostics::record_removals(&env, 1, record.count as u64);
             migrated += 1;
         }
@@ -141,6 +152,12 @@ impl ReceiptShard {
             .set(&DataKey::Batch(batch_id), &record);
         env.storage()
             .persistent()
+            .remove(&DataKey::PrunedBatch(batch_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ForwardedBatch(batch_id));
+        env.storage()
+            .persistent()
             .extend_ttl(&DataKey::Batch(batch_id), TTL_THRESHOLD, TTL_EXTEND);
         env.storage()
             .instance()
@@ -183,4 +200,10 @@ impl ReceiptShard {
     fn decommission_internal(env: &Env) {
         env.storage().instance().set(&DataKey::Active, &false);
     }
+}
+
+pub(crate) fn forwarded_destination(env: &Env, batch_id: u64) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ForwardedBatch(batch_id))
 }

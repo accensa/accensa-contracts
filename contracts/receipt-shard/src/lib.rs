@@ -27,6 +27,10 @@ pub enum DataKey {
     StartBatchId,
     EndBatchId,
     Batch(u64),
+    /// Persistent forwarding destination for a batch moved to another shard.
+    ForwardedBatch(u64),
+    /// A known deleted batch ahead of the contiguous prune cursor.
+    PrunedBatch(u64),
     PrunedUpTo,
     /// Progress marker for bounded policy-pruning scans; unlike
     /// `PrunedUpTo`, this may pass sparse IDs without consuming them.
@@ -141,6 +145,12 @@ impl ReceiptShard {
             .persistent()
             .set(&DataKey::Batch(batch_id), &record);
         env.storage()
+            .persistent()
+            .remove(&DataKey::PrunedBatch(batch_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ForwardedBatch(batch_id));
+        env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         env.storage()
@@ -149,10 +159,20 @@ impl ReceiptShard {
     }
 
     pub fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Batch(batch_id))
-            .ok_or(Error::BatchNotFound)
+        if let Some(record) = env.storage().persistent().get(&DataKey::Batch(batch_id)) {
+            return Ok(record);
+        }
+        if let Some(destination) = crate::consolidation::forwarded_destination(&env, batch_id) {
+            return match crate::consolidation::ConsolidationTargetClient::new(&env, &destination)
+                .try_get_batch(&batch_id)
+            {
+                Ok(Ok(record)) => Ok(record),
+                Ok(Err(_)) => Err(Error::ShardCallFailed),
+                Err(Ok(error)) => Err(error),
+                Err(Err(_)) => Err(Error::ShardCallFailed),
+            };
+        }
+        Err(Error::BatchNotFound)
     }
 
     pub fn verify_receipt(
@@ -192,10 +212,28 @@ impl ReceiptShard {
     }
 
     pub fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error> {
-        assert!(Self::is_active(env.clone()), "shard is inactive");
         if !env.storage().persistent().has(&DataKey::Batch(batch_id)) {
+            if let Some(destination) = crate::consolidation::forwarded_destination(&env, batch_id) {
+                env.storage().persistent().extend_ttl(
+                    &DataKey::ForwardedBatch(batch_id),
+                    TTL_THRESHOLD,
+                    TTL_EXTEND,
+                );
+                return match crate::consolidation::ConsolidationTargetClient::new(
+                    &env,
+                    &destination,
+                )
+                .try_extend_batch_ttl(&batch_id)
+                {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(_)) => Err(Error::ShardCallFailed),
+                    Err(Ok(error)) => Err(error),
+                    Err(Err(_)) => Err(Error::ShardCallFailed),
+                };
+            }
             return Err(Error::BatchNotFound);
         }
+        assert!(Self::is_active(env.clone()), "shard is inactive");
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Batch(batch_id), TTL_THRESHOLD, TTL_EXTEND);

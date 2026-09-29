@@ -89,6 +89,37 @@ fn expired_receipts_are_pruned() {
 }
 
 #[test]
+fn expiry_deletions_ahead_of_cursor_are_consumed_when_prefix_catches_up() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let router = Address::generate(&env);
+    let pruner = Address::generate(&env);
+    let id = env.register(ReceiptShard, (router, 1u64, 5u64));
+    let client = ReceiptShardClient::new(&env, &id);
+    env.ledger()
+        .with_mut(|ledger| ledger.sequence_number = BASE_LEDGER);
+
+    // Batch 2 expires while batch 1 is still retained, so policy pruning
+    // deletes it ahead of the contiguous cursor and records a tombstone.
+    client.anchor_batch(&2, &BytesN::from_array(&env, &[7u8; 32]), &1, &0, &100);
+    env.ledger().with_mut(|ledger| {
+        ledger.sequence_number += RETENTION_LEDGERS + 1;
+    });
+    client.anchor_batch(&1, &BytesN::from_array(&env, &[8u8; 32]), &1, &0, &100);
+
+    assert_eq!(client.prune_expired_receipts(&pruner, &10), 1);
+    assert_eq!(client.get_shard_diagnostics().oldest_unpruned_batch_id, 1);
+
+    // Once batch 1 expires too, advancing across it consumes the known-deleted
+    // batch 2 marker instead of leaving PrunedUpTo stuck at 2.
+    env.ledger().with_mut(|ledger| {
+        ledger.sequence_number += RETENTION_LEDGERS + 1;
+    });
+    assert_eq!(client.prune_expired_receipts(&pruner, &10), 1);
+    assert_eq!(client.get_shard_diagnostics().oldest_unpruned_batch_id, 3);
+}
+
+#[test]
 fn boundary_batch_exactly_at_retention_is_prunable() {
     let fx = setup();
     anchor_now(&fx, 1, 1);

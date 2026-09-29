@@ -52,6 +52,29 @@ const MAX_PRUNE_SCAN: u32 = 64;
 /// claimable from the contract's own token balance.
 pub const PRUNE_BOUNTY_PER_BATCH: i128 = 100;
 
+/// Advance the contiguous prune cursor across records that were explicitly
+/// deleted ahead of it. Empty unmarked IDs remain reserved for future anchors.
+pub(crate) fn advance_pruned_cursor(env: &Env) -> (u64, bool) {
+    let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
+    let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
+    let initial = cursor;
+    while cursor < end
+        && env
+            .storage()
+            .persistent()
+            .has(&DataKey::PrunedBatch(cursor))
+    {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PrunedBatch(cursor));
+        cursor += 1;
+    }
+    if cursor > initial {
+        env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
+    }
+    (cursor, cursor > initial)
+}
+
 /// Emitted when expired receipts are evicted from this shard (issue #395).
 ///
 /// Topics: `("receipts_pruned", pruner)`. The data map carries the number
@@ -89,7 +112,8 @@ impl ReceiptShard {
 
         let current_ledger = env.ledger().sequence();
         let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
-        let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
+        let (mut cursor, cursor_advanced_by_markers) = advance_pruned_cursor(&env);
+        let initial_cursor = cursor;
         let mut scan_cursor: u64 = env
             .storage()
             .instance()
@@ -125,25 +149,31 @@ impl ReceiptShard {
                     env.storage()
                         .persistent()
                         .remove(&DataKey::Batch(scan_cursor));
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::PrunedBatch(scan_cursor), &());
+                    env.storage().persistent().extend_ttl(
+                        &DataKey::PrunedBatch(scan_cursor),
+                        TTL_THRESHOLD,
+                        TTL_EXTEND,
+                    );
                     removed_leaves += record.count as u64;
                     pruned += 1;
                     if scan_cursor == cursor {
-                        cursor += 1;
+                        (cursor, _) = advance_pruned_cursor(&env);
                     }
                 }
                 // Migrated records need not be ordered by anchor ledger, so
                 // continue past retained entries and sparse holes.
                 Some(_) | None => {}
             }
-            scan_cursor += 1;
+            scan_cursor = scan_cursor.saturating_add(1).max(cursor);
             scanned += 1;
         }
 
         crate::diagnostics::record_removals(&env, pruned as u64, removed_leaves);
 
         if pruned > 0 {
-            env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
-
             let accrued: i128 = env
                 .storage()
                 .instance()
@@ -155,12 +185,16 @@ impl ReceiptShard {
             );
         }
 
+        let cursor_advanced = cursor_advanced_by_markers || cursor > initial_cursor;
+        if cursor_advanced {
+            env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
+        }
         if scanned > 0 {
             env.storage()
                 .instance()
                 .set(&DataKey::ExpiryScanUpTo, &scan_cursor);
         }
-        if pruned > 0 || scanned > 0 {
+        if pruned > 0 || scanned > 0 || cursor_advanced {
             env.storage()
                 .instance()
                 .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
