@@ -198,6 +198,11 @@ pub enum Error {
     /// The active yield strategy still holds deployed principal, so it cannot
     /// be replaced or revoked until that principal is recalled (issue #415).
     StrategyHasPrincipal = 323,
+    /// The requested coupon id does not exist in persistent storage.
+    CouponNotFound = 324,
+    /// The coupon has already been redeemed and cannot be applied again.
+    CouponAlreadyRedeemed = 325,
+
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }
