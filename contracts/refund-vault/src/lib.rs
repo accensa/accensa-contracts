@@ -153,6 +153,10 @@ pub enum DataKey {
     /// rebate pool (issue #415). Falls back to the merchant when unset.
     /// Persistent.
     YieldRecipient,
+    /// On-chain discount coupon NFT record (issue #453). Keyed by the
+    /// merchant-assigned coupon id (u64). Persistent: survives across ledger
+    /// epochs because a coupon may be redeemed long after it is minted.
+    Coupon(u64),
 }
 
 #[contracttype]
@@ -460,6 +464,27 @@ pub struct CommitRevealedEvent {
     pub ledger: u32,
 }
 
+/// Emitted when a discount coupon NFT is applied to a deposit (issue #453).
+///
+/// Topics: `("coupon_applied_event", coupon_id, holder)`. The data map
+/// records both amounts so indexers can reconstruct the discount without
+/// re-computing basis-point math.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CouponAppliedEvent {
+    #[topic]
+    pub coupon_id: u64,
+    #[topic]
+    pub holder: Address,
+    /// The gross deposit amount supplied by the merchant.
+    pub original_amount: i128,
+    /// The net amount actually transferred to the vault after the discount.
+    pub effective_amount: i128,
+    /// Discount rate in basis points that was applied.
+    pub discount_bps: u32,
+}
+
+pub mod coupons;
 pub mod dust;
 pub mod oracle;
 pub mod settlement;
@@ -1001,7 +1026,7 @@ impl RefundVault {
         current_user_nonce(&env, &caller)
     }
 
-    pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
+    pub fn deposit(env: Env, from: Address, amount: i128, coupon_id: Option<u64>) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
@@ -1027,6 +1052,27 @@ impl RefundVault {
         }
         admin.require_auth();
 
+        // Apply a discount coupon when one is supplied. The coupon is marked
+        // redeemed atomically here — inside the reentrancy lock and after all
+        // preconditions have passed — so a subsequent token-transfer failure
+        // rolls back the storage write via the host's atomic transaction.
+        let effective_amount = if let Some(id) = coupon_id {
+            let rec = coupons::get_coupon(&env, id).ok_or(Error::CouponNotFound)?;
+            let discount_bps = rec.discount_bps;
+            let eff = coupons::apply_coupon(&env, &from, id, amount)?;
+            CouponAppliedEvent {
+                coupon_id: id,
+                holder: from.clone(),
+                original_amount: amount,
+                effective_amount: eff,
+                discount_bps,
+            }
+            .publish(&env);
+            eff
+        } else {
+            amount
+        };
+
         let token_address: Address = env
             .storage()
             .instance()
@@ -1034,13 +1080,13 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
         let contract_addr = env.current_contract_address();
-        token_client.transfer(&admin, &contract_addr, &amount);
+        token_client.transfer(&admin, &contract_addr, &effective_amount);
 
         let nonce = increment_nonce(&env);
 
         DepositEvent {
             from: from.clone(),
-            amount,
+            amount: effective_amount,
             nonce,
         }
         .publish(&env);
@@ -1048,6 +1094,44 @@ impl RefundVault {
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
+    }
+
+    /// Mint a new discount coupon NFT for `owner` (issue #453).
+    ///
+    /// Only the vault admin (merchant) may call this. The `coupon_id` must be
+    /// unique within this vault instance; ids are chosen by the merchant.
+    /// `discount_bps` is the discount rate in basis points
+    /// (max [`coupons::MAX_COUPON_DISCOUNT_BPS`] = 50 %).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::NotInitialized`] — vault not yet initialized.
+    /// - [`Error::Unauthorized`] — caller is not the vault admin.
+    /// - [`Error::InvalidRatio`] — `discount_bps` exceeds the maximum.
+    /// - [`Error::AlreadyInitialized`] — `coupon_id` already exists.
+    pub fn mint_coupon(
+        env: Env,
+        coupon_id: u64,
+        owner: Address,
+        discount_bps: u32,
+    ) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        coupons::mint_coupon(&env, coupon_id, owner, discount_bps)?;
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Read the coupon record for `coupon_id`, or `None` if it does not exist.
+    ///
+    /// This is a read-only query — no auth required.
+    pub fn get_coupon(env: Env, coupon_id: u64) -> Option<coupons::CouponRecord> {
+        coupons::get_coupon(&env, coupon_id)
     }
 
     pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
