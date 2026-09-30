@@ -457,6 +457,10 @@ impl Governance {
             .storage()
             .temporary()
             .has(&DataKey::AnonymousVoting(proposal_id))
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::MemberVotingKey(voter.clone()))
         {
             return Err(Error::VotingModeConflict);
         }

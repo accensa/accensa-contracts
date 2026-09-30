@@ -563,6 +563,20 @@ fn anonymous_and_transparent_votes_cannot_be_mixed() {
 }
 
 #[test]
+fn anonymous_mode_preserves_transparent_votes_without_registered_keys() {
+    let h = setup();
+    let (ring, sk1, sk2) = test_ring(&h);
+    let (target, function, args) = set_value_call(&h.env, &h.target, 8);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    let signature = sign_for_harness(&h, id, true, &ring, &[sk1, sk2], 0);
+    h.gov.vote_anonymous(&id, &true, &ring, &signature);
+
+    // m3 has no registered LSAG key, so preserve the legacy address vote.
+    h.gov.vote(&h.m3, &id, &false);
+    assert_eq!(h.gov.get_proposal(&id).no_weight, 2);
+}
+
+#[test]
 fn prior_transparent_vote_prevents_that_member_from_entering_an_anonymous_ring() {
     let h = setup();
     let (ring, sk1, sk2) = test_ring(&h);
