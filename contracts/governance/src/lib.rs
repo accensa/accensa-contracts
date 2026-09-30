@@ -51,6 +51,8 @@ mod ragequit;
 pub mod simulation;
 mod voting;
 
+pub mod optimistic;
+
 use quorum::current_quorum_bps;
 
 use soroban_sdk::{
@@ -126,6 +128,14 @@ pub enum Error {
     /// Simulation is required but no simulator contract is registered
     /// (issue #483).
     SimulationNotConfigured = 21,
+    /// No optimistic proposal exists with the given id.
+    OptimisticNotFound = 22,
+    /// The optimistic proposal was vetoed and cannot execute.
+    OptimisticVetoed = 23,
+    /// The optimistic challenge window has closed.
+    ChallengeWindowClosed = 24,
+    /// This member already vetoed this optimistic proposal.
+    AlreadyVetoed = 25,
 }
 
 #[contracttype]
@@ -166,6 +176,12 @@ pub enum DataKey {
     /// Persistent: the verified simulation report stored with a proposal
     /// created through `propose_with_simulation` (issue #483).
     SimAttestation(u64),
+    /// Instance: number of optimistic proposals ever created; also the next id.
+    OptimisticCount,
+    /// Persistent: an optimistic proposal's payload and veto tally.
+    OptimisticProposal(u64),
+    /// Temporary: marks that `.1` vetoed optimistic proposal `.0`.
+    OptimisticVeto(u64, Address),
 }
 
 /// A proposed call plus its running weighted tally.
@@ -732,6 +748,45 @@ impl Governance {
         env.storage()
             .temporary()
             .has(&DataKey::Dissent(proposal_id, voter))
+    }
+
+    /// Queue a routine operation for optimistic execution (issue #475).
+    /// `proposer`, a member, authorizes the queue; the proposal becomes
+    /// executable immediately and opens a 24-hour supermajority-veto window.
+    /// Returns the new optimistic proposal id.
+    pub fn optimistic_submit(
+        env: Env,
+        proposer: Address,
+        target: Address,
+        function: Symbol,
+        args: Vec<Val>,
+    ) -> Result<u64, Error> {
+        optimistic::submit(&env, &proposer, &target, &function, &args)
+    }
+
+    /// Cast `voter`'s weight against optimistic proposal `proposal_id`
+    /// (issue #475). Only valid inside the challenge window, only members,
+    /// once per member. When cumulative veto weight reaches a ~2/3
+    /// supermajority of total weight the proposal is locked and execution
+    /// reverts with [`Error::OptimisticVetoed`].
+    pub fn veto_optimistic(env: Env, voter: Address, proposal_id: u64) -> Result<(), Error> {
+        optimistic::veto(&env, &voter, proposal_id)
+    }
+
+    /// Execute queued optimistic proposal `proposal_id` against its target
+    /// (issue #475). Anyone may call, at any time, unless the proposal was
+    /// executed already or a supermajority vetoed it during the window.
+    pub fn execute_optimistic(env: Env, proposal_id: u64) -> Result<(), Error> {
+        optimistic::execute(&env, proposal_id)
+    }
+
+    /// Read-only: the current state of optimistic proposal `proposal_id`
+    /// (issue #475).
+    pub fn get_optimistic_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<optimistic::OptimisticProposal, Error> {
+        optimistic::get(&env, proposal_id)
     }
 
     fn member_deposit(env: &Env, member: &Address) -> Result<(), Error> {

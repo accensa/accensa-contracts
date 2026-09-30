@@ -2,7 +2,7 @@
   "receipt_anchor": 83000,
   "refund_vault": 127000,
   "refund_policy_time": 25000,
-  "refund_policy_vdf": 45000,
+  "refund_policy_vdf": 62000,
   "refund_vault_factory": 34000,
   "governance": 55000,
   "multisig_account": 47000,

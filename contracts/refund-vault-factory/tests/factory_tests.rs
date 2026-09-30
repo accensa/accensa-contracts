@@ -37,6 +37,12 @@ struct Ctx {
 fn setup() -> Ctx {
     let env = Env::default();
     env.mock_all_auths();
+    // The vault wasm (~139KB) costs ~108M CPU instructions to upload and
+    // instantiate for verification, which exceeds the default 100M test
+    // budget on its own. Raise the (test-only, modeled — not real RAM)
+    // budget so deploy-based integration tests can run; on-chain budgets
+    // are enforced by the network regardless. See also `.wasm-budget.json`.
+    env.cost_estimate().budget().reset_limits(500_000_000, 500_000_000);
 
     let admin = Address::generate(&env);
     let merchant = Address::generate(&env);
@@ -192,6 +198,92 @@ fn custom_salt_is_distinct_from_counter_family() {
     assert_ne!(
         custom, counted,
         "custom salt must not alias the counter family"
+    );
+}
+
+#[test]
+fn deploy_for_participants_lands_on_predict_address() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let buyer = Address::generate(&env);
+
+    let expected = factory.predict_address(&buyer, &merchant);
+    let vault = factory.deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer);
+
+    assert_eq!(
+        vault, expected,
+        "deploy_for_participants must land on predict_address"
+    );
+    assert_eq!(
+        factory.predict_address(&buyer, &merchant),
+        expected,
+        "predict_address is deterministic"
+    );
+}
+
+#[test]
+fn reused_participant_pair_reverts_with_salt_collision() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let buyer = Address::generate(&env);
+
+    factory.deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer);
+
+    assert_eq!(
+        factory.try_deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer),
+        Err(Ok(Error::SaltCollision))
+    );
+}
+
+#[test]
+fn distinct_participants_get_distinct_vaults() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let a = factory.deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer_a);
+    let b = factory.deploy_for_participants(&vault_init(&env, &merchant, &token, 100), &buyer_b);
+
+    assert_ne!(a, b, "different buyers must mint different vault addresses");
+    assert_ne!(
+        factory.predict_address(&buyer_a, &merchant),
+        factory.predict_address(&buyer_b, &merchant)
+    );
+}
+
+#[test]
+fn predict_address_is_distinct_from_counter_family() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+    let buyer = Address::generate(&env);
+
+    let predicted = factory.predict_address(&buyer, &merchant);
+    let counted = factory.deploy_vault(&vault_init(&env, &merchant, &token, 100));
+
+    assert_ne!(
+        predicted, counted,
+        "participant-keyed salts must not alias the counter family"
     );
 }
 

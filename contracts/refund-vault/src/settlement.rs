@@ -98,25 +98,18 @@ pub(crate) fn split_amount(amount: i128, fee_bps: u32) -> (i128, i128) {
 
 #[contractimpl]
 impl RefundVault {
-    /// Read-only: the exact settlement a [`RefundVault::refund`] of `amount`
-    /// would produce for `payment_ref`, without changing any state.
+    /// Read-only: the settlement a [`RefundVault::refund`] of `amount` would
+    /// produce for `payment_ref` — buyer payout, fee, cumulative total and what
+    /// the merchant retains — so a merchant can be shown an exact breakdown
+    /// (fees and rounding included) without changing any state.
     ///
-    /// This is the query form of the partial-refund split: it reports the
-    /// buyer's payout, the fee, the cumulative total after the refund, and how
-    /// much of the original payment the merchant would retain. A caller can
-    /// use it to show a merchant an exact breakdown (fees and rounding
-    /// included) before the refund is authorized.
+    /// Policy gates (window, deadline, cooldown, VDF, oracle) are **not**
+    /// evaluated: they depend on the ledger the refund lands in. This answers
+    /// "how is this amount split?", not "is this claim admitted?".
     ///
-    /// The policy gates (window, deadline, cooldown, VDF, oracle) are **not**
-    /// evaluated here — they depend on the ledger a refund lands in and can
-    /// only be judged at execution time. This preview answers "how would this
-    /// amount be split?", not "would this claim be admitted?".
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::InvalidAmount`] when `amount` is not strictly positive;
-    /// - [`Error::ExceedsPayment`] when the refund would pass the payment's
-    ///   ceiling, or a legacy pre-#99 record exists for the payment.
+    /// Errors: [`Error::InvalidAmount`] for a non-positive `amount`, and
+    /// [`Error::ExceedsPayment`] past the ceiling or for a legacy pre-#99
+    /// record.
     pub fn preview_settlement(
         env: Env,
         payment_ref: BytesN<32>,
@@ -139,7 +132,9 @@ impl RefundVault {
 
         let (previous_refunded, ceiling) =
             resolve_ceiling(&env, &payment_ref, amount, payment_amount)?;
-        let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
+        // Tier-aware: when the merchant has a fee ladder installed this is the
+        // active rung's rate, so the preview matches what `refund` will charge.
+        let fee_bps: u32 = crate::tiers::effective_fee_bps(&env);
         let (fee, recipient_amount) = split_amount(amount, fee_bps);
         let cumulative_refunded = previous_refunded + amount;
 

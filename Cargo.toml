@@ -3,6 +3,7 @@ members = [
     "contracts/common",
     "contracts/cross-chain",
     "contracts/governance",
+    "contracts/oracle",
     "contracts/multisig-account",
     "contracts/receipt-anchor",
     "contracts/receipt-shard",
