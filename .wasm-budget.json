@@ -4,7 +4,7 @@
   "refund_policy_time": 25000,
   "refund_policy_vdf": 62000,
   "refund_vault_factory": 34000,
-  "governance": 55000,
+  "governance": 95000,
   "multisig_account": 47000,
   "receipt_shard": 52500,
   "state_channel": 106000,

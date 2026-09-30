@@ -42,7 +42,9 @@ fn setup() -> Ctx {
     // budget on its own. Raise the (test-only, modeled — not real RAM)
     // budget so deploy-based integration tests can run; on-chain budgets
     // are enforced by the network regardless. See also `.wasm-budget.json`.
-    env.cost_estimate().budget().reset_limits(500_000_000, 500_000_000);
+    env.cost_estimate()
+        .budget()
+        .reset_limits(500_000_000, 500_000_000);
 
     let admin = Address::generate(&env);
     let merchant = Address::generate(&env);

@@ -12,6 +12,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 - **`governance` (issue #441): anonymous governance voting with Ristretto255
   LSAG signatures.** Members register a voting key and cast votes through an
   equal-weight anonymity set; proposal-scoped key images prevent double-voting.
+  The 32-member vote costs 9,557,502 CPU instructions. The measured 88,994-byte
+  governance WASM is covered by its updated 95,000-byte size budget.
 - **`oracle`: Chainlink data-feed consumer trait.** New `accensa-oracle` contract (`contracts/oracle/src/chainlink.rs`) implements an AggregatorV3-style consumer: admin-pushed `RoundData` with round-completeness checks (`answered_in_round`, `updated_at`, positive answer), staleness rejection, monotonic round ids, and the standard `get_price` + `get_last_update_ledger` oracle interface for `RefundVault` fee scaling.
 - **`cross-chain` (issue #455): LayerZero omnichain dispute bridging.** New
   `layerzero` module lets decentralized arbitrators on remote chains deliver

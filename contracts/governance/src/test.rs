@@ -389,6 +389,58 @@ fn sign_for_harness(
 }
 
 #[test]
+fn maximum_anonymity_set_fits_soroban_cpu_budget() {
+    const SOROBAN_CPU_LIMIT: u64 = 100_000_000;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let mut members = Vec::new(&env);
+    let mut deposits = Vec::new(&env);
+    let mut ring = Vec::new(&env);
+    let mut secrets = std::vec::Vec::with_capacity(crate::MAX_MEMBERS as usize);
+
+    for seed in 0..crate::MAX_MEMBERS {
+        let member = Address::generate(&env);
+        let secret = crate::ring_sig::test_support::secret(&env, u64::from(seed));
+        let public_key = crate::ring_sig::test_support::public(&env, &secret);
+        members.push_back(member);
+        deposits.push_back(1u64);
+        ring.push_back(public_key);
+        secrets.push(secret);
+    }
+
+    let governance_id = env.register(Governance, (members.clone(), deposits, 5000u32, 100u32));
+    let gov = GovernanceClient::new(&env, &governance_id);
+    for index in 0..crate::MAX_MEMBERS {
+        gov.register_voting_key(&members.get(index).unwrap(), &ring.get(index).unwrap());
+    }
+
+    let target = Address::generate(&env);
+    let function = Symbol::new(&env, "noop");
+    let args = Vec::new(&env);
+    let proposal_id = gov.propose(&members.get(0).unwrap(), &target, &function, &args);
+    let signature = env.as_contract(&governance_id, || {
+        crate::ring_sig::test_support::sign(
+            &env,
+            proposal_id,
+            true,
+            &ring,
+            &secrets,
+            secrets.len() - 1,
+        )
+    });
+
+    env.cost_estimate().budget().reset_unlimited();
+    gov.vote_anonymous(&proposal_id, &true, &ring, &signature);
+    let cpu_instructions = env.cost_estimate().budget().cpu_instruction_cost();
+    std::println!("32-member LSAG vote: {cpu_instructions} CPU instructions");
+    assert!(
+        cpu_instructions < SOROBAN_CPU_LIMIT,
+        "maximum anonymity set exceeded Soroban's CPU limit: {cpu_instructions}"
+    );
+}
+
+#[test]
 fn anonymous_lsag_vote_updates_tally_without_storing_or_emitting_signer_address() {
     let h = setup();
     let (ring, sk1, sk2) = test_ring(&h);
