@@ -18,6 +18,48 @@
 use crate::Error;
 use soroban_sdk::Env;
 
+/// Ledgers before the deadline at which a counter-proof counts as "late" and
+/// extends the dispute window (issue #431).
+pub(crate) const COUNTER_PROOF_EXTENSION_LEDGERS: u32 = 50;
+
+/// Maximum number of times the dispute window may be extended by late
+/// counter-proofs (issue #431). Bounds the window so a hostile party cannot
+/// stall settlement indefinitely by resubmitting newer states.
+pub(crate) const MAX_DISPUTE_EXTENSIONS: u32 = 3;
+
+/// Apply the anti-sniping late-counter-proof rule (issue #431).
+///
+/// When a valid counter-proof is submitted within the final
+/// [`COUNTER_PROOF_EXTENSION_LEDGERS`] ledgers of the window, the window is
+/// extended by that many ledgers so the honest party has time to respond.
+/// Extensions are capped at [`MAX_DISPUTE_EXTENSIONS`]; a counter-proof that
+/// would exceed the cap is rejected with
+/// [`Error::DisputeExtensionLimitReached`].
+///
+/// Returns the (possibly unchanged) `(window_started, extensions)`.
+pub(crate) fn extend_window_on_late_counter_proof(
+    env: &Env,
+    window_started: u32,
+    challenge_period: u32,
+    extensions: u32,
+) -> Result<(u32, u32), Error> {
+    let deadline = window_started.saturating_add(challenge_period);
+    let current_ledger = env.ledger().sequence();
+    // Outside the final stretch, a counter-proof does not extend the window.
+    if current_ledger > deadline
+        || deadline.saturating_sub(current_ledger) >= COUNTER_PROOF_EXTENSION_LEDGERS
+    {
+        return Ok((window_started, extensions));
+    }
+    if extensions >= MAX_DISPUTE_EXTENSIONS {
+        return Err(Error::DisputeExtensionLimitReached);
+    }
+    Ok((
+        window_started.saturating_add(COUNTER_PROOF_EXTENSION_LEDGERS),
+        extensions + 1,
+    ))
+}
+
 /// The dispute window is still open at `current_ledger`, i.e. the lapsed
 /// deadline (`window_started + challenge_period`) has not yet passed.
 ///

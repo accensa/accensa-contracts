@@ -194,6 +194,10 @@ pub enum Error {
     InvalidTierLadder = 329,
     /// No randomness committed yet for the VDF round.
     RandomnessNotFound = 330,
+    /// A late counter-proof would extend the dispute window past the cap
+    /// (issue #431). The window is bounded so a hostile party cannot stall
+    /// settlement indefinitely by resubmitting newer states.
+    DisputeExtensionLimitReached = 417,
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }
