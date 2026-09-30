@@ -6,16 +6,19 @@ pub use layerzero::{
     PeerAddress,
 };
 pub use outbound::{EvmAddress, OutboundBridgePayload};
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String};
 pub use wormhole::{
     hash_vaa_body, parse_vaa, pubkey_to_address, verify_vaa, GuardianAddress, GuardianSet,
     GuardianSignature, ParsedVaa, VaaBody,
 };
 
+pub mod axelar;
 pub mod layerzero;
 pub mod outbound;
 pub mod wormhole;
 
+#[cfg(test)]
+mod axelar_test;
 #[cfg(test)]
 mod layerzero_test;
 #[cfg(test)]
@@ -36,6 +39,9 @@ pub enum DataKey {
     /// Instance: the admin-configured LayerZero endpoint allowed to deliver
     /// packets to `lz_receive` (issue #455).
     LzEndpoint,
+    /// Instance: the admin-configured Axelar gateway allowed to deliver
+    /// deposits to `axelar_execute` (issue #454).
+    AxelarGateway,
 }
 
 #[contract]
@@ -103,6 +109,78 @@ impl CrossChainBridge {
             .instance()
             .get(&DataKey::CurrentGuardianSetIndex)
             .unwrap_or(0)
+    }
+
+    /// Register the Axelar gateway allowed to deliver cross-chain deposits
+    /// (admin only, issue #454).
+    pub fn set_axelar_gateway(env: Env, admin: Address, gateway: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AxelarGateway, &gateway);
+        Ok(())
+    }
+
+    /// Return the configured Axelar gateway, if any.
+    pub fn get_axelar_gateway(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::AxelarGateway)
+    }
+
+    /// Execute an inbound Axelar message, crediting the bridged deposit
+    /// (issue #454).
+    ///
+    /// Only the registered gateway may deliver, the gateway must confirm the
+    /// message via `validate_message`, and each `message_id` is credited at most
+    /// once. Returns the recipient's running credited total.
+    pub fn axelar_execute(
+        env: Env,
+        gateway: Address,
+        source_chain: String,
+        message_id: String,
+        source_address: String,
+        payload: Bytes,
+    ) -> Result<i128, Error> {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            return Err(Error::Paused);
+        }
+
+        let configured: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::AxelarGateway)
+            .ok_or(Error::NotInitialized)?;
+
+        gateway.require_auth();
+        if gateway != configured {
+            return Err(Error::Unauthorized);
+        }
+
+        let payload_hash: BytesN<32> = env.crypto().sha256(&payload).into();
+        let validated = axelar::AxelarGatewayClient::new(&env, &gateway).validate_message(
+            &source_chain,
+            &message_id,
+            &source_address,
+            &payload_hash,
+        );
+        if !validated {
+            return Err(Error::InvalidProof);
+        }
+
+        let deposit = axelar::parse_deposit_payload(&env, &payload)?;
+        axelar::record_deposit(&env, deposit, source_chain, message_id)
     }
 
     /// Verify a Wormhole VAA and extract its cross-chain payload.
