@@ -2661,7 +2661,9 @@ mod test;
 mod test_helpers;
 #[cfg(test)]
 mod tier_tests;
+#[cfg(test)]
 mod token_agnostic_tests;
+#[cfg(test)]
 mod yield_tests;
 
 /// Security audit tests for the commit-reveal scheme (issue #128): simulate

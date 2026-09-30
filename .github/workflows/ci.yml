@@ -125,6 +125,15 @@ jobs:
         run: |
           cargo build --target wasm32v1-none --release \
             -p receipt-shard -p receipt-anchor -p refund-vault
+      - name: Optimize the wasms the tests import
+        # `deploy.sh` builds with `stellar contract build`, which optimizes the
+        # wasm before uploading it. Tests have to import and upload that same
+        # artifact: cargo's raw output is ~25% larger, and the unoptimized
+        # refund_vault blob (138631 B) is rejected outright by
+        # `upload_contract_wasm` because a contract code ledger entry is capped
+        # at 131072 B. That made every deploy-based factory test panic with
+        # Error(Budget, ExceededLimit) on an artifact no one would ever deploy.
+        run: bash scripts/optimize_wasm.sh
       - name: Run Tests
         run: cargo test --locked --workspace
 
@@ -192,6 +201,12 @@ jobs:
         # cannot compile for wasm32v1-none (same rationale as the build-wasm
         # job). Only the contract crates are needed for the Tier A macros.
         run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
+
+      - name: Optimize wasms
+        # Same reason as the test job: the Tier A assertions upload this wasm,
+        # and only the optimized (deployable) artifact fits the 131072-byte
+        # contract code entry limit.
+        run: bash scripts/optimize_wasm.sh
 
       # --- WASM size ceiling (committed baseline + tolerance) ---
       - name: Enforce WASM size budget
@@ -301,6 +316,12 @@ jobs:
         # `testutils` feature, which is not supported on wasm and fails with
         # `compile_error!("'testutils' feature is not supported on 'wasm'")`.
         run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
+
+      - name: Optimize wasms
+        # Optimize before both the size gate and the artifact upload, so
+        # `.wasm-budget.json` bounds the bytes that actually get deployed and
+        # the uploaded artifacts are what `deploy.sh` would ship.
+        run: bash scripts/optimize_wasm.sh
 
       - name: Report WASM sizes & enforce size budget
         run: |

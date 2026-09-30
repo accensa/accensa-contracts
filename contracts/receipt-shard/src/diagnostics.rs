@@ -14,7 +14,8 @@
 //!   decremented by both pruning paths (`prune_batches`,
 //!   `prune_expired_receipts`). Re-anchoring an existing `batch_id` replaces
 //!   its contribution instead of double counting.
-//! - `total_leaves`: lifetime leaf count ever anchored; never decreases.
+//! - `total_leaves`: Lifetime number of leaves introduced into this shard;
+//     never decreases. Both newly anchored and migrated records contribute.
 //! - `high_water`: one past the highest `batch_id` anchored so far (`0`
 //!   before the first anchor, reported as `start`).
 //! - `max_batch_count`: the largest leaf count of any batch ever anchored,
@@ -124,6 +125,19 @@ pub(crate) fn record_removals(env: &Env, count: u64, leaves: u64) {
     store(env, &stats);
 }
 
+/// Update live-state counters for a migrated record. Migrated leaves are
+/// introduced into the destination shard's lifetime accounting, while the
+/// migration does not change the batch's original receipt commitment.
+pub(crate) fn record_migration(env: &Env, batch_id: u64, count: u32) {
+    let mut stats = load(env);
+    stats.live_batches += 1;
+    stats.live_leaves += count as u64;
+    stats.total_leaves += count as u64;
+    stats.high_water = stats.high_water.max(batch_id + 1);
+    stats.max_batch_count = stats.max_batch_count.max(count);
+    store(env, &stats);
+}
+
 /// Number of batches in `[cursor, high_water)` still inside the retention
 /// window.
 ///
@@ -156,10 +170,10 @@ impl ReceiptShard {
     /// Read-only health snapshot for indexers and light clients (issue #419).
     ///
     /// `consistent` is `true` when all of these hold:
+    /// - `live_leaves <= total_leaves`;
     /// - `start <= oldest_unpruned <= end` and `start <= high_water <= end`;
     /// - the live batches fit between the cursor and the high-water mark
     ///   (`live_batches <= high_water - oldest_unpruned`);
-    /// - `live_leaves <= total_leaves`;
     /// - `max_merkle_depth` does not exceed the maximum verifiable proof
     ///   length, so every anchored batch can still be proven.
     pub fn get_shard_diagnostics(env: Env) -> ShardDiagnostics {
@@ -190,7 +204,6 @@ impl ReceiptShard {
             && live_batches <= high_water.saturating_sub(cursor)
             && live_leaves <= total_leaves
             && max_merkle_depth <= MAX_PROOF_LEN;
-
         ShardDiagnostics {
             start_batch_id: start,
             end_batch_id: end,

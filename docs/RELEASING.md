@@ -39,6 +39,17 @@ cargo build --target wasm32v1-none --release
 ```
 Our `build.rs` scripts automatically embed the current `GIT_SHA` into the compiled WASM, ensuring that any deployed contract can be traced back to its exact source code commit.
 
+"Optimized" here means the cargo profile (`opt-level = "z"`, LTO, single codegen
+unit), not the deployable binary. `./deploy.sh` runs `stellar contract build`,
+which additionally passes the wasm through the optimizer, and that step shrinks
+every contract by roughly 25% — a size that matters, because a contract code
+ledger entry is capped at 131072 bytes. To measure the artifact that actually
+gets deployed (this is what CI does before the size gate):
+```bash
+cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
+bash scripts/optimize_wasm.sh
+```
+
 ### 4. Deploy and Record
 Deploy the contracts using the deployment script. The script automatically computes the WASM hashes and extracts the version and commit SHA.
 ```bash

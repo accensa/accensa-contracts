@@ -78,6 +78,7 @@ impl ReceiptShard {
     /// slots). A call that finds nothing expired is a successful no-op
     /// returning `0`.
     pub fn prune_expired_receipts(env: Env, pruner: Address, max_count: u32) -> u32 {
+        assert!(ReceiptShard::is_active(env.clone()), "shard is inactive");
         pruner.require_auth();
 
         let current_ledger = env.ledger().sequence();

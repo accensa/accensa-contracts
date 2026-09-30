@@ -105,6 +105,18 @@ incremental Merkle tree (issue #424).
   - `leaf` (`BytesN<32>`): The appended leaf hash.
   - `root` (`BytesN<32>`): The tree root after the insertion (same sorted-pair, duplicate-odd-node convention as batch roots).
 
+## `ReceiptShard` Events
+
+### `ShardsConsolidated`
+Emitted when batch records are migrated from a source storage shard into a destination shard.
+
+- **Topics**: `("shards_consolidated", source_shard_id: u64, destination_shard_id: u64)`
+- **Data Map**:
+  - `migrated_count` (`u32`): Number of batch records moved by the operation.
+
+The source deletes each record only after the destination returns the identical
+record, preserving the complete `BatchRecord` including its Merkle root.
+
 ## `RefundVault` Events
 
 ### 7. `DepositEvent`
