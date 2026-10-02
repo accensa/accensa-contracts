@@ -25,9 +25,7 @@
 //! silently decode as v1.
 
 use accensa_common::Error;
-use soroban_sdk::{
-    contractclient, contractevent, contracttype, Bytes, BytesN, Env, String,
-};
+use soroban_sdk::{contractclient, contractevent, contracttype, Bytes, BytesN, Env, String};
 
 /// Current deposit payload layout version accepted by [`parse_deposit_payload`].
 pub const DEPOSIT_PAYLOAD_VERSION: u8 = 1;
@@ -151,11 +149,7 @@ pub(crate) fn record_deposit(
         .extend_ttl(&executed_key, AXELAR_TTL_THRESHOLD, AXELAR_TTL_EXTEND);
 
     let credited_key = DataKey::Credited(deposit.recipient.clone());
-    let current: i128 = env
-        .storage()
-        .persistent()
-        .get(&credited_key)
-        .unwrap_or(0);
+    let current: i128 = env.storage().persistent().get(&credited_key).unwrap_or(0);
     let new_total = current
         .checked_add(deposit.amount)
         .ok_or(Error::MathOverflow)?;

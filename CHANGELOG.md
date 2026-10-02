@@ -9,6 +9,16 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`cross-chain` (issue #454): Axelar gateway deposit adapter.** New `axelar`
+  module lets users on Ethereum, Polygon and other Axelar-chains fund Soroban
+  escrow balances. `axelar_execute` runs only for the admin-registered gateway
+  address, and the gateway must first confirm the inbound message through
+  `AxelarGatewayInterface::validate_message`, so the contract never re-implements
+  Axelar's validator-set checks. The version-1 deposit payload is validated
+  structurally before decoding (exact 49 bytes: version, 32-byte bridged account
+  id, big-endian i128 amount that must be positive; anything else is
+  `Error::InvalidProof`, so a future version cannot silently decode as v1), and
+  each `message_id` is recorded and refused on replay (`Error::AlreadyRefunded`).
 - **`receipt-shard` (issue #437): shard storage consolidation.** Router-authorized source shards can migrate exact `BatchRecord` values into a destination shard, verify the returned record before deletion, emit `ShardsConsolidated`, and mark drained sources inactive to stop further writes.
 - **`oracle`: Chainlink data-feed consumer trait.** New `accensa-oracle` contract (`contracts/oracle/src/chainlink.rs`) implements an AggregatorV3-style consumer: admin-pushed `RoundData` with round-completeness checks (`answered_in_round`, `updated_at`, positive answer), staleness rejection, monotonic round ids, and the standard `get_price` + `get_last_update_ledger` oracle interface for `RefundVault` fee scaling.
 - **`cross-chain` (issue #455): LayerZero omnichain dispute bridging.** New
