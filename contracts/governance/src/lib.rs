@@ -1,6 +1,22 @@
 //! A proposal-based, weighted-voting governance contract for Soroban admin
 //! roles (issue: single-admin-key SPOF on `ReceiptAnchor`).
 //!
+//! ## Liquid Staking
+//!
+//! Liquid Staking Derivative (stACC) module: mint stACC 1:1 upon locking
+//! underlying tokens, burn stACC to redeem after lock epoch, and calculate
+//! redemption value via exchange rate / share progression.
+//!
+//! Primary contract file: `contracts/governance/src/liquid_staking.rs`
+//!
+//! Re-exported types:
+//! - `LiquidStakingError` - contract errors
+//! - `LiquidStakingDataKey` - storage data keys
+//! - `ExchangeRate` - 1e6 precision stACC/underlying rate
+//! - `UserData` - per-user balance/lock state
+//! - `Mint` - mint event
+//! - `Burn` - burn event
+//!
 //! Unlike [`multisig_account`](https://github.com/accensa/accensa-contracts) —
 //! which aggregates signatures within one transaction via
 //! `CustomAccountInterface` — this contract is a plain contract that carries
@@ -48,12 +64,18 @@ extern crate alloc;
 #[cfg(test)]
 mod test;
 
+mod liquid_staking;
 mod math;
 mod quorum;
 mod ragequit;
 mod ring_sig;
 pub mod simulation;
 mod voting;
+
+pub use liquid_staking::{
+    Burn, ExchangeRate, LiquidStaking, LiquidStakingClient, LiquidStakingDataKey,
+    LiquidStakingError, Mint, UserData, UserData as LiquidStakingUserData,
+};
 
 pub mod optimistic;
 

@@ -23,7 +23,24 @@ breaking changes bump the **minor** version, and they are called out as such.
   `accensa_common::Error`. The commitment is `sha256(value || blinding)` and the
   verifier is structural rather than pairing-based, because Soroban exposes no
   curve arithmetic — both are documented in the module as stand-ins.
+- **`cross-chain` (issue #454): Axelar gateway deposit adapter.** New `axelar`
+  module lets users on Ethereum, Polygon and other Axelar-chains fund Soroban
+  escrow balances. `axelar_execute` runs only for the admin-registered gateway
+  address, and the gateway must first confirm the inbound message through
+  `AxelarGatewayInterface::validate_message`, so the contract never re-implements
+  Axelar's validator-set checks. The version-1 deposit payload is validated
+  structurally before decoding (exact 49 bytes: version, 32-byte bridged account
+  id, big-endian i128 amount that must be positive; anything else is
+  `Error::InvalidProof`, so a future version cannot silently decode as v1), and
+  each `message_id` is recorded and refused on replay (`Error::AlreadyRefunded`).
 - **`receipt-shard` (issue #437): shard storage consolidation.** Router-authorized source shards can migrate exact `BatchRecord` values into a destination shard, verify the returned record before deletion, emit `ShardsConsolidated`, and mark drained sources inactive to stop further writes.
+- **`state-channel` (issue #431): anti-sniping late counter-proof extension.** A
+  valid counter-proof submitted within the final 50 ledgers of the dispute window
+  now pushes the deadline back by 50 ledgers so the honest party has time to
+  answer, instead of letting a hostile party front-run settlement in the last
+  block. Extensions are capped at 3; a fourth late counter-proof is rejected with
+  the new shared `Error::DisputeExtensionLimitReached` (code 417, appended so no
+  existing error code moves).
 - **`oracle`: Chainlink data-feed consumer trait.** New `accensa-oracle` contract (`contracts/oracle/src/chainlink.rs`) implements an AggregatorV3-style consumer: admin-pushed `RoundData` with round-completeness checks (`answered_in_round`, `updated_at`, positive answer), staleness rejection, monotonic round ids, and the standard `get_price` + `get_last_update_ledger` oracle interface for `RefundVault` fee scaling.
 - **`cross-chain` (issue #455): LayerZero omnichain dispute bridging.** New
   `layerzero` module lets decentralized arbitrators on remote chains deliver
@@ -261,7 +278,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   and `DailyLimitSet`.
 - **`state-channel` (issue #412): cooperative mutual close.** The receiver
   registers an Ed25519 key with `register_receiver_key`. `mutual_close(final_state,
-  sig_a, sig_b)` then checks both signatures over a domain-separated
+sig_a, sig_b)` then checks both signatures over a domain-separated
   `MutualCloseState` (bound to the contract and channel id), requires the
   split to add up to the escrow, pays both parties at once from `Open`,
   `Closed` or `Disputed`, deletes the channel's storage entries and emits
@@ -349,7 +366,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 - **`stream-vault` (issue #410): streaming micro-disbursement schedules.**
   New standalone contract, constructed with `(merchant, token)`.
   `create_stream(buyer, start_ledger, stop_ledger, rate_per_ledger,
-  deposit)` escrows a buyer's deposit and streams it linearly to the
+deposit)` escrows a buyer's deposit and streams it linearly to the
   merchant; the claimable balance is `min(deposit, (ledger - start) * rate)`
   less prior claims. `claim_stream` is permissionless and closes the stream
   once the stop ledger is reached. The buyer can `pause_stream` /
@@ -362,7 +379,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 - **`multisig-account` (issue #425): Ed25519 signature malleability protection.**
   New `crypto` module rejects any signature whose `s` scalar is not strictly
   below the group order `L` (e.g. the malleated twin `(R, s + L)`) with
-  `Error::NonCanonicalSignature` *before* host verification; exposed as the
+  `Error::NonCanonicalSignature` _before_ host verification; exposed as the
   `verify_ed25519` entrypoint. Also restores the crate's build (misplaced
   module docs, invalid `[u8; 32]` contract types, bad zero-address strkey) and
   makes `rotate_signers_and_threshold` require the account's own auth.
@@ -442,6 +459,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   voting window (`contracts/governance/src/quorum.rs`), so inactive proposals
   late in their window need less "yes" weight to pass — but never beneath the
   floor, and "yes" must still outweigh "no".
+
 ### Performance
 
 - **`refund-vault`: nonce-key allocation halved in `check_and_bump_user_nonce`
@@ -594,7 +612,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   vault and factory formerly stored their `Option<Address>` policy fields
   verbatim, so a cleared policy left a `Void` in the ledger, which the host
   rejects/breaks on in several read paths (observed as `Error(Context,
-  InvalidAction)` and abort traps in the wasm constructor path). Policy fields
+InvalidAction)` and abort traps in the wasm constructor path). Policy fields
   are now written only when `Some`, and setters `remove()` the key on `None`.
   Absent key ⇔ unconfigured, which is the correct on-chain semantic anyway
   (`Void` is not a legal contract-data value).
@@ -649,7 +667,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   `COMMIT_MIN_DELAY_LEDGERS` (7) ledgers later to surface and consume the
   action. `reveal` re-derives the hash from the plaintext and rejects a
   mismatch (`CommitMismatch`), a reveal before the delay (`CommitDelayNot
-  Elapsed`), a reveal with no pending commit (`NoCommit`), a reveal under a
+Elapsed`), a reveal with no pending commit (`NoCommit`), a reveal under a
   different operation than the one committed (`CommitOperationMismatch`), and
   a duplicate pending commit (`CommitAlreadyExists`). Commitments are
   merchant-only and single-use. New error codes 305–309 are appended without
@@ -658,7 +676,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 - **VDF-gated refunds for `RefundVault`** (issue #138): the refund policy now
   carries a Verifiable Delay Function requirement — `propose_policy(ledgers,
-  deadline, vdf_delay)` configures a delay in squarings (subject to the same
+deadline, vdf_delay)` configures a delay in squarings (subject to the same
   timelock) and `execute_policy` applies it. When the policy has a delay
   configured, `refund`, every claim in `claim_batch`, and every item in
   `process_batch` must supply a valid **Wesolowski VDF proof** that the delay
@@ -666,13 +684,13 @@ breaking changes bump the **minor** version, and they are called out as such.
   (302), with an invalid or premature one with `InvalidVdfProof` (303), and a
   proof supplied against a policy with no delay with `VdfNotConfigured` (304).
   The proof is bound to the payment (challenge = `sha256(payment_ref)`), so it
-  cannot be replayed across payments, and the delay is *computational* — a
+  cannot be replayed across payments, and the delay is _computational_ — a
   validator that controls block timestamps or transaction ordering cannot
   shorten it without factoring the contract's fixed 1024-bit modulus. The
   verifier (`contracts/refund-vault/src/vdf.rs`) runs in pure WASM via
   `crypto-bigint` (already in the dependency tree, so no new transitive
   crates), is exposed publicly as read-only `verify_vdf(challenge, delay,
-  proof)` for randomness-verification flows, and its cost is pinned by a
+proof)` for randomness-verification flows, and its cost is pinned by a
   budget test (a verification measures ≈51k CPU units — about a tenth of a
   refund call). The new `get_vdf_delay()` getter exposes the configured delay.
   This is a **breaking change** for clients: the `propose_policy` signature is
@@ -689,7 +707,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   and saving computational overhead on-chain. Added `verify_zk_proof` to verify
   Groth16 proofs against verifying keys and public inputs, and introduced
   `Error::InvalidProof` (code 203).
-
 
 - **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
   processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
@@ -779,7 +796,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   activates `soroban-sdk`'s `testutils` feature, which is not supported on the
   `wasm32v1-none` target and made every wasm build fail at the SDK boundary.
 
-
   The `.wasm-budget.json` size budgets are updated to the current deterministic
   release builds (receipt-anchor 33,067 B, refund-vault 85,453 B) with ~5%
   headroom — the exact-pin approach kept breaking on toolchain drift, and the
@@ -797,7 +813,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   SHA-256 loop, avoiding redundant proof buffering and host crypto roundtrips.
   Batch-size instruction measurements were added to the ReceiptAnchor test suite
   and documented in `docs/BENCHMARKS.md`.
-
 
 - **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
   Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
@@ -999,10 +1014,10 @@ Both:
 **The testnet deployment has deliberately not been updated to `0.2.0`.** The
 contracts live at:
 
-| Contract | Contract ID | Version deployed |
-|---|---|---|
-| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0` |
-| `RefundVault` | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0` |
+| Contract        | Contract ID                                                | Version deployed |
+| --------------- | ---------------------------------------------------------- | ---------------- |
+| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0`          |
+| `RefundVault`   | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0`          |
 
 Soroban deployment mints a new contract ID. Redeploying would invalidate every
 published address — including the ones the public receipt verifier at

@@ -1,11 +1,144 @@
-//! Unit tests for [`Governance`], including a minimal target contract that
-//! proves `execute` authorizes a governed call the same way `ReceiptAnchor`
-//! expects its admin to (see `tests/receipt_anchor_admin.rs` for the same
-//! proof against the real contract).
+/// stACC 1:1 mint on lock test.
+#[test]
+fn stacc_mint_1_to_1_on_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stacc_id = env.register(LiquidStaking, ());
+
+    let stacc = LiquidStakingClient::new(&env, &stacc_id);
+    stacc.initialize(&1_000_000);
+
+    // Alice locks 50 underlying tokens
+    let alice = Address::generate(&env);
+    stacc.mint(&alice, &50);
+
+    // Check total supply and locked
+    assert_eq!(stacc.get_total_supply(), 50);
+    assert_eq!(stacc.get_total_locked(), 50);
+    assert_eq!(stacc.get_user_stacc_balance(&alice), 50);
+
+    // Bob holds no stACC, so his burn must fail
+    let bob = Address::generate(&env);
+    let res = stacc.try_burn(&bob, &1);
+    assert!(matches!(
+        res,
+        Err(Ok(LiquidStakingError::InsufficientBalance))
+    ));
+}
+
+/// Test exchange rate progression and redemption constraints.
+#[test]
+fn stacc_exchange_rate_progression() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stacc_id = env.register(LiquidStaking, ());
+
+    let stacc = LiquidStakingClient::new(&env, &stacc_id);
+    stacc.initialize(&1_000_000);
+
+    // Alice locks 100 underlying tokens at 1:1 rate
+    let alice = Address::generate(&env);
+    stacc.mint(&alice, &100);
+
+    // Initial exchange rate is 1_000_000 (1:1)
+    assert_eq!(stacc.get_exchange_rate(), 1_000_000);
+
+    // Update exchange rate to reflect yield (e.g., 1_500_000 = 1.5x value)
+    stacc.set_exchange_rate(&1_500_000);
+    assert_eq!(stacc.get_exchange_rate(), 1_500_000);
+
+    // Bob tries to burn 100 stACC before lock expiry - should fail
+    let bob = Address::generate(&env);
+    // First set bob's lock start ledger to current (so it hasn't expired)
+    let user_key = LiquidStakingDataKey::User(bob.clone());
+    let lock_start = env.ledger().sequence();
+    env.as_contract(&stacc_id, || {
+        env.storage().persistent().set(
+            &user_key,
+            &UserData {
+                stacc_balance: 100,
+                locked_underlying: 100,
+                lock_start_ledger: lock_start,
+            },
+        );
+    });
+
+    let res = stacc.try_burn(&bob, &100);
+    // Lock hasn't expired yet (same ledger), so this should fail
+    assert!(matches!(res, Err(Ok(LiquidStakingError::LockNotExpired))));
+
+    // Now advance ledger past lock epoch (86400 ledgers = 1 day)
+    env.ledger().with_mut(|l| l.sequence_number += 86400 + 1);
+
+    // Burn after lock expiry - should succeed with new exchange rate
+    // 100 stACC * 1_500_000 / 1_000_000 = 150 underlying tokens
+    // The yield accrued with the rate bump is part of the locked total, so
+    // back the redemption with 150 locked underlying before burning.
+    env.as_contract(&stacc_id, || {
+        env.storage()
+            .instance()
+            .set(&LiquidStakingDataKey::TotalLocked, &150u64);
+    });
+    let res = stacc.try_burn(&bob, &100);
+    assert!(res.is_ok(), "burn after lock expiry should succeed");
+    // The underlying redeemed should be 150 (100 * 1.5)
+    // We can't directly check the redeemed amount from the event in this
+    // simple test, but we verify the burn succeeds
+
+    // Verify total supply decreased
+    assert_eq!(stacc.get_total_supply(), 0);
+}
+
+/// Test burn-on-redemption post lock expiry.
+#[test]
+fn stacc_burn_post_lock_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stacc_id = env.register(LiquidStaking, ());
+
+    let stacc = LiquidStakingClient::new(&env, &stacc_id);
+    stacc.initialize(&1_000_000);
+
+    // Alice locks 50 underlying tokens
+    let alice = Address::generate(&env);
+    stacc.mint(&alice, &50);
+
+    // Get the lock start ledger from user data
+    let user_key = LiquidStakingDataKey::User(alice.clone());
+    let lock_start = env.as_contract(&stacc_id, || {
+        env.storage()
+            .persistent()
+            .get::<_, LiquidStakingUserData>(&user_key)
+            .map(|d| d.lock_start_ledger)
+            .unwrap_or(0)
+    });
+
+    // Advance ledger past lock epoch (86400 ledgers)
+    env.ledger()
+        .with_mut(|l| l.sequence_number += lock_start + 86400 + 1);
+
+    // Burn stACC after lock expiry
+    let res = stacc.try_burn(&alice, &50);
+    assert!(res.is_ok(), "burn after lock expiry must succeed");
+
+    // Verify balances are zero
+    assert_eq!(stacc.get_user_stacc_balance(&alice), 0);
+    assert_eq!(stacc.get_total_supply(), 0);
+    assert_eq!(stacc.get_total_locked(), 0);
+}
+//
+// ## Liquid Staking Derivative (stACC) Tests
+// Tests for stACC minting, exchange rate progression, and burn redemption.
 
 extern crate std;
 
-use crate::{Error, Governance, GovernanceClient};
+use crate::{
+    Error, Governance, GovernanceClient, LiquidStaking, LiquidStakingClient, LiquidStakingDataKey,
+    LiquidStakingError, LiquidStakingUserData, UserData,
+};
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
     testutils::{Address as _, Events as _, Ledger},

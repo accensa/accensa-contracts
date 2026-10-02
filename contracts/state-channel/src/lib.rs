@@ -73,6 +73,9 @@ pub struct Channel {
     pub closed_at: u32,
     /// Ledger at which a dispute was initiated; `0` if no dispute pending.
     pub disputed_at: u32,
+    /// Number of times a late counter-proof has extended the dispute window
+    /// (issue #431). Bounded by `dispute::MAX_DISPUTE_EXTENSIONS`.
+    pub dispute_extensions: u32,
     /// Number of ledgers the dispute window remains open after `close_channel`.
     pub challenge_period: u32,
     /// Ed25519 public key used to verify off-chain state signatures.
@@ -280,6 +283,7 @@ impl StateChannel {
             opened_at: env.ledger().sequence(),
             closed_at: 0,
             disputed_at: 0,
+            dispute_extensions: 0,
             challenge_period: effective_challenge,
             sender_pubkey,
             nonce_window: NonceWindow::empty(&env),
@@ -581,6 +585,8 @@ impl StateChannel {
         channel.balance = state.balance;
         channel.phase = ChannelPhase::Disputed;
         channel.disputed_at = env.ledger().sequence();
+        // A fresh dispute resets the late-counter-proof extension budget (#431).
+        channel.dispute_extensions = 0;
 
         env.storage()
             .instance()
@@ -636,7 +642,16 @@ impl StateChannel {
 
         channel.nonce = channel.nonce.max(state.nonce);
         channel.balance = state.balance;
-        channel.disputed_at = env.ledger().sequence();
+        // A counter-proof landing in the final stretch of the window extends it
+        // so the honest party has time to respond, up to a hard cap (#431).
+        let (window_started, extensions) = crate::dispute::extend_window_on_late_counter_proof(
+            &env,
+            channel.disputed_at,
+            channel.challenge_period,
+            channel.dispute_extensions,
+        )?;
+        channel.disputed_at = window_started;
+        channel.dispute_extensions = extensions;
 
         env.storage()
             .instance()
