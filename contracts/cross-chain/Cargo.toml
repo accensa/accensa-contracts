@@ -17,5 +17,5 @@ soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
 
 [dev-dependencies]
-k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+k256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 soroban-sdk = { workspace = true, features = ["testutils"] }
