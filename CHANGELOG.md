@@ -462,6 +462,26 @@ breaking changes bump the **minor** version, and they are called out as such.
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+- **`treasury`: the yield distribution module is now part of the build (issue
+  #523).** #523 landed `distribution.rs` and `distribution_test.rs` without the
+  `pub mod distribution;` / `#[cfg(test)] mod distribution_test;` declarations
+  and without the seven `Error` variants the module returns, so `treasury` did
+  not compile and `fmt`, `test`, `budget-limits` and `build-wasm` were all red
+  on `main`. Added the module declarations plus `DistributionNotInitialized`
+  through `NoYieldToClaim` as variants `= 30..=36`, appended after the existing
+  set so every current error code keeps its value.
+- **`treasury`: staking moves the treasury's own asset, and changing a stake no
+  longer forfeits accrued yield.** `DistributionConfig` holds the *yield* token
+  (the one `initialize_distribution` registers), but `stake` and `unstake`
+  transferred that token as if it were the staked asset, so every stake tried to
+  pull yield tokens from users who hold none. They now transfer
+  `DataKey::Token`, and the yield token stays the payout asset for
+  `claim_yield`. Separately, `stake` and `unstake` re-anchored the user's
+  checkpoint to the current accumulator without settling what had accrued at the
+  previous stake size, which silently discarded pending yield on every position
+  change. Accrued yield is now settled into a `UserDistribution::pending` bucket
+  before the stake changes, and `pending_yield` / `claim_yield` report and pay
+  that bucket plus the current accrual.
 - **`refund-vault`: test modules are no longer compiled into the release
   build.** `token_agnostic_tests` and `yield_tests` were the only two test
   modules declared without `#[cfg(test)]`, so roughly 1.3k lines of test code
