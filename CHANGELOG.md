@@ -10,6 +10,13 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ### Added
 - **`receipt-shard` (issue #437): shard storage consolidation.** Router-authorized source shards can migrate exact `BatchRecord` values into a destination shard, verify the returned record before deletion, emit `ShardsConsolidated`, and mark drained sources inactive to stop further writes.
+- **`state-channel` (issue #431): anti-sniping late counter-proof extension.** A
+  valid counter-proof submitted within the final 50 ledgers of the dispute window
+  now pushes the deadline back by 50 ledgers so the honest party has time to
+  answer, instead of letting a hostile party front-run settlement in the last
+  block. Extensions are capped at 3; a fourth late counter-proof is rejected with
+  the new shared `Error::DisputeExtensionLimitReached` (code 417, appended so no
+  existing error code moves).
 - **`oracle`: Chainlink data-feed consumer trait.** New `accensa-oracle` contract (`contracts/oracle/src/chainlink.rs`) implements an AggregatorV3-style consumer: admin-pushed `RoundData` with round-completeness checks (`answered_in_round`, `updated_at`, positive answer), staleness rejection, monotonic round ids, and the standard `get_price` + `get_last_update_ledger` oracle interface for `RefundVault` fee scaling.
 - **`cross-chain` (issue #455): LayerZero omnichain dispute bridging.** New
   `layerzero` module lets decentralized arbitrators on remote chains deliver
