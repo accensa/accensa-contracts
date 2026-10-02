@@ -713,10 +713,16 @@ fn test_late_counter_proof_extends_the_dispute_window() {
     let pk = pubkey_from_signing_key(&env, &sk);
     let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 100);
 
-    let state1 = StateUpdate { nonce: 1, balance: 100 };
+    let state1 = StateUpdate {
+        nonce: 1,
+        balance: 100,
+    };
     client.close_channel(&channel_id, &state1, &sign_state(&env, &sk, &pk, &state1));
 
-    let state2 = StateUpdate { nonce: 2, balance: 200 };
+    let state2 = StateUpdate {
+        nonce: 2,
+        balance: 200,
+    };
     client.dispute(&channel_id, &state2, &sign_state(&env, &sk, &pk, &state2));
 
     let disputed_at = client.get_channel(&channel_id).disputed_at;
@@ -725,7 +731,10 @@ fn test_late_counter_proof_extends_the_dispute_window() {
 
     // Land inside the final stretch of the window (40 ledgers to go).
     advance_ledger(&env, original_deadline - 40);
-    let state3 = StateUpdate { nonce: 3, balance: 300 };
+    let state3 = StateUpdate {
+        nonce: 3,
+        balance: 300,
+    };
     client.submit_counter_evidence(&channel_id, &state3, &sign_state(&env, &sk, &pk, &state3));
 
     // The window moved forward past its original deadline.
@@ -741,7 +750,10 @@ fn test_late_counter_proof_extends_the_dispute_window() {
     // Past the extended deadline it finalizes normally.
     advance_ledger(&env, original_deadline + 60);
     client.finalize_dispute(&channel_id);
-    assert_eq!(client.get_channel(&channel_id).phase, ChannelPhase::Finalized);
+    assert_eq!(
+        client.get_channel(&channel_id).phase,
+        ChannelPhase::Finalized
+    );
 }
 
 #[test]
@@ -754,9 +766,15 @@ fn test_dispute_extension_cap_is_enforced() {
     let pk = pubkey_from_signing_key(&env, &sk);
     let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 100);
 
-    let state1 = StateUpdate { nonce: 1, balance: 100 };
+    let state1 = StateUpdate {
+        nonce: 1,
+        balance: 100,
+    };
     client.close_channel(&channel_id, &state1, &sign_state(&env, &sk, &pk, &state1));
-    let state2 = StateUpdate { nonce: 2, balance: 200 };
+    let state2 = StateUpdate {
+        nonce: 2,
+        balance: 200,
+    };
     client.dispute(&channel_id, &state2, &sign_state(&env, &sk, &pk, &state2));
 
     // Three late counter-proofs each extend the window by one stretch.
@@ -764,7 +782,10 @@ fn test_dispute_extension_cap_is_enforced() {
         let ch = client.get_channel(&channel_id);
         let deadline = ch.disputed_at + ch.challenge_period;
         advance_ledger(&env, deadline - 40);
-        let state = StateUpdate { nonce: 2 + i as u64, balance: 100 * (i as i128 + 2) };
+        let state = StateUpdate {
+            nonce: 2 + i as u64,
+            balance: 100 * (i as i128 + 2),
+        };
         let sig = sign_state(&env, &sk, &pk, &state);
         client.submit_counter_evidence(&channel_id, &state, &sig);
     }
@@ -773,7 +794,10 @@ fn test_dispute_extension_cap_is_enforced() {
     // A fourth late counter-proof is rejected: the extension budget is spent.
     let ch = client.get_channel(&channel_id);
     advance_ledger(&env, ch.disputed_at + ch.challenge_period - 40);
-    let state = StateUpdate { nonce: 6, balance: 900 };
+    let state = StateUpdate {
+        nonce: 6,
+        balance: 900,
+    };
     let sig = sign_state(&env, &sk, &pk, &state);
     assert_eq!(
         client.try_submit_counter_evidence(&channel_id, &state, &sig),
