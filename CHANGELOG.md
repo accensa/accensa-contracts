@@ -9,6 +9,20 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`privacy` (issue #440): Groth16 verification for concealed escrow amounts.**
+  New `privacy` contract (`contracts/privacy/`) holds an escrow against a
+  commitment to a concealed amount and verifies a Groth16 proof whose public
+  inputs carry that amount and the commitment's value/blinding.
+  `create_escrow` stores the commitment and its floor, `verify_escrow` checks
+  the proof structurally (`groth16::verify_groth16`: IC count, non-empty
+  well-sized points, no forged zeros), decodes the proven amount from
+  `public_inputs[0]` and marks the escrow `Verified` only when it is at or above
+  the floor, otherwise `Rejected`; a second verification of the same escrow
+  fails with `Error::AlreadyVerified`. `Error` is crate-local on purpose, so
+  growing it does not enlarge the WASM spec of the contracts that share
+  `accensa_common::Error`. The commitment is `sha256(value || blinding)` and the
+  verifier is structural rather than pairing-based, because Soroban exposes no
+  curve arithmetic — both are documented in the module as stand-ins.
 - **`receipt-shard` (issue #437): shard storage consolidation.** Router-authorized source shards can migrate exact `BatchRecord` values into a destination shard, verify the returned record before deletion, emit `ShardsConsolidated`, and mark drained sources inactive to stop further writes.
 - **`oracle`: Chainlink data-feed consumer trait.** New `accensa-oracle` contract (`contracts/oracle/src/chainlink.rs`) implements an AggregatorV3-style consumer: admin-pushed `RoundData` with round-completeness checks (`answered_in_round`, `updated_at`, positive answer), staleness rejection, monotonic round ids, and the standard `get_price` + `get_last_update_ledger` oracle interface for `RefundVault` fee scaling.
 - **`cross-chain` (issue #455): LayerZero omnichain dispute bridging.** New
