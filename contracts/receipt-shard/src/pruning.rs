@@ -78,6 +78,7 @@ impl ReceiptShard {
     /// slots). A call that finds nothing expired is a successful no-op
     /// returning `0`.
     pub fn prune_expired_receipts(env: Env, pruner: Address, max_count: u32) -> u32 {
+        assert!(ReceiptShard::is_active(env.clone()), "shard is inactive");
         pruner.require_auth();
 
         let current_ledger = env.ledger().sequence();
@@ -85,6 +86,11 @@ impl ReceiptShard {
         let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
 
         let mut pruned: u32 = 0;
+        // Counters are settled once after the loop rather than per deletion:
+        // a read+write of the stats entry per batch is CPU that scales with
+        // the cleanup volume for no observable benefit, since readers only
+        // ever see the counters between calls.
+        let mut removed_leaves: u64 = 0;
 
         // Scan forward from the cursor over the shard's assigned range.
         // The cursor is a contiguous prefix by construction (both pruning
@@ -102,6 +108,7 @@ impl ReceiptShard {
                         >= RETENTION_LEDGERS =>
                 {
                     env.storage().persistent().remove(&DataKey::Batch(cursor));
+                    removed_leaves += record.count as u64;
                     pruned += 1;
                     cursor += 1;
                 }
@@ -117,6 +124,8 @@ impl ReceiptShard {
                 None => break,
             }
         }
+
+        crate::diagnostics::record_removals(&env, pruned as u64, removed_leaves);
 
         if pruned > 0 {
             env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);

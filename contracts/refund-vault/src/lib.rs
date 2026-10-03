@@ -5,8 +5,8 @@ use accensa_common::{
     VaultInit, VdfPolicyParams,
 };
 use soroban_sdk::{
-    contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, token,
-    xdr::ToXdr, Address, Bytes, BytesN, Env, Symbol, Vec,
+    contract, contractevent, contractimpl, contractmeta, contracttype, token, xdr::ToXdr, Address,
+    Bytes, BytesN, Env, Symbol, Vec,
 };
 
 contractmeta!(key = "name", val = "RefundVault");
@@ -38,42 +38,7 @@ pub struct RefundParam {
     pub vdf_proof: Option<BytesN<256>>,
 }
 
-/// Reason for a vault pause, used for auditability and event attribution.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PauseReason {
-    /// Pause triggered by the admin (merchant) via `pause`.
-    Admin,
-    /// Pause triggered by the guardian via `emergency_pause`.
-    Guardian,
-}
 
-/// Stealth address record for privacy-preserving deposits.
-///
-/// Each stealth address is a one-time address that can only be detected
-/// and spent by the merchant who registered it. Observers cannot link
-/// deposits to the merchant's public identity.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StealthAddress {
-    /// The stealth address itself (derived from merchant's public key)
-    pub address: Address,
-    /// The viewing key (hash of merchant's secret)
-    pub viewing_key: BytesN<32>,
-    /// The spending key (hash of merchant's secret)
-    pub spending_key: BytesN<32>,
-    /// Ledger sequence when this stealth address was registered
-    pub registered_at_ledger: u32,
-    /// Whether this stealth address has been used for a deposit
-    pub used: bool,
-}
-
-/// Stealth address registry entry keyed by the stealth address itself.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StealthAddressKey(Address);
-
-#[contracttype]
 pub enum DataKey {
     Admin,
     /// Per-instance domain separator (issue #136): `sha256(contract_address)`,
@@ -195,15 +160,7 @@ pub enum DataKey {
     /// Treasury receiving swept dust (issue #427). Falls back to the fee
     /// recipient when unset.
     DustTreasury,
-    /// Stealth address registry entry (privacy feature). Maps stealth
-    /// addresses to their registration records.
-    StealthAddress(Address),
-    /// Counter for total stealth addresses registered by the merchant.
-    /// Used for rate limiting and tracking.
-    StealthAddressCount,
-    /// Whether stealth address deposits are enabled for this vault.
-    /// Admin can toggle this feature on/off.
-    StealthAddressEnabled,
+
 }
 
 #[contracttype]
@@ -593,36 +550,15 @@ pub struct StealthAddressEnabledEvent {
 }
 
 pub mod dust;
+pub mod flash_loan;
+pub mod nft_escrow;
 pub mod oracle;
+pub mod settlement;
 
-/// Interface for external yield-generating strategies (e.g., Soroban lending protocols).
-///
-/// Any contract that implements these methods can be registered as the vault's yield
-/// strategy. The vault calls these to deploy idle funds and harvest accrued yield.
-/// The trait is annotated `#[contractclient(name = "YieldStrategyClient")]` (not
-/// `#[contractimpl]`, which only accepts `impl` blocks) so its client is
-/// generated from the interface.
-#[contractclient(name = "YieldStrategyClient")]
-pub trait YieldStrategy {
-    /// Deploy `amount` tokens into the strategy. The vault transfers tokens to the
-    /// strategy contract before calling this.
-    fn deposit(env: Env, amount: i128) -> Result<(), Error>;
+pub mod strategy;
+pub use strategy::{YieldStrategy, YieldStrategyClient};
 
-    /// Withdraw `principal` worth of tokens plus any proportional accrued yield.
-    /// Returns `(principal_returned, yield_returned)`. The strategy transfers tokens
-    /// back to the vault before returning.
-    fn withdraw(env: Env, principal: i128) -> Result<(i128, i128), Error>;
-
-    /// Harvest all accrued yield without touching deployed principal.
-    /// Returns the yield amount. The strategy transfers yield tokens to the vault.
-    fn harvest(env: Env) -> Result<i128, Error>;
-
-    /// Read-only: total tokens held by this strategy (principal + accrued yield).
-    fn total_balance(env: Env) -> i128;
-
-    /// Read-only: accrued yield only (total_balance - total principal deployed).
-    fn accrued_yield(env: Env) -> i128;
-}
+pub mod tiers;
 
 /// Approximately 30 days of ledgers, assuming ~5 seconds per ledger.
 /// 60 * 60 * 24 * 30 / 5 = 518,400.
@@ -678,32 +614,6 @@ const MAX_BATCH_SIZE: u32 = 100;
 /// call — into the same entry point or a different one — observes the flag
 /// set and is rejected with [`Error::ReentrancyBlocked`] instead of racing
 /// ahead of the pending state update.
-///
-/// Because a `Result::Err` returned from a contract entry point rolls back
-/// every storage write that invocation made (including the flag itself),
-/// callers do not need to clear the flag on error paths — only the success
-/// path needs an explicit `release_reentrancy_lock` call.
-fn acquire_reentrancy_lock(env: &Env) -> Result<(), Error> {
-    let locked: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::ReentrancyLock)
-        .unwrap_or(false);
-    if locked {
-        return Err(Error::ReentrancyBlocked);
-    }
-    env.storage()
-        .instance()
-        .set(&DataKey::ReentrancyLock, &true);
-    Ok(())
-}
-
-fn release_reentrancy_lock(env: &Env) {
-    env.storage()
-        .instance()
-        .set(&DataKey::ReentrancyLock, &false);
-}
-
 /// Increment the monotonic nonce and return its *previous* value (issue #136).
 fn increment_nonce(env: &Env) -> u64 {
     let current: u64 = env.storage().instance().get(&DataKey::Nonce).unwrap_or(0);
@@ -841,6 +751,10 @@ struct PolicyCache {
     vdf_policy_contract: Option<Address>,
     token_addr: Address,
     fee_bps: u32,
+    /// Whether a merchant fee ladder is installed. When `false` the claim path
+    /// skips tier bookkeeping entirely, so a vault with no ladder pays nothing
+    /// per claim for the tier feature.
+    tiers_active: bool,
 }
 
 /// Read all policy-level instance-storage keys once and return a
@@ -852,6 +766,21 @@ struct PolicyCache {
 /// their use sites, so `PolicyContractsNotConfigured` is still raised only
 /// when the corresponding gate is actually active.
 fn read_policy_cache(env: &Env) -> PolicyCache {
+    // Resolve the merchant fee ladder once. The effective fee and the
+    // "is a ladder installed?" flag come from the same tier-state read, so a
+    // vault without tiers pays one instance load per entry point — and nothing
+    // per claim, since `claim_single` skips tier bookkeeping when there is no
+    // ladder. With no ladder the flat `FeeBps` config applies, exactly as
+    // before. Sharing the resolved fee across a batch also makes promotion
+    // deterministic within a call: a rung crossed by claim N takes effect from
+    // claim N+1 on.
+    let tier_state = tiers::state(env);
+    let fee_bps = match &tier_state {
+        Some(state) => state.fee_bps,
+        None => env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0),
+    };
+    let tiers_active = tier_state.is_some();
+
     PolicyCache {
         refund_window: env
             .storage()
@@ -872,7 +801,8 @@ fn read_policy_cache(env: &Env) -> PolicyCache {
             .unwrap_or(0),
         vdf_policy_contract: env.storage().instance().get(&DataKey::VdfPolicyContract),
         token_addr: env.storage().instance().get(&DataKey::Token).unwrap(),
-        fee_bps: env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0),
+        fee_bps,
+        tiers_active,
     }
 }
 
@@ -1013,27 +943,17 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
     }
 
     // Ceiling check: cumulative refunds must not exceed the original amount.
-    // The ceiling is read from the (re)stored record, freshly minted on the
-    // first partial for this payment.
-    let existing: Option<RefundRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::RefundV2(claim.payment_ref.clone()));
-    let (previous_refunded, record_ceiling) = match existing {
-        Some(rec) => (rec.amount_refunded, rec.payment_amount),
-        None => (0i128, claim.payment_amount),
-    };
-
-    if previous_refunded.checked_add(claim.amount).is_none()
-        || record_ceiling <= 0
-        || previous_refunded + claim.amount > record_ceiling
-    {
-        return Err(Error::ExceedsPayment);
-    }
+    // The rule lives in `settlement::resolve_ceiling` so the live refund path
+    // and `preview_settlement` cannot disagree about it.
+    let (previous_refunded, record_ceiling) =
+        settlement::resolve_ceiling(env, &claim.payment_ref, claim.amount, claim.payment_amount)?;
 
     // Token client: use the cached token address instead of reading from storage.
     let token_client = token::Client::new(env, &cache.token_addr);
     let balance = token_client.balance(&env.current_contract_address());
+    // Deployed principal stays instantly redeemable: recall any shortfall
+    // from the yield strategy before the float check (issue #415).
+    let balance = strategy::ensure_liquidity(env, &token_client, balance, claim.amount)?;
     if balance < claim.amount {
         return Err(Error::InsufficientFloat);
     }
@@ -1043,8 +963,7 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
     // exactly `amount`, so the float check above and the ceiling check against
     // the payment amount are unchanged. The fee rounds *up* (the
     // fractional-token remainder goes to the protocol).
-    let fee = refund_fee(claim.amount, cache.fee_bps);
-    let payout = claim.amount - fee;
+    let (fee, payout) = settlement::split_amount(claim.amount, cache.fee_bps);
 
     let fee_recipient = if fee > 0 {
         let r = active_fee_recipient(env);
@@ -1082,7 +1001,7 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
         .persistent()
         .extend_ttl(&DataKey::LastClaim, TTL_THRESHOLD, TTL_EXTEND);
 
-    extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+    extend_instance_ttl(env, TTL_THRESHOLD, TTL_EXTEND);
     let extend_to = refund_record_ttl_extend_to(env, window, claim.paid_at_ledger);
     // Threshold == extend_to (not TTL_THRESHOLD): see
     // `refund_record_ttl_extend_to` for why a small fixed threshold makes
@@ -1105,6 +1024,15 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
         nonce,
     }
     .publish(env);
+
+    // Merchant tier promotion: accrue the gross volume this claim settled and
+    // promote the merchant if it crossed the next rung. This runs only after
+    // the transfers and record write succeeded, so a claim that fails any gate
+    // above never counts toward a promotion. Skipped entirely when the vault
+    // has no ladder, so an untiered vault pays nothing extra per claim.
+    if cache.tiers_active {
+        tiers::on_settled(env, claim.amount);
+    }
 
     Ok(())
 }
@@ -1364,7 +1292,7 @@ impl RefundVault {
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -1408,7 +1336,7 @@ impl RefundVault {
         .publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -1630,24 +1558,65 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Escrow a Soroban NFT into the vault alongside the fungible float
+    /// (issue #474). `merchant` (the vault admin) deposits `token_id` from
+    /// `nft_contract` and binds it to `buyer`; only `buyer` may later redeem
+    /// it via [`Self::refund_nft`], and only `merchant` may reclaim it via
+    /// [`Self::claim_nft`].
+    pub fn deposit_nft(
+        env: Env,
+        merchant: Address,
+        buyer: Address,
+        nft_contract: Address,
+        token_id: u128,
+    ) -> Result<(), Error> {
+        nft_escrow::deposit(&env, &merchant, &buyer, &nft_contract, token_id)
+    }
+
+    /// Reclaim an escrowed NFT (cancellation / return). Callable only by the
+    /// merchant who escrowed it. Returns the exact `token_id` released, so
+    /// the returned asset is always the deposited one (issue #474).
+    pub fn claim_nft(
+        env: Env,
+        merchant: Address,
+        nft_contract: Address,
+        token_id: u128,
+    ) -> Result<u128, Error> {
+        nft_escrow::claim(&env, &merchant, &nft_contract, token_id)
+    }
+
+    /// Refund an escrowed NFT to the buyer it was escrowed for. Callable only
+    /// by that buyer. Returns the exact `token_id` released (issue #474).
+    pub fn refund_nft(
+        env: Env,
+        buyer: Address,
+        nft_contract: Address,
+        token_id: u128,
+    ) -> Result<u128, Error> {
+        nft_escrow::refund(&env, &buyer, &nft_contract, token_id)
+    }
+
+    /// Read-only: the escrow record for `(nft_contract, token_id)`, or
+    /// `None` if that NFT is not escrowed.
+    pub fn get_nft_escrow(
+        env: Env,
+        nft_contract: Address,
+        token_id: u128,
+    ) -> Option<nft_escrow::NftEscrowRecord> {
+        nft_escrow::get(&env, &nft_contract, token_id)
+    }
+
     /// Refund part (or all) of an original payment.
     ///
-    /// `payment_amount` is the original payment amount and therefore the hard
-    /// ceiling: cumulative refunds for a payment may never exceed it. It is
-    /// supplied by the merchant on **every** call, mirroring how `paid_at_ledger`
-    /// is supplied, so the ceiling never depends on partial bookkeeping. The
-    /// refund window is evaluated against `paid_at_ledger` (the original
-    /// payment), not against a previous partial — each partial does not extend
-    /// the window for the next.
+    /// `payment_amount` is the original amount and therefore the hard ceiling
+    /// on cumulative refunds; like `paid_at_ledger` it is supplied on every
+    /// call, so the ceiling never depends on partial bookkeeping. The window is
+    /// evaluated against `paid_at_ledger`, so a partial never extends it. Thin
+    /// wrapper around the same claim path as [`RefundVault::claim_batch`].
     ///
-    /// This is a thin wrapper around the same shared claim path as
-    /// [`RefundVault::claim_batch`].
-    ///
-    /// Storage note (#99): the layout changed from a single `amount` record to a
-    /// cumulative record under a new `RefundV2` key. A `Refund` key written by
-    /// the legacy single-refund rule still denotes a fully-refunded payment and
-    /// is rejected with [`Error::ExceedsPayment`] rather than a silent
-    /// misinterpretation.
+    /// Storage note (#99): a legacy single-refund `Refund` key still denotes a
+    /// fully-refunded payment and is rejected with [`Error::ExceedsPayment`]
+    /// rather than misread.
     pub fn refund(
         env: Env,
         payment_ref: BytesN<32>,
@@ -1658,7 +1627,7 @@ impl RefundVault {
         vdf_proof: Option<BytesN<256>>,
         nonce: u64,
     ) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -1689,40 +1658,27 @@ impl RefundVault {
         let cache = read_policy_cache(&env);
         claim_single(&env, &cache, &claim)?;
 
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
     /// Refund multiple claims in a single transaction.
     ///
-    /// Every element of `claims` is processed in order with exactly the same
-    /// logic as a [`RefundVault::refund`] call — validations, ceilings, fees,
-    /// the float check, cumulative-record storage, TTL extension and a
-    /// [`RefundEvent`] per element — so the whole batch shares one merchant
-    /// authorization and one reentrancy-lock acquisition. Unrelated
-    /// `payment_ref`s are independent; repeated refs accumulate against the
-    /// same ceiling across elements.
+    /// Each element is processed in order with exactly the same logic as
+    /// [`RefundVault::refund`], so the batch shares one merchant authorization
+    /// and one reentrancy lock; unrelated refs are independent, and repeated
+    /// refs accumulate against the same ceiling. The float is re-read per
+    /// element, so a batch cannot overdraw the vault more than the equivalent
+    /// sequence of single refunds.
     ///
-    /// The float is read afresh from the token contract before every element,
-    /// so a batch can never overdraw the vault any more than an equivalent
-    /// sequence of single refunds, and `paid_at_ledger` / `payment_amount` are
-    /// evaluated per claim.
-    ///
-    /// # Atomicity
-    ///
-    /// If any element fails, the call returns that error. A contract error
-    /// reverts the entire Soroban invocation — including the token transfers,
-    /// storage writes and events of the claims that already succeeded within
-    /// this call — so the batch is all-or-nothing: either every claim
-    /// persists, or none of them do.
-    ///
-    /// An empty `claims` vector succeeds as a no-op.
+    /// Atomic: a failing element's error reverts the whole invocation, token
+    /// transfers and events included. An empty `claims` vector is a no-op.
     pub fn claim_batch(env: Env, claims: Vec<RefundClaim>, nonce: u64) -> Result<(), Error> {
         if claims.len() > MAX_BATCH_SIZE {
             return Err(Error::BatchTooLarge);
         }
 
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -1747,7 +1703,7 @@ impl RefundVault {
         for claim in claims.iter() {
             claim_single(&env, &cache, &claim)?;
         }
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -1830,7 +1786,7 @@ impl RefundVault {
     }
 
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -1863,33 +1819,11 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
 
-        let mut contract_balance = token_client.balance(&env.current_contract_address());
-        if contract_balance < amount {
-            let deployed_principal: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::DeployedPrincipal)
-                .unwrap_or(0);
-            if deployed_principal > 0 {
-                if let Some(strategy_addr) = env
-                    .storage()
-                    .instance()
-                    .get::<_, Address>(&DataKey::YieldStrategy)
-                {
-                    let needed = amount - contract_balance;
-                    let withdraw_amount = core::cmp::min(needed, deployed_principal);
-                    if withdraw_amount > 0 {
-                        let strategy_client = YieldStrategyClient::new(&env, &strategy_addr);
-                        let (_p, _y) = strategy_client.withdraw(&withdraw_amount);
-                        env.storage().instance().set(
-                            &DataKey::DeployedPrincipal,
-                            &(deployed_principal - withdraw_amount),
-                        );
-                        contract_balance = token_client.balance(&env.current_contract_address());
-                    }
-                }
-            }
-        }
+        // Recall deployed principal if the liquid float cannot cover this
+        // withdrawal (issue #415).
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        let contract_balance =
+            strategy::ensure_liquidity(&env, &token_client, contract_balance, amount)?;
 
         if contract_balance < amount {
             return Err(Error::InsufficientFloat);
@@ -1907,7 +1841,7 @@ impl RefundVault {
         .publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -2594,21 +2528,79 @@ impl RefundVault {
     // with the standard TTL budget after every write.
 
     /// Register an external yield strategy contract. Only callable by admin.
+    ///
+    /// The strategy must first be whitelisted with
+    /// [`RefundVault::approve_yield_strategy`] (`StrategyNotApproved`
+    /// otherwise), and a different strategy cannot replace one that still
+    /// holds deployed principal (`StrategyHasPrincipal`).
     pub fn set_yield_strategy(env: Env, strategy: Address) -> Result<(), Error> {
-        let merchant: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        merchant.require_auth();
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldStrategy, &strategy);
-        persist_yield_ttl(&env, &DataKey::YieldStrategy);
-
+        strategy::set_active(&env, strategy)?;
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
+    }
+
+    /// Add a yield strategy to the admin-approved whitelist (issue #415).
+    pub fn approve_yield_strategy(env: Env, strategy: Address) -> Result<(), Error> {
+        strategy::approve(&env, strategy)?;
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Remove a yield strategy from the whitelist (issue #415). Revoking the
+    /// active strategy also unregisters it and requires its principal to have
+    /// been fully recalled first (`StrategyHasPrincipal`).
+    pub fn revoke_yield_strategy(env: Env, strategy: Address) -> Result<(), Error> {
+        strategy::revoke(&env, strategy)?;
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Read-only: whether `strategy` is on the whitelist.
+    pub fn is_strategy_approved(env: Env, strategy: Address) -> bool {
+        strategy::is_approved(&env, &strategy)
+    }
+
+    /// Set the address that receives harvested yield: the protocol treasury
+    /// or a merchant rebate pool (issue #415). Admin only.
+    pub fn set_yield_recipient(env: Env, recipient: Address) -> Result<(), Error> {
+        strategy::set_recipient(&env, recipient)?;
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Read-only: the yield recipient (the merchant when none is configured).
+    pub fn get_yield_recipient(env: Env) -> Result<Address, Error> {
+        strategy::recipient(&env)
+    }
+
+    /// Pay all harvested yield to the yield recipient (issue #415). Admin
+    /// only. Returns the amount distributed.
+    pub fn distribute_yield(env: Env) -> Result<i128, Error> {
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            return Err(Error::Paused);
+        }
+        let amount = strategy::distribute(&env)?;
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
+        Ok(amount)
+    }
+
+    /// Recall **all** deployed principal from the active strategy (issue
+    /// #415). Admin only. Unlike the other yield entry points this works
+    /// while the vault is paused, so capital can always be brought home.
+    /// Returns the principal recalled.
+    pub fn emergency_exit_yield(env: Env) -> Result<i128, Error> {
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
+        let principal = strategy::emergency_exit(&env)?;
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
+        Ok(principal)
     }
 
     /// Set the minimum reserve ratio in basis points (1 bp = 0.01%).
@@ -2665,7 +2657,7 @@ impl RefundVault {
     /// - Post-deployment liquid balance >= reserve_ratio * total_value
     /// - Total deployed <= max_deploy_ratio * total_value
     pub fn deploy_to_yield(env: Env, amount: i128) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -2692,6 +2684,9 @@ impl RefundVault {
             .persistent()
             .get(&DataKey::YieldStrategy)
             .ok_or(Error::StrategyNotSet)?;
+        if !strategy::is_approved(&env, &strategy) {
+            return Err(Error::StrategyNotApproved);
+        }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
@@ -2762,7 +2757,7 @@ impl RefundVault {
         .publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -2771,7 +2766,7 @@ impl RefundVault {
     ///
     /// `principal` is the amount of originally-deployed principal to reclaim.
     pub fn withdraw_from_yield(env: Env, principal: i128) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -2799,53 +2794,20 @@ impl RefundVault {
             .get(&DataKey::YieldStrategy)
             .ok_or(Error::StrategyNotSet)?;
 
-        let deployed: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DeployedPrincipal)
-            .unwrap_or(0);
-        if principal > deployed {
-            return Err(Error::NothingToWithdraw);
-        }
-
-        let strategy_client = YieldStrategyClient::new(&env, &strategy);
-        let (principal_returned, yield_returned) = strategy_client.withdraw(&principal);
-
-        let harvested: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::HarvestedYield)
-            .unwrap_or(0);
-
-        env.storage().persistent().set(
-            &DataKey::DeployedPrincipal,
-            &(deployed - principal_returned),
-        );
-        env.storage()
-            .persistent()
-            .set(&DataKey::HarvestedYield, &(harvested + yield_returned));
-        persist_yield_ttl(&env, &DataKey::DeployedPrincipal);
-        persist_yield_ttl(&env, &DataKey::HarvestedYield);
-
-        let nonce = increment_nonce(&env);
-
-        YieldWithdrawnEvent {
-            strategy,
-            principal: principal_returned,
-            yield_amount: yield_returned,
-            nonce,
-        }
-        .publish(&env);
+        // Books the principal/yield split and emits `YieldWithdrawnEvent`,
+        // cross-checking the strategy's report against the actual token
+        // balance delta (issue #415).
+        strategy::recall_principal(&env, &strategy, principal)?;
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
     /// Harvest accrued yield from the strategy without touching deployed principal.
     /// Yield tokens are transferred to the vault and tracked for operator withdrawal.
     pub fn harvest_yield(env: Env) -> Result<(), Error> {
-        acquire_reentrancy_lock(&env)?;
+        accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
         if env
             .storage()
@@ -2895,7 +2857,7 @@ impl RefundVault {
         .publish(&env);
 
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-        release_reentrancy_lock(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
         Ok(())
     }
 
@@ -3138,6 +3100,26 @@ impl RefundVault {
         dust::sweep_dust(&env, payment_ref)
     }
 
+    /// Flash-borrow `amount` of the vault's liquid float (issue #442). The
+    /// tokens are sent to `receiver`, whose `on_flash_loan` callback must
+    /// return `amount` plus a 0.09% premium to the vault before this call
+    /// ends; the premium is forwarded to the fee recipient. Merchant (admin)
+    /// only. Returns the premium charged.
+    ///
+    /// # Errors
+    /// - `InvalidAmount`: `amount <= 0`.
+    /// - `SelfTransfer`: `receiver` is the vault itself.
+    /// - `InsufficientFloat`: `amount` exceeds the liquid float, or the
+    ///   receiver did not repay `amount + fee` (the loan is reverted).
+    pub fn flash_loan(
+        env: Env,
+        receiver: Address,
+        amount: i128,
+        data: Bytes,
+    ) -> Result<i128, Error> {
+        flash_loan::flash_loan(&env, receiver, amount, data)
+    }
+
     pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), Error> {
         let record: RefundRecord = env
             .storage()
@@ -3233,16 +3215,27 @@ impl RefundVault {
 #[cfg(test)]
 mod dust_tests;
 #[cfg(test)]
+mod flash_loan_tests;
+#[cfg(test)]
 mod fuzz_test;
 #[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
 mod reentrancy_tests;
 #[cfg(test)]
+mod settlement_test;
+/// Yield-bearing escrow strategy hook tests (issue #415).
+#[cfg(test)]
+mod strategy_tests;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_helpers;
+#[cfg(test)]
+mod tier_tests;
+#[cfg(test)]
 mod token_agnostic_tests;
+#[cfg(test)]
 mod yield_tests;
 
 /// Security audit tests for the commit-reveal scheme (issue #128): simulate

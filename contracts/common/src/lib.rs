@@ -29,9 +29,7 @@ pub enum Error {
     NotInitialized = 2,
     /// The caller is not the authorized merchant/admin.
     Unauthorized = 3,
-    /// Legacy single-refund marker (pre-#99). Retained for interface
-    /// stability; the vault reports `ExceedsPayment` for over-ceiling and
-    /// legacy records since cumulative partial refunds.
+    /// Legacy single-refund marker (pre-#99); kept for interface stability.
     AlreadyRefunded = 4,
     /// The refund window (measured from the original payment) has expired.
     WindowExpired = 5,
@@ -59,12 +57,12 @@ pub enum Error {
     InvalidRatio = 18,
     /// A refund call would push cumulative refunds past the payment ceiling.
     ExceedsPayment = 19,
-    /// A guarded, external-call-making entry point was re-entered while a
-    /// prior invocation of any guarded entry point was still in progress.
+    /// A guarded entry point was re-entered while a prior invocation was still
+    /// in progress.
     ReentrancyBlocked = 20,
-    /// A refund or withdraw was attempted where the recipient is the contract's own address.
+    /// The recipient is the vault's own address.
     SelfTransfer = 21,
-    /// An attempt to change the vault's token address was made while the vault holds a non-zero token balance.
+    /// The vault holds a non-zero token balance, so its token cannot change.
     FloatNotEmpty = 22,
     /// A refund claim was submitted after the policy deadline timestamp passed.
     RefundExpired = 23,
@@ -72,9 +70,8 @@ pub enum Error {
     BatchNotFound = 100,
     /// A batch larger than `MAX_BATCH_SIZE` was submitted.
     BatchTooLarge = 101,
-    /// A shard call returned something other than the expected value shape —
-    /// a wasm-level invocation failure or a value that failed to decode.
-    /// Distinct from `BatchNotFound`, which a shard returns deliberately.
+    /// A shard call failed or returned a value that would not decode (not a
+    /// deliberate `BatchNotFound`).
     ShardCallFailed = 102,
     /// An attempt was made to anchor a Merkle root identical to the currently active root.
     DuplicateRoot = 103,
@@ -86,42 +83,31 @@ pub enum Error {
     AnchorRateLimited = 202,
     /// The supplied zero-knowledge validity proof is invalid or malformed.
     InvalidProof = 203,
-    /// A token-bucket rate-limit config was rejected: exactly one of
-    /// `burst_capacity` / `refill_interval_secs` was zero, or either exceeded
-    /// its cap (`MAX_RATE_BURST` / `MAX_RATE_REFILL_INTERVAL`). `{0, 0}`
-    /// disables rate limiting and is accepted.
+    /// Rejected rate-limit config: one of the pair is zero, or a value exceeds
+    /// its cap (`{0, 0}` disables limiting).
     InvalidRateLimitConfig = 204,
     /// No pending policy change exists to execute.
     NoPendingPolicy = 300,
     /// The timelock period has not yet elapsed.
     TimelockNotExpired = 301,
-    /// A refund was claimed against a policy with a VDF delay configured but
-    /// no VDF proof was supplied.
+    /// A VDF delay is configured but no proof was supplied.
     VdfProofRequired = 302,
-    /// A supplied VDF proof failed verification (tampered output or witness,
-    /// a premature proof computed for a smaller delay, or a degenerate
-    /// challenge).
+    /// The supplied VDF proof failed verification.
     InvalidVdfProof = 303,
-    /// A VDF proof was supplied for a claim against a policy that has no VDF
-    /// delay configured.
+    /// A VDF proof was supplied but no VDF delay is configured.
     VdfNotConfigured = 304,
-    /// A reveal was attempted without a matching, pending commit
-    /// (commit-reveal, issue #128).
+    /// No matching pending commitment exists (commit-reveal, issue #128).
     NoCommit = 305,
-    /// A commit was submitted for a commitment hash that already has a pending
-    /// commitment (commit-reveal, issue #128).
+    /// A commitment is already pending for this hash (commit-reveal, issue #128).
     CommitAlreadyExists = 306,
-    /// The plaintext revealed does not hash to the committed value
-    /// (commit-reveal, issue #128).
+    /// The revealed plaintext does not hash to the commitment (issue #128).
     CommitMismatch = 307,
-    /// A reveal was attempted before the minimum commit-reveal ledger delay
-    /// elapsed (commit-reveal, issue #128).
+    /// The minimum commit-reveal delay has not elapsed (issue #128).
     CommitDelayNotElapsed = 308,
-    /// A reveal was attempted under a different operation than the one the
-    /// commitment was originally bound to (commit-reveal, issue #128).
+    /// The reveal is bound to a different operation than the commitment
+    /// (issue #128).
     CommitOperationMismatch = 309,
-    /// No oracle contracts are whitelisted on the vault, so the dynamic
-    /// oracle policy cannot be evaluated (fail closed).
+    /// No oracle is whitelisted, so the oracle gate fails closed.
     NoOraclesConfigured = 310,
     /// An oracle contract is already on the whitelist.
     OracleAlreadyAdded = 311,
@@ -133,8 +119,7 @@ pub enum Error {
     NoOraclePolicy = 314,
     /// A refund was rejected because the oracle policy condition was not met.
     OraclePolicyDenied = 315,
-    /// `migrate_state` was called with a target layout version that is not
-    /// greater than the current storage version (or is otherwise invalid).
+    /// The requested layout version is not a valid `migrate_state` target.
     InvalidMigrationVersion = 316,
 
     // ── State channel errors (issue #134) ─────────────────────────────
@@ -150,54 +135,43 @@ pub enum Error {
     InvalidSignature = 404,
     /// The dispute challenge period has not yet expired.
     ChallengeActive = 405,
-    /// The dispute challenge period has expired; funds can no longer be claimed
-    /// via dispute.
+    /// The challenge period expired, so the dispute path is closed.
     ChallengeExpired = 406,
     /// The channel's escrowed balance is insufficient.
     InsufficientChannelBalance = 407,
     /// The timeout has already passed; the channel is expired.
     ChannelExpired = 408,
-    /// A multi-asset state names a token the channel does not escrow, or
-    /// omits one it does (issue #423).
+    /// A multi-asset state names a token the channel does not escrow, or omits
+    /// one it does (issue #423).
     UnsupportedAsset = 409,
-    /// A policy that requires the stateless policy contracts (time/VDF) was
-    /// proposed or executed on a vault that was never wired with the contract
-    /// addresses (issue #129: the factory wires them at construction, or the
-    /// admin sets them via the setters).
+    /// The referenced HTLC does not exist on the channel (issue #458).
+    HtlcNotFound = 410,
+    /// The HTLC is no longer pending (already resolved or refunded).
+    HtlcNotPending = 411,
+    /// The HTLC's timeout ledger has not yet passed, so it cannot be refunded.
+    HtlcNotExpired = 412,
+    /// The supplied preimage does not hash to the HTLC's hash lock.
+    InvalidPreimage = 413,
+    /// A downstream HTLC's timeout must be strictly smaller than its
+    /// upstream parent's (issue #458).
+    HtlcTimeoutOutOfOrder = 414,
+    /// The HTLC would reserve more than the channel's uncommitted escrow.
+    HtlcInsufficientEscrow = 415,
+    /// The HTLC's timeout ledger is already in the past, so it could never be
+    /// resolved before a refund (issue #458).
+    HtlcTimeoutElapsed = 416,
+    /// A time/VDF policy gate is active but its policy contract was never
+    /// wired (issue #129).
     PolicyContractsNotConfigured = 317,
-    /// A policy contract received a `params` blob that does not decode to the
-    /// policy's schema (`TimePolicyParams` / `VdfPolicyParams`). Indicates a
-    /// vault configured a policy entry against the wrong contract.
+    /// A policy `params` blob does not decode to that policy's schema — the
+    /// entry was pointed at the wrong contract.
     InvalidPolicyParams = 318,
     /// A refund/claim was submitted before the minimum cooldown elapsed.
     ClaimCooldownNotElapsed = 320,
-    /// A checked arithmetic operation in a financial math helper over- or
-    /// under-flowed, a conversion would truncate, or a denominator was zero
-    /// (issue #396). The operation was refused *before* any state changed;
-    /// raw operators never run in the shared math helpers.
+    /// A shared math helper refused a checked operation that would overflow,
+    /// truncate, or divide by zero, before any state changed (issue #396).
     MathOverflow = 321,
-    /// The emergency pause circuit was tripped but no guardian has been
-    /// appointed (`set_guardian`), so there is nobody to authorize the halt.
-    /// Only the admin can pause such a vault, via `pause`.
-    GuardianNotSet = 322,
-    /// `unpause` was called before the emergency cool-down elapsed. A paused
-    /// vault must stay halted for `UNPAUSE_DELAY_LEDGERS` after the pause that
-    /// tripped it, so an emergency halt cannot be flickered straight back off.
-    UnpauseCoolDownActive = 323,
-    /// An attempt was made to set the guardian to the same address as the
-    /// admin. This would defeat the purpose of the guardian (a separate key
-    /// with limited authority) and is rejected.
-    GuardianSameAsAdmin = 324,
-    /// Stealth address feature is disabled for this vault.
-    StealthAddressDisabled = 325,
-    /// The stealth address is not registered in the vault's registry.
-    StealthAddressNotFound = 326,
-    /// The stealth address has already been used for a deposit.
-    StealthAddressAlreadyUsed = 327,
-    /// Invalid stealth address key derivation or format.
-    InvalidStealthAddress = 328,
-    /// Stealth address registration limit exceeded.
-    StealthAddressLimitExceeded = 329,
+
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }
@@ -301,6 +275,12 @@ pub struct VaultInit {
 }
 pub mod audit;
 pub mod blacklist;
+pub mod constant_time;
+pub mod events;
+pub mod keys;
 pub mod math;
 pub mod nonce;
+pub mod reentrancy;
 pub mod storage;
+#[cfg(any(feature = "telemetry", test))]
+pub mod telemetry;

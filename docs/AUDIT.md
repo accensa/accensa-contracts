@@ -105,7 +105,7 @@ Drawn as of `main`. Who is trusted, and to do what:
 | **Token contract (SAC)** | Correct SEP-41 behaviour: honest `balance`, honest `transfer`, trustline enforcement. | — | A broken/malicious token breaks the vault's float accounting. Accepted platform trust. |
 | **Indexer (off-chain)** | Batching receipts correctly and anchoring the right root. | Forging a receipt: `verify_receipt` is on-chain and permissionless, so a compromised indexer cannot fake a proof without a SHA-256 collision. | |
 | **Anyone verifying receipts** | Nothing. `verify_receipt` is read-only and free. | — | |
-| **Yield strategy contract** (optional, admin-registered) | Honest `deposit`/`withdraw`/`harvest`/`total_balance`/`accrued_yield` and returning deployed tokens on request. | Being assumed solvent. The vault enforces *ratios*, not strategy solvency; a malicious or insolvent strategy can strand deployed funds. | New trust boundary — see [§5](#5-known-issues-and-accepted-risks). |
+| **Yield strategy contract** (optional, admin-whitelisted then registered, issue #415) | Honest `deposit`/`withdraw`/`harvest`/`total_balance`/`accrued_yield` and returning deployed tokens on request. | Being assumed solvent. The vault enforces *ratios*, not strategy solvency; a malicious or insolvent strategy can strand deployed funds. | New trust boundary — see [§5](#5-known-issues-and-accepted-risks). |
 
 Two consequences worth stating explicitly:
 
@@ -217,7 +217,8 @@ that widens the window.
 Consequently, cumulative outflows (refunds + withdrawals + deployed principal)
 can never exceed cumulative inflows (deposits + harvested yield). The fuzz model
 asserts `float == deposits − refunds − withdrawals` after every step, and
-`test_refund_exceeding_liquid_after_deploy_fails` pins the yield-path case.
+`test_refund_exceeding_total_value_fails` pins the yield-path case: a refund
+may recall deployed principal (issue #415), but never more than was deployed.
 *Attack:* any sequence that drains more than was deposited — e.g. via token
 balance races, yield double-counting, or an underflowing accounting state.
 
