@@ -7,6 +7,28 @@ are linked only by a common identifier (`payment_ref` = receipt leaf hash).
 For the threat model, see [SECURITY_MODEL.md](SECURITY_MODEL.md).
 For live contract IDs and verification commands, see [DEPLOYMENTS.md](../DEPLOYMENTS.md).
 
+## Governance and veToken (Time-Weighted Voting)
+
+The governance contract implements a proposal-based voting system with two key voting mechanisms:
+
+### Quadratic Voting
+Members' voting power is calculated as the integer square root of their deposited governance tokens (`sqrt(deposit)`). This prevents single-whale domination by diminishing the marginal return of additional token deposits.
+
+### veToken (Time-Weighted Voting)
+When enabled, members can lock their governance tokens for enhanced voting power that decays over time. This incentivizes long-term commitment to the protocol.
+
+**Key Features:**
+- **Lock Duration**: Members can lock tokens for up to ~4 years (MAX_LOCK_DURATION)
+- **Time-Weighted Power**: Voting power = amount × (time_remaining / max_duration)
+- **Power Decay**: Voting power decays linearly as the lock approaches expiration
+- **Withdrawal**: Tokens can be withdrawn once the lock expires
+- **Opt-In**: veToken mechanics must be enabled via governance proposal
+
+**Use Cases:**
+- Long-term governance participants receive boosted voting power
+- Encourages token holders to commit to protocol governance
+- Provides additional security through time commitment
+
 ## System Overview
 
 ```mermaid

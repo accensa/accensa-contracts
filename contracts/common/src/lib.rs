@@ -171,33 +171,7 @@ pub enum Error {
     /// A shared math helper refused a checked operation that would overflow,
     /// truncate, or divide by zero, before any state changed (issue #396).
     MathOverflow = 321,
-    /// The yield strategy is not on the admin-approved whitelist (issue #415).
-    StrategyNotApproved = 322,
-    /// The strategy still holds deployed principal, so it cannot be replaced
-    /// or revoked yet (issue #415).
-    StrategyHasPrincipal = 323,
-    /// No escrow record exists for the NFT contract/token id (issue #474).
-    NftEscrowNotFound = 324,
-    /// The NFT contract/token id is already escrowed in this vault
-    /// (issue #474).
-    NftAlreadyEscrowed = 325,
-    /// The vault is not the current owner of the NFT it was asked to release
-    /// (issue #474).
-    NftNotOwned = 326,
-    /// No dispute is recorded under the given id in the fallback-oracle
-    /// ledger (issue #469).
-    DisputeNotFound = 327,
-    /// A fallback-oracle dispute was already settled (issue #469).
-    DisputeClosed = 328,
-    /// A proposed merchant fee-tier ladder is malformed (empty, too long,
-    /// not starting at zero, non-increasing, or with out-of-range fees).
-    InvalidTierLadder = 329,
-    /// No randomness committed yet for the VDF round.
-    RandomnessNotFound = 330,
-    /// A late counter-proof would extend the dispute window past the cap
-    /// (issue #431). The window is bounded so a hostile party cannot stall
-    /// settlement indefinitely by resubmitting newer states.
-    DisputeExtensionLimitReached = 417,
+
     /// Explicit Soroban Host error mapping (issue #380).
     HostError = 500,
 }
