@@ -64,20 +64,7 @@ extern crate alloc;
 #[cfg(test)]
 mod test;
 
-mod liquid_staking;
-mod math;
-mod quorum;
-mod ragequit;
-mod ring_sig;
-pub mod simulation;
-mod voting;
 
-pub use liquid_staking::{
-    Burn, ExchangeRate, LiquidStaking, LiquidStakingClient, LiquidStakingDataKey,
-    LiquidStakingError, Mint, UserData, UserData as LiquidStakingUserData,
-};
-
-pub mod optimistic;
 
 use quorum::current_quorum_bps;
 
@@ -141,39 +128,7 @@ pub enum Error {
     /// A checked arithmetic operation in the ragequit payout math
     /// over- or under-flowed, or a conversion would truncate (issue #411).
     MathOverflow = 17,
-    /// A proposal was submitted without the simulation report the current
-    /// configuration requires (issue #483).
-    SimulationRequired = 18,
-    /// The submitted simulation report failed verification: wrong simulator,
-    /// stale binding hash, or not bound to this proposal's calldata
-    /// (issue #483).
-    SimulationMismatch = 19,
-    /// The simulation report's outcome says the proposal would revert
-    /// (issue #483).
-    SimulationFailed = 20,
-    /// Simulation is required but no simulator contract is registered
-    /// (issue #483).
-    SimulationNotConfigured = 21,
-    /// No optimistic proposal exists with the given id.
-    OptimisticNotFound = 22,
-    /// The optimistic proposal was vetoed and cannot execute.
-    OptimisticVetoed = 23,
-    /// The optimistic challenge window has closed.
-    ChallengeWindowClosed = 24,
-    /// This member already vetoed this optimistic proposal.
-    AlreadyVetoed = 25,
-    /// A ring or LSAG signature is malformed or does not verify.
-    InvalidRingSignature = 26,
-    /// An LSAG key image has already voted on this proposal.
-    DuplicateKeyImage = 27,
-    /// The selected ring is not a valid registered anonymity set.
-    InvalidAnonymitySet = 28,
-    /// A vote would duplicate an address vote or follow an anonymous-mode lock.
-    VotingModeConflict = 29,
-    /// The member already registered a voting key or the key is already used.
-    VotingKeyAlreadyRegistered = 30,
-    /// A registered voting key is not a canonical Ristretto255 point.
-    InvalidVotingKey = 31,
+
 }
 
 #[contracttype]
@@ -970,43 +925,7 @@ impl Governance {
             .has(&DataKey::Dissent(proposal_id, voter))
     }
 
-    /// Queue a routine operation for optimistic execution (issue #475).
-    /// `proposer`, a member, authorizes the queue; the proposal becomes
-    /// executable immediately and opens a 24-hour supermajority-veto window.
-    /// Returns the new optimistic proposal id.
-    pub fn optimistic_submit(
-        env: Env,
-        proposer: Address,
-        target: Address,
-        function: Symbol,
-        args: Vec<Val>,
-    ) -> Result<u64, Error> {
-        optimistic::submit(&env, &proposer, &target, &function, &args)
-    }
 
-    /// Cast `voter`'s weight against optimistic proposal `proposal_id`
-    /// (issue #475). Only valid inside the challenge window, only members,
-    /// once per member. When cumulative veto weight reaches a ~2/3
-    /// supermajority of total weight the proposal is locked and execution
-    /// reverts with [`Error::OptimisticVetoed`].
-    pub fn veto_optimistic(env: Env, voter: Address, proposal_id: u64) -> Result<(), Error> {
-        optimistic::veto(&env, &voter, proposal_id)
-    }
-
-    /// Execute queued optimistic proposal `proposal_id` against its target
-    /// (issue #475). Anyone may call, at any time, unless the proposal was
-    /// executed already or a supermajority vetoed it during the window.
-    pub fn execute_optimistic(env: Env, proposal_id: u64) -> Result<(), Error> {
-        optimistic::execute(&env, proposal_id)
-    }
-
-    /// Read-only: the current state of optimistic proposal `proposal_id`
-    /// (issue #475).
-    pub fn get_optimistic_proposal(
-        env: Env,
-        proposal_id: u64,
-    ) -> Result<optimistic::OptimisticProposal, Error> {
-        optimistic::get(&env, proposal_id)
     }
 
     fn member_deposit(env: &Env, member: &Address) -> Result<(), Error> {
