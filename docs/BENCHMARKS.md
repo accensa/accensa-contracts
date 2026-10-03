@@ -19,6 +19,29 @@ The existing budget-regression test continues to protect the checked-in baseline
 run the benchmark before and after changes and compare the printed
 `cpu_instructions` values for the same batch size.
 
+### `verify_receipt_leaf` (root-history path)
+
+`contracts/receipt-anchor/src/budget_test.rs::measure_verify_receipt_leaf_by_depth`
+(run with `--features budget-assert` after building both contracts to WASM)
+measures the real `receipt_anchor` WASM, budget reset immediately before the
+call. The proof is checked against the shard's retained roots in the router
+itself, with no cross-contract call to a storage shard.
+
+| Proof depth | Batch size up to | CPU instructions | Memory (bytes) |
+| --- | --- | --- | --- |
+| 0 | 1 | 680,379 | 1,524,651 |
+| 1 | 2 | 892,836 | 1,524,675 |
+| 2 | 4 | 1,105,293 | 1,524,699 |
+| 4 | 16 | 1,530,207 | 1,524,747 |
+| 7 | 128 | 2,167,578 | 1,524,819 |
+| 10 (`MAX_PROOF_LEN`) | 1,024 | 2,811,397 | 1,524,891 |
+
+CPU grows by ~212k instructions per level; memory is flat (~24 bytes per
+level). The worst case uses 2.8% of the 100,000,000-instruction and 3.6% of
+the 41,943,040-byte per-transaction limits; the measurement test fails if
+either exceeds 10%. `budget_verify_receipt_leaf_depth_{1,10}` gate CPU at the
+baseline × 1.15.
+
 
 ## Methodology
 

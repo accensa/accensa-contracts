@@ -20,8 +20,6 @@
 //! `UptoAuthorization::get_authorization_digest` (or recompute it from
 //! these two functions) rather than building the preimage themselves.
 
-#![no_std]
-
 use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env};
 
 /// Version of the authorization signing scheme. Bump whenever the digest

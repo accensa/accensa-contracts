@@ -339,6 +339,31 @@
                           },
                           {
                             "key": {
+                              "symbol": "nonce_window"
+                            },
+                            "val": {
+                              "map": [
+                                {
+                                  "key": {
+                                    "symbol": "base"
+                                  },
+                                  "val": {
+                                    "u64": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "bitmap"
+                                  },
+                                  "val": {
+                                    "bytes": "0e00000000000000000000000000000000000000000000000000000000000000"
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "opened_at"
                             },
                             "val": {
@@ -394,6 +419,18 @@
                       },
                       "val": {
                         "u64": "1"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Lock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {
