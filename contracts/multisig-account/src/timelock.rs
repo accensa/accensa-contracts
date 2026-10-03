@@ -5,9 +5,14 @@
 //! sequence increments). Authorized signers or a guardian can cancel
 //! malicious or erroneous queued actions during the delay window.
 //! Execution is enforced after the timelock elapses and rejected before.
+//!
+//! Approvals themselves expire: each one is stamped with `created_at` and
+//! only counts toward `required_approvals` while it is younger than
+//! [`ttl::APPROVAL_TTL_SECONDS`] (14 days, issue #449). See [`crate::ttl`].
 
-use soroban_sdk::{contracttype, Address, BytesN, Env};
+use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 
+use crate::ttl;
 use crate::DataKey;
 use crate::Error;
 
@@ -19,12 +24,16 @@ pub struct QueuedTransaction {
     pub call_hash: BytesN<32>,
     /// Ledger sequence at which execution becomes allowed.
     pub execution_ledger: u32,
-    /// Number of approvals collected so far.
+    /// Number of approvals counted so far (stale ones are pruned away).
     pub approval_count: u32,
     /// Threshold number of approvals required for execution.
     pub required_approvals: u32,
     /// Address of the guardian who can cancel this transaction.
     pub guardian: Address,
+    /// Signers whose approvals are still recorded, in approval order; the
+    /// materialized list Soroban's non-iterable storage needs in order to
+    /// prune expired approvals (issue #449).
+    pub approvers: Vec<Address>,
 }
 
 /// Default timelock delay in ledger sequences (48 hours at ~5s/ledger ≈ 345600 ledgers).
@@ -57,11 +66,10 @@ pub fn queue_transaction(
         approval_count: 0,
         required_approvals,
         guardian,
+        approvers: Vec::new(env),
     };
 
-    env.storage()
-        .persistent()
-        .set(&DataKey::QueuedTransaction(queue_id), &queued);
+    store_queued(env, queue_id, &queued);
     env.storage()
         .instance()
         .set(&DataKey::QueueCount, &queue_id);
@@ -69,23 +77,50 @@ pub fn queue_transaction(
     queue_id
 }
 
+/// Persist `queued` under its queue ID.
+fn store_queued(env: &Env, queue_id: u64, queued: &QueuedTransaction) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::QueuedTransaction(queue_id), queued);
+}
+
 /// Execute a queued transaction after the timelock has elapsed.
+///
+/// Approvals are pruned against the 14-day TTL before the quorum check
+/// (issue #449), so only fresh approvals are counted.
 ///
 /// Returns `Ok(())` if the transaction was executed.
 /// Returns `Err(Error::TimelockNotExpired)` if the timelock has not yet elapsed.
+/// Returns `Err(Error::StaleSignature)` if expired approvals left the fresh
+/// count below `required_approvals`.
+/// Returns `Err(Error::InsufficientSignatures)` if there were never enough
+/// approvals.
 /// Returns `Err(Error::ProposalNotFound)` if the queue ID does not exist.
 pub fn execute_queued_transaction(env: &Env, queue_id: u64) -> Result<(), Error> {
     crate::admin::require_not_paused(env)?;
-    let queued = get_queued_transaction(env, queue_id)?;
+    let mut queued = get_queued_transaction(env, queue_id)?;
 
     if env.ledger().sequence() < queued.execution_ledger {
         return Err(Error::TimelockNotExpired);
     }
 
-    if queued.approval_count < queued.required_approvals {
-        return Err(Error::InsufficientSignatures);
+    // Drop approvals that aged past the TTL before counting quorum: a stale
+    // partial signature must never be executed (issue #449).
+    let pruned = ttl::prune_stale_approvals(env, queue_id, &mut queued);
+    if pruned > 0 {
+        store_queued(env, queue_id, &queued);
     }
 
+    if queued.approval_count < queued.required_approvals {
+        return if pruned > 0 {
+            Err(Error::StaleSignature)
+        } else {
+            Err(Error::InsufficientSignatures)
+        };
+    }
+
+    // The entry is consumed, so no approval may outlive it.
+    ttl::clear_approvals(env, queue_id, &queued.approvers);
     env.storage()
         .persistent()
         .remove(&DataKey::QueuedTransaction(queue_id));
@@ -111,6 +146,7 @@ pub fn cancel_queued_transaction(env: &Env, queue_id: u64, caller: &Address) -> 
         return Err(Error::Unauthorized);
     }
 
+    ttl::clear_approvals(env, queue_id, &queued.approvers);
     env.storage()
         .persistent()
         .remove(&DataKey::QueuedTransaction(queue_id));
@@ -119,21 +155,32 @@ pub fn cancel_queued_transaction(env: &Env, queue_id: u64, caller: &Address) -> 
 
 /// Approve a queued transaction. Each authorized signer can approve once.
 ///
+/// The approval is recorded with `created_at = now` and only counts toward
+/// the quorum while younger than [`ttl::APPROVAL_TTL_SECONDS`]
+/// (issue #449); approvals that expired in the meantime are pruned first,
+/// which also means a signer whose previous approval went stale may vote
+/// again.
+///
 /// Returns `Ok(())` if the approval was recorded.
-/// Returns `Err(Error::AlreadyVoted)` if the signer has already approved.
+/// Returns `Err(Error::AlreadyVoted)` if the signer still holds a fresh
+/// approval.
 pub fn approve_queued_transaction(env: &Env, queue_id: u64, signer: &Address) -> Result<(), Error> {
     let mut queued = get_queued_transaction(env, queue_id)?;
 
-    let approval_key = DataKey::TimelockApproval(queue_id, signer.clone());
-    if env.storage().temporary().has(&approval_key) {
+    // Expired approvals never count, so they must not block a fresh vote.
+    let pruned = ttl::prune_stale_approvals(env, queue_id, &mut queued);
+    if pruned > 0 {
+        store_queued(env, queue_id, &queued);
+    }
+
+    if queued.approvers.contains(signer) {
         return Err(Error::AlreadyVoted);
     }
 
-    env.storage().temporary().set(&approval_key, &());
-    queued.approval_count = queued.approval_count.saturating_add(1);
-    env.storage()
-        .persistent()
-        .set(&DataKey::QueuedTransaction(queue_id), &queued);
+    ttl::record_approval(env, queue_id, signer);
+    queued.approvers.push_back(signer.clone());
+    queued.approval_count = queued.approvers.len();
+    store_queued(env, queue_id, &queued);
 
     Ok(())
 }

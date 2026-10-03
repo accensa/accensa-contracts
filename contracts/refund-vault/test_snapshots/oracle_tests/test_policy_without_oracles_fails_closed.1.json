@@ -359,6 +359,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "Lock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Nonce"
                           }
                         ]
@@ -410,18 +422,6 @@
                             }
                           }
                         ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "ReentrancyLock"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "bool": false
                       }
                     },
                     {

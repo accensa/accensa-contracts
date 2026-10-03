@@ -1,15 +1,22 @@
 [workspace]
 members = [
     "contracts/common",
+    "contracts/cross-chain",
     "contracts/governance",
+    "contracts/insurance",
+    "contracts/oracle",
     "contracts/multisig-account",
+    "contracts/privacy",
     "contracts/receipt-anchor",
     "contracts/receipt-shard",
+    "contracts/reputation",
     "contracts/refund-policy-time",
     "contracts/refund-policy-vdf",
     "contracts/refund-vault",
     "contracts/state-channel",
+    "contracts/stream-vault",
     "contracts/refund-vault-factory",
+    "contracts/treasury",
     "contracts/testutils",
     "contracts/upto-authorization",
 ]

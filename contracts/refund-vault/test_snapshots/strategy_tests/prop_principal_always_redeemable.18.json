@@ -163,7 +163,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "i128": "4776009"
+                  "i128": "3531588"
                 }
               ]
             }
@@ -182,7 +182,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                     },
                     {
-                      "i128": "4776009"
+                      "i128": "3531588"
                     }
                   ]
                 }
@@ -203,7 +203,7 @@
               "function_name": "deploy_to_yield",
               "args": [
                 {
-                  "i128": "1098482"
+                  "i128": "1094792"
                 }
               ]
             }
@@ -222,7 +222,7 @@
               "function_name": "simulate_yield",
               "args": [
                 {
-                  "i128": "307234"
+                  "i128": "451892"
                 }
               ]
             }
@@ -247,13 +247,13 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                 },
                 {
-                  "i128": "2149204"
+                  "i128": "2613375"
                 },
                 {
                   "u32": 0
                 },
                 {
-                  "i128": "2149204"
+                  "i128": "2613375"
                 },
                 "void",
                 {
@@ -590,7 +590,31 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "1098482"
+                "i128": "918213"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 518400
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "HarvestedYield"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "i128": "72885"
               }
             }
           },
@@ -671,7 +695,7 @@
                       "symbol": "amount_refunded"
                     },
                     "val": {
-                      "i128": "2149204"
+                      "i128": "2613375"
                     }
                   },
                   {
@@ -695,7 +719,7 @@
                       "symbol": "payment_amount"
                     },
                     "val": {
-                      "i128": "2149204"
+                      "i128": "2613375"
                     }
                   },
                   {
@@ -844,12 +868,24 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "Lock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Nonce"
                           }
                         ]
                       },
                       "val": {
-                        "u64": "3"
+                        "u64": "4"
                       }
                     },
                     {
@@ -1025,7 +1061,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "1098482"
+                        "i128": "918213"
                       }
                     },
                     {
@@ -1037,7 +1073,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "307234"
+                        "i128": "379007"
                       }
                     }
                   ]
@@ -1074,7 +1110,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "5223991"
+                      "i128": "6468412"
                     }
                   },
                   {
@@ -1126,7 +1162,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "1528323"
+                      "i128": "72885"
                     }
                   },
                   {
@@ -1178,7 +1214,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "11098482"
+                      "i128": "10845328"
                     }
                   },
                   {
@@ -1230,7 +1266,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "2149204"
+                      "i128": "2613375"
                     }
                   },
                   {

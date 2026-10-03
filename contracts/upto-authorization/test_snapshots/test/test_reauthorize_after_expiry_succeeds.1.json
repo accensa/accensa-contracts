@@ -514,6 +514,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "created_ledger"
+                    },
+                    "val": {
+                      "u32": 200
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "expiry"
                     },
                     "val": {

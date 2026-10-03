@@ -17,6 +17,8 @@
 //! - Governance may set a per-token daily allowance ([`limits`]); a routine
 //!   token transfer authorized by fewer than `threshold` signers is then
 //!   accepted while it fits in each signer's remaining daily quota.
+//! - Approvals of a queued timelock transaction expire after 14 days
+//!   ([`ttl`]); stale ones are pruned before the quorum is evaluated.
 //!
 //! This is the piece referenced by `docs/SECURITY_MODEL.md` and
 //! `DEPLOYMENTS.md`: initialize an app contract with the multisig account's
@@ -30,6 +32,8 @@ mod errors;
 pub mod limits;
 mod signers;
 pub mod timelock;
+pub mod ttl;
+pub mod weights;
 
 pub use admin::{GuardianSetEvent, PausedEvent, UnpausedEvent};
 pub use errors::Error;
@@ -55,7 +59,15 @@ pub enum DataKey {
     Threshold,
     /// Persistent storage per registered signer: marks it as authorized.
     Signer(Address),
-    /// Temporary storage per approval: marks a signer has approved a queued transaction.
+    /// Persistent: a registered signer's voting weight (issue #434).
+    SignerWeight(Address),
+    /// Persistent: the registered signer set, in registration order
+    /// (issue #434). Soroban storage cannot be iterated, so the aggregate
+    /// signer weight needs this materialized list.
+    SignerList,
+    /// Persistent storage per approval: the signer's approval of a queued
+    /// transaction, stamped with `created_at` (`ttl::ApprovalRecord`), so it
+    /// can be expired after the 14-day TTL (issue #449).
     TimelockApproval(u64, Address),
     /// Instance: the next available queue ID counter.
     QueueCount,
@@ -83,22 +95,50 @@ pub struct MultisigAccount;
 impl MultisigAccount {
     /// Create the account with an initial signer set.
     ///
-    /// `threshold` defaults to `signers.len()` (all signers required) when `0`
-    /// is passed, so a single-signer account still needs that signer.
-    pub fn __constructor(env: Env, signers: Vec<Address>, threshold: u32) {
+    /// `threshold` becomes the account's required aggregate signer weight and
+    /// defaults to `signers.len()` (all signers required) when `0` is passed,
+    /// so a single-signer account still needs that signer. Every signer is
+    /// registered with [`weights::DEFAULT_SIGNER_WEIGHT`] (`1`), so an account
+    /// that never calls the weighted entry points behaves exactly as a plain
+    /// `threshold`-of-`signers` account (issue #434).
+    ///
+    /// Duplicate addresses in `signers` are registered once, so they cannot
+    /// contribute their weight twice.
+    ///
+    /// # Errors
+    /// - [`Error::TotalWeightBelowThreshold`] when `threshold` exceeds the
+    ///   aggregate signer weight (which would make the account unable to ever
+    ///   authorize anything) — including a `0`-weight, empty signer set.
+    pub fn __constructor(env: Env, signers: Vec<Address>, threshold: u32) -> Result<(), Error> {
+        let mut unique: Vec<Address> = Vec::new(&env);
+        for signer in signers.iter() {
+            if unique.contains(&signer) {
+                continue;
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::Signer(signer.clone()), &());
+            weights::store_signer_weight(&env, &signer, weights::DEFAULT_SIGNER_WEIGHT);
+            unique.push_back(signer);
+        }
+        weights::store_signer_list(&env, &unique);
+
         let effective = if threshold == 0 {
-            signers.len()
+            unique.len()
         } else {
             threshold
         };
-        for signer in signers.iter() {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Signer(signer), &());
+
+        // Invariant: `total_signers_weight >= required_threshold`. Without it
+        // the account would be permanently unable to authorize.
+        if effective == 0 || effective > weights::total_weight(&env) {
+            return Err(Error::TotalWeightBelowThreshold);
         }
+
         env.storage()
             .instance()
             .set(&DataKey::Threshold, &effective);
+        Ok(())
     }
 
     /// Read the current threshold.
@@ -112,6 +152,52 @@ impl MultisigAccount {
     /// True if `signer` is registered on this account.
     pub fn is_signer(env: Env, signer: Address) -> bool {
         env.storage().persistent().has(&DataKey::Signer(signer))
+    }
+
+    /// Read-only: a registered signer's voting weight (issue #434).
+    ///
+    /// Defaults to [`weights::DEFAULT_SIGNER_WEIGHT`] for a signer that has
+    /// never been given an explicit weight.
+    pub fn get_signer_weight(env: Env, signer: Address) -> u32 {
+        weights::signer_weight(&env, &signer)
+    }
+
+    /// Read-only: the aggregate weight of every registered signer
+    /// (issue #434). Always `>= get_threshold()` once the account exists.
+    pub fn get_total_weight(env: Env) -> u32 {
+        weights::total_weight(&env)
+    }
+
+    /// Governance-only: set a registered signer's voting weight (issue #434).
+    ///
+    /// Requires this account's own authorization, i.e. the current weighted
+    /// threshold must approve the change. Rejects a zero weight and any change
+    /// that would leave the aggregate signer weight below the threshold.
+    ///
+    /// # Events emitted on success
+    /// - [`weights::SignerWeightSet`]
+    pub fn set_signer_weight(env: Env, signer: Address, weight: u32) -> Result<(), Error> {
+        weights::set_signer_weight(&env, signer, weight)
+    }
+
+    /// Governance-only: register `signer` with an explicit voting weight
+    /// (issue #434).
+    ///
+    /// # Events emitted on success
+    /// - [`weights::SignerAdded`]
+    pub fn add_signer(env: Env, signer: Address, weight: u32) -> Result<(), Error> {
+        weights::add_signer(&env, signer, weight)
+    }
+
+    /// Governance-only: drop `signer` from the account (issue #434).
+    ///
+    /// Refused while removing the signer would push the aggregate weight below
+    /// the threshold; lower the threshold first.
+    ///
+    /// # Events emitted on success
+    /// - [`weights::SignerRemoved`]
+    pub fn remove_signer(env: Env, signer: Address) -> Result<(), Error> {
+        weights::remove_signer(&env, signer)
     }
 
     /// Rotate signers and threshold atomically in a single call.
@@ -133,6 +219,18 @@ impl MultisigAccount {
         new_threshold: u32,
     ) -> Result<(), Error> {
         signers::rotate_signers_and_threshold(&env, to_add, to_remove, new_threshold)
+    }
+
+    /// Execute a batch of transactions
+    pub fn execute_batch(env: Env, calls: Vec<Call>) -> Vec<soroban_sdk::Val> {
+        env.current_contract_address().require_auth();
+
+        let mut results = Vec::new(&env);
+        for call in calls.iter() {
+            let res = env.invoke_contract(&call.contract, &call.function, call.args);
+            results.push_back(res);
+        }
+        results
     }
 
     /// Set the daily allowance for sub-threshold transfers of `token`
@@ -239,18 +337,26 @@ impl CustomAccountInterface for MultisigAccount {
 
         let delegates = env.custom_account().get_delegated_signers();
 
-        for delegate in delegates.iter() {
-            if !env.storage().persistent().has(&DataKey::Signer(delegate)) {
-                return Err(Error::UnknownSigner);
-            }
-        }
+        // Sum the weights of the attached approvers, rejecting any delegate
+        // that is not a registered signer (issue #434). With the default
+        // weight of 1 per signer this is exactly the old distinct-signer
+        // count.
+        let approving_weight = weights::tally_weight(&env, &delegates)?;
 
-        if delegates.len() < threshold {
-            // Below threshold, only routine spends within the daily
-            // allowance are admitted (issue #413).
+        if approving_weight < threshold {
+            // Below the weighted threshold, only routine spends within the
+            // daily allowance are admitted (issue #413).
             return limits::authorize_within_limits(&env, &delegates, &auth_contexts);
         }
 
         Ok(())
     }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Call {
+    pub contract: Address,
+    pub function: soroban_sdk::Symbol,
+    pub args: Vec<soroban_sdk::Val>,
 }

@@ -48,6 +48,21 @@ fn setup_router(env: &Env) -> (ReceiptAnchorClient<'static>, Address) {
         env,
         "../../target/wasm32v1-none/release/receipt_anchor.wasm",
     );
+
+    // The entry point under measurement shares this test "transaction" with the
+    // two WASM uploads below — ~130 KB of writes against a 132 KB Mainnet
+    // per-transaction write budget. A real deployment uploads contract code in
+    // its own transaction and never shares one with the call under test, so
+    // with Mainnet limits enforced it is that harness overhead, not the
+    // contract, that fails `budget_prune_batches_100` (whose own writes are
+    // ~38 bytes per pruned batch). Disable invocation resource limits here, as
+    // the SDK recommends for tests whose resource usage is intentional: the
+    // gates this file is actually responsible for are the `budget_cpu_lt` CPU
+    // assertions, plus the explicit `TX_MAX_*` checks in `measure_*` below,
+    // none of which rely on host enforcement. Every test also points the CPU
+    // budget at just the measured call via `budget().reset_unlimited()`.
+    env.cost_estimate().disable_resource_limits();
+
     #[allow(deprecated)]
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm);
     #[allow(deprecated)]

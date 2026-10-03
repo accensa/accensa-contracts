@@ -54,7 +54,7 @@ use soroban_sdk::{
 };
 
 use crate::test_helpers::vault_init;
-use crate::{DataKey, Error, RefundVault, RefundVaultClient};
+use crate::{Error, RefundVault, RefundVaultClient};
 
 const FLOAT: i128 = 1_000_000;
 
@@ -802,7 +802,7 @@ fn test_reentrant_harvest_yield_is_blocked() {
 // flag already held — the same way an internal composition bug would (one
 // guarded function calling another directly in Rust, which the host cannot
 // see because no new contract invocation occurs). They call
-// `Env::as_contract` to write `DataKey::ReentrancyLock = true` into the
+// `Env::as_contract` to write `accensa_common::reentrancy::ReentrancyDataKey::Lock = true` into the
 // vault's own instance storage from outside, exactly mimicking "a guarded
 // call is already in progress", then confirm every guarded entry point
 // refuses to run.
@@ -830,7 +830,7 @@ fn hold_lock(env: &Env, vault_id: &Address) {
     env.as_contract(vault_id, || {
         env.storage()
             .instance()
-            .set(&DataKey::ReentrancyLock, &true);
+            .set(&accensa_common::reentrancy::ReentrancyDataKey::Lock, &true);
     });
 }
 

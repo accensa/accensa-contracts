@@ -24,7 +24,7 @@
 use accensa_common::Error;
 use soroban_sdk::{contractevent, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN, Env};
 
-use crate::{ChannelPhase, DataKey};
+use crate::{crypto, ChannelPhase, DataKey};
 
 const PAYLOAD_DOMAIN: &[u8] = b"accensa-mutual-close-v1";
 
@@ -103,12 +103,16 @@ pub(crate) fn mutual_close(
         return Err(Error::ExceedsPayment);
     }
 
-    // `ed25519_verify` traps on a bad signature, aborting before any transfer.
+    // Both signatures cover the same canonical envelope and are verified in
+    // one batch call. `ed25519_verify` traps on a bad signature, so a forged
+    // half aborts before any transfer; the length pairing is checked first.
     let payload = close_payload(env, &env.current_contract_address(), &state);
-    env.crypto()
-        .ed25519_verify(&channel.sender_pubkey, &payload, &sender_sig);
-    env.crypto()
-        .ed25519_verify(&receiver_pubkey, &payload, &receiver_sig);
+    crypto::verify_signatures(
+        env,
+        &payload,
+        &[channel.sender_pubkey.clone(), receiver_pubkey],
+        &[sender_sig, receiver_sig],
+    )?;
 
     // Delete storage before paying out so a re-entrant token cannot close
     // the same channel twice.

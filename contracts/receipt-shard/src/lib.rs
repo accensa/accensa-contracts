@@ -35,6 +35,10 @@ pub enum DataKey {
     /// Health-diagnostic counters (issue #419), instance storage. See
     /// [`diagnostics::ShardStats`].
     ShardStats,
+    /// Whether this storage shard accepts state-changing operations.
+    /// Decommissioned shards retain their address for historical discovery but
+    /// no longer accept writes.
+    Active,
 }
 
 /// Structurally identical to `ReceiptAnchor::BatchRecord`. Soroban cross-contract
@@ -80,6 +84,7 @@ impl ReceiptShard {
         env.storage()
             .instance()
             .set(&DataKey::PrunedUpTo, &start_batch_id);
+        env.storage().instance().set(&DataKey::Active, &true);
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
@@ -97,6 +102,7 @@ impl ReceiptShard {
         period_start: u64,
         period_end: u64,
     ) {
+        assert!(Self::is_active(env.clone()), "shard is inactive");
         let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
         router.require_auth();
 
@@ -178,6 +184,7 @@ impl ReceiptShard {
     }
 
     pub fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error> {
+        assert!(Self::is_active(env.clone()), "shard is inactive");
         if !env.storage().persistent().has(&DataKey::Batch(batch_id)) {
             return Err(Error::BatchNotFound);
         }
@@ -202,6 +209,7 @@ impl ReceiptShard {
         max_batches: u32,
         high_water_batch_id: u64,
     ) -> (u64, u64) {
+        assert!(Self::is_active(env.clone()), "shard is inactive");
         let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
         router.require_auth();
 
@@ -210,6 +218,11 @@ impl ReceiptShard {
 
         let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
         let mut pruned: u64 = 0;
+        // Counters are settled once after the loop rather than per deletion.
+        // `pruned` also counts already-absent ids, which never held a record,
+        // so the stats deltas are tracked separately.
+        let mut removed_batches: u64 = 0;
+        let mut removed_leaves: u64 = 0;
 
         while cursor < ceiling && pruned < max_batches as u64 {
             match env
@@ -219,7 +232,8 @@ impl ReceiptShard {
             {
                 Some(record) if record.anchored_ledger < before_ledger => {
                     env.storage().persistent().remove(&DataKey::Batch(cursor));
-                    diagnostics::record_removal(&env, &record);
+                    removed_batches += 1;
+                    removed_leaves += record.count as u64;
                     cursor += 1;
                     pruned += 1;
                 }
@@ -230,6 +244,8 @@ impl ReceiptShard {
                 }
             }
         }
+
+        diagnostics::record_removals(&env, removed_batches, removed_leaves);
 
         if pruned > 0 {
             env.storage().instance().set(&DataKey::PrunedUpTo, &cursor);
@@ -258,6 +274,9 @@ impl ReceiptShard {
     }
 }
 
+pub mod consolidation;
+#[cfg(test)]
+mod consolidation_test;
 pub mod diagnostics;
 #[cfg(test)]
 mod diagnostics_test;

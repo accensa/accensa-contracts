@@ -8,6 +8,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- security(multisig): implement 14-day TTL expiration for pending signatures and approvals (#449)
+
 ### Added
 
 - **`state-channel` (issue #423): multi-asset collateral pooling.** New
@@ -35,10 +37,23 @@ breaking changes bump the **minor** version, and they are called out as such.
   for more than 90 days of ledgers. The swept `RefundV2` record is deleted to
   reclaim storage, and a `DustSweptEvent` is emitted. Treasury falls back to
   the fee recipient when unset.
+- **`stream-vault` (issue #410): streaming micro-disbursement schedules.**
+  New standalone contract, constructed with `(merchant, token)`.
+  `create_stream(buyer, start_ledger, stop_ledger, rate_per_ledger,
+deposit)` escrows a buyer's deposit and streams it linearly to the
+  merchant; the claimable balance is `min(deposit, (ledger - start) * rate)`
+  less prior claims. `claim_stream` is permissionless and closes the stream
+  once the stop ledger is reached. The buyer can `pause_stream` /
+  `resume_stream` (resuming shifts the schedule by the paused duration) or
+  `cancel_stream`, which pays the merchant what has streamed and returns
+  unspent principal. Adds `get_stream` and `get_stream_claimable`. It is a
+  separate contract because `RefundVault` has no room left under the
+  128 KiB contract size limit, and it keeps buyer escrow apart from the
+  refund float.
 - **`multisig-account` (issue #425): Ed25519 signature malleability protection.**
   New `crypto` module rejects any signature whose `s` scalar is not strictly
   below the group order `L` (e.g. the malleated twin `(R, s + L)`) with
-  `Error::NonCanonicalSignature` *before* host verification; exposed as the
+  `Error::NonCanonicalSignature` _before_ host verification; exposed as the
   `verify_ed25519` entrypoint. Also restores the crate's build (misplaced
   module docs, invalid `[u8; 32]` contract types, bad zero-address strkey) and
   makes `rotate_signers_and_threshold` require the account's own auth.
@@ -118,6 +133,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   voting window (`contracts/governance/src/quorum.rs`), so inactive proposals
   late in their window need less "yes" weight to pass — but never beneath the
   floor, and "yes" must still outweigh "no".
+
 ### Performance
 
 - **`refund-vault`: nonce-key allocation halved in `check_and_bump_user_nonce`
@@ -152,6 +168,32 @@ breaking changes bump the **minor** version, and they are called out as such.
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+- **`treasury`: the yield distribution module is now part of the build (issue
+  #523).** #523 landed `distribution.rs` and `distribution_test.rs` without the
+  `pub mod distribution;` / `#[cfg(test)] mod distribution_test;` declarations
+  and without the seven `Error` variants the module returns, so `treasury` did
+  not compile and `fmt`, `test`, `budget-limits` and `build-wasm` were all red
+  on `main`. Added the module declarations plus `DistributionNotInitialized`
+  through `NoYieldToClaim` as variants `= 30..=36`, appended after the existing
+  set so every current error code keeps its value.
+- **`treasury`: staking moves the treasury's own asset, and changing a stake no
+  longer forfeits accrued yield.** `DistributionConfig` holds the *yield* token
+  (the one `initialize_distribution` registers), but `stake` and `unstake`
+  transferred that token as if it were the staked asset, so every stake tried to
+  pull yield tokens from users who hold none. They now transfer
+  `DataKey::Token`, and the yield token stays the payout asset for
+  `claim_yield`. Separately, `stake` and `unstake` re-anchored the user's
+  checkpoint to the current accumulator without settling what had accrued at the
+  previous stake size, which silently discarded pending yield on every position
+  change. Accrued yield is now settled into a `UserDistribution::pending` bucket
+  before the stake changes, and `pending_yield` / `claim_yield` report and pay
+  that bucket plus the current accrual.
+- **`refund-vault`: test modules are no longer compiled into the release
+  build.** `token_agnostic_tests` and `yield_tests` were the only two test
+  modules declared without `#[cfg(test)]`, so roughly 1.3k lines of test code
+  entered the non-test build path. They are dead-code eliminated at present,
+  which is why the deployed WASM is unchanged, but the mismatch meant a test
+  helper with any side effect would have shipped silently.
 - **Build fixes for code merged without compiling.** `governance` declares
   its `voting` and `math` modules and no longer moves `member` before reuse;
   stray `#![no_std]` attributes in submodules (`governance` `ragequit.rs` /
@@ -244,7 +286,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   vault and factory formerly stored their `Option<Address>` policy fields
   verbatim, so a cleared policy left a `Void` in the ledger, which the host
   rejects/breaks on in several read paths (observed as `Error(Context,
-  InvalidAction)` and abort traps in the wasm constructor path). Policy fields
+InvalidAction)` and abort traps in the wasm constructor path). Policy fields
   are now written only when `Some`, and setters `remove()` the key on `None`.
   Absent key ⇔ unconfigured, which is the correct on-chain semantic anyway
   (`Void` is not a legal contract-data value).
@@ -299,7 +341,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   `COMMIT_MIN_DELAY_LEDGERS` (7) ledgers later to surface and consume the
   action. `reveal` re-derives the hash from the plaintext and rejects a
   mismatch (`CommitMismatch`), a reveal before the delay (`CommitDelayNot
-  Elapsed`), a reveal with no pending commit (`NoCommit`), a reveal under a
+Elapsed`), a reveal with no pending commit (`NoCommit`), a reveal under a
   different operation than the one committed (`CommitOperationMismatch`), and
   a duplicate pending commit (`CommitAlreadyExists`). Commitments are
   merchant-only and single-use. New error codes 305–309 are appended without
@@ -308,7 +350,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 - **VDF-gated refunds for `RefundVault`** (issue #138): the refund policy now
   carries a Verifiable Delay Function requirement — `propose_policy(ledgers,
-  deadline, vdf_delay)` configures a delay in squarings (subject to the same
+deadline, vdf_delay)` configures a delay in squarings (subject to the same
   timelock) and `execute_policy` applies it. When the policy has a delay
   configured, `refund`, every claim in `claim_batch`, and every item in
   `process_batch` must supply a valid **Wesolowski VDF proof** that the delay
@@ -316,13 +358,13 @@ breaking changes bump the **minor** version, and they are called out as such.
   (302), with an invalid or premature one with `InvalidVdfProof` (303), and a
   proof supplied against a policy with no delay with `VdfNotConfigured` (304).
   The proof is bound to the payment (challenge = `sha256(payment_ref)`), so it
-  cannot be replayed across payments, and the delay is *computational* — a
+  cannot be replayed across payments, and the delay is _computational_ — a
   validator that controls block timestamps or transaction ordering cannot
   shorten it without factoring the contract's fixed 1024-bit modulus. The
   verifier (`contracts/refund-vault/src/vdf.rs`) runs in pure WASM via
   `crypto-bigint` (already in the dependency tree, so no new transitive
   crates), is exposed publicly as read-only `verify_vdf(challenge, delay,
-  proof)` for randomness-verification flows, and its cost is pinned by a
+proof)` for randomness-verification flows, and its cost is pinned by a
   budget test (a verification measures ≈51k CPU units — about a tenth of a
   refund call). The new `get_vdf_delay()` getter exposes the configured delay.
   This is a **breaking change** for clients: the `propose_policy` signature is
@@ -339,7 +381,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   and saving computational overhead on-chain. Added `verify_zk_proof` to verify
   Groth16 proofs against verifying keys and public inputs, and introduced
   `Error::InvalidProof` (code 203).
-
 
 - **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
   processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
@@ -429,7 +470,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   activates `soroban-sdk`'s `testutils` feature, which is not supported on the
   `wasm32v1-none` target and made every wasm build fail at the SDK boundary.
 
-
   The `.wasm-budget.json` size budgets are updated to the current deterministic
   release builds (receipt-anchor 33,067 B, refund-vault 85,453 B) with ~5%
   headroom — the exact-pin approach kept breaking on toolchain drift, and the
@@ -448,7 +488,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   Batch-size instruction measurements were added to the ReceiptAnchor test suite
   and documented in `docs/BENCHMARKS.md`.
 
-
 - **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
   Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
   static buffer (`proof_buffer: [[u8; 32]; 128]`) and perform intermediate hashing using the pure Wasm
@@ -464,6 +503,18 @@ breaking changes bump the **minor** version, and they are called out as such.
   `docs/contracts.mdx`.
 
 ### Security
+
+- **`multisig-account` (issue #449): 14-day TTL expiration for stale multisig
+  approvals.** Every approval of a queued transaction is stamped with a
+  `created_at` ledger timestamp (`ApprovalRecord`, stored under
+  `DataKey::TimelockApproval`) and only counts toward the threshold while its
+  age is strictly below `APPROVAL_TTL_SECONDS` (`1_209_600` = 14 days), so a
+  partial quorum can no longer be assembled against an intent nobody stands
+  behind anymore. `prune_stale_approvals` drops expired records the moment the
+  threshold is evaluated and `clear_approvals` drops the remainder when the
+  entry executes or is cancelled; a shortfall caused by pruning surfaces as
+  `Error::StaleSignature` rather than a bare `Error::InsufficientSignatures`,
+  and an expired approval no longer blocks its signer from voting again.
 
 - **Merchant-only float funding is a documented guarantee** (issue #157):
   `docs/SECURITY_MODEL.md` now states it explicitly — only the merchant's own
@@ -649,10 +700,10 @@ Both:
 **The testnet deployment has deliberately not been updated to `0.2.0`.** The
 contracts live at:
 
-| Contract | Contract ID | Version deployed |
-|---|---|---|
-| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0` |
-| `RefundVault` | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0` |
+| Contract        | Contract ID                                                | Version deployed |
+| --------------- | ---------------------------------------------------------- | ---------------- |
+| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0`          |
+| `RefundVault`   | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0`          |
 
 Soroban deployment mints a new contract ID. Redeploying would invalidate every
 published address — including the ones the public receipt verifier at
@@ -679,7 +730,5 @@ the transactions that created them are recorded in
 [0.2.0]: https://github.com/accensa/accensa-contracts/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/accensa/accensa-contracts/releases/tag/v0.1.0
 
-
 ## [Unreleased]
 - Fixed issues
-

@@ -37,7 +37,7 @@ pub fn isqrt(n: u64) -> u64 {
     let mut x: u64 = if bit_len <= 2 {
         1
     } else {
-        1u64 << ((bit_len + 1) / 2)
+        1u64 << bit_len.div_ceil(2)
     };
 
     // Newton-Raphson iteration

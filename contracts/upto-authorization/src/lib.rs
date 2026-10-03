@@ -6,6 +6,7 @@ use soroban_sdk::{
 };
 
 mod domain;
+pub mod inactivity;
 mod types;
 
 pub use types::{max_settleable, AuthorizationRecord, BPS_DENOMINATOR, MAX_SLIPPAGE_BPS};
@@ -37,6 +38,9 @@ pub enum Error {
     InvalidSlippage = 11,
     /// `cap` plus its slippage tolerance does not fit in an `i128`.
     AmountOverflow = 12,
+    /// A dormancy cancellation was attempted before the authorization's
+    /// `expiry + inactivity_timeout` had passed (issue #435).
+    NotInactive = 13,
 }
 
 #[contracttype]
@@ -47,6 +51,9 @@ pub enum DataKey {
     /// Persistent: the Ed25519 public key authorized to sign
     /// `authorize_signed` digests for this buyer address (issue #416).
     Signer(Address),
+    /// Instance: the dormancy window, in ledgers, used by
+    /// [`UptoAuthorization::cancel_inactive_escrow`] (issue #435).
+    InactivityTimeout,
 }
 
 /// Emitted when a buyer authorizes a payment cap.
@@ -201,6 +208,7 @@ impl UptoAuthorization {
             expiry,
             consumed: false,
             max_slippage_bps,
+            created_ledger: env.ledger().sequence(),
         };
 
         env.storage()
@@ -498,6 +506,37 @@ impl UptoAuthorization {
             .get(&DataKey::Authorization(payment_id))
     }
 
+    /// Admin-only: set the dormancy window used by
+    /// [`Self::cancel_inactive_escrow`], in ledgers (issue #435). Defaults to
+    /// ~30 days.
+    pub fn set_inactivity_timeout(env: Env, ledgers: u32) -> Result<(), Error> {
+        inactivity::set_inactivity_timeout(&env, ledgers)
+    }
+
+    /// Read-only: the dormancy window, in ledgers (issue #435).
+    pub fn get_inactivity_timeout(env: Env) -> u32 {
+        inactivity::inactivity_timeout(&env)
+    }
+
+    /// Buyer-triggered cancellation of a dormant payment authorization
+    /// (issue #435).
+    ///
+    /// Once at least `inactivity_timeout` ledgers have elapsed since the
+    /// authorization was created with no `settle`, the buyer may release their
+    /// own locked allowance and delete the dead record, without any
+    /// merchant/facilitator signature. Returns the cap that was released.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AuthorizationNotFound`], [`Error::AlreadySettled`], or
+    /// [`Error::NotInactive`].
+    ///
+    /// # Events emitted on success
+    /// - [`inactivity::EscrowCancelledInactivity`]
+    pub fn cancel_inactive_escrow(env: Env, payment_id: BytesN<32>) -> Result<i128, Error> {
+        inactivity::cancel_inactive_escrow(&env, payment_id)
+    }
+
     /// Extend the TTL of an authorization record.
     pub fn extend_authorization_ttl(env: Env, payment_id: BytesN<32>) -> Result<(), Error> {
         if !env
@@ -517,4 +556,5 @@ impl UptoAuthorization {
 }
 
 mod fuzz_test;
+mod inactivity_test;
 mod test;

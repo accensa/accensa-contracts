@@ -849,6 +849,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "Lock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Nonce"
                           }
                         ]
