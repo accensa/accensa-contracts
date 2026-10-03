@@ -46,6 +46,8 @@ Soroban provides three storage classes:
 | `MaxDeployRatio` | Persistent | `u32` (basis points) | Small | Maximum deployment ratio in basis points (e.g. 8000 = 80%). Caps the total deployed principal relative to total vault value. Only loaded by yield calls. Kept in Persistent storage to avoid loading cost on non-yield calls (issue #131). Extended with `TTL_EXTEND` on every write. |
 | `PendingPolicy` | Instance | `PolicyProposal` | Small | A pending refund-window policy change waiting for its timelock to expire. |
 | `ReentrancyLock` | Instance | `bool` | Small | Transient guard flag set during external calls (token transfers, strategy invocations) to reject reentrant calls. |
+| `TierLadder` | Instance | `Vec<MerchantTier>` | ≤ ~500 bytes | The merchant's optional fee ladder (branch `feature/vault-merchant-tier-promotion`): a strictly increasing list of at most `MAX_TIERS` (16) `{min_settled, fee_bps}` rungs. Instance storage so the claim path reads the cached position below without a persistent load; the ladder itself is decoded only when a rung is crossed. |
+| `TierState` | Instance | `MerchantTierState` | ~50 bytes | Cached ladder position — settled refund volume, active rung, its fee, and the next promotion threshold. The policy cache reads it once per entry point to resolve the effective fee, and `claim_single` updates it on every successful refund, so promotion never costs a ladder decode in the hot path. Absent on a vault with no ladder, in which case the flat `FeeBps` rate applies. |
 
 *Note: The `Metadata`, `RefundMax`, `Admins`, and `Threshold` keys are defined in the `DataKey` enum for future compatibility and expansion, though some may currently be inactive in the logic.*
 

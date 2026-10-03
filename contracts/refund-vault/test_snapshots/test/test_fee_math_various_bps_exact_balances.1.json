@@ -2740,24 +2740,24 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "Nonce"
+                            "symbol": "Lock"
                           }
                         ]
                       },
                       "val": {
-                        "u64": "15"
+                        "bool": false
                       }
                     },
                     {
                       "key": {
                         "vec": [
                           {
-                            "symbol": "ReentrancyLock"
+                            "symbol": "Nonce"
                           }
                         ]
                       },
                       "val": {
-                        "bool": false
+                        "u64": "15"
                       }
                     },
                     {

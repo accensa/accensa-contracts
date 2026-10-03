@@ -2,11 +2,11 @@
 
 pub mod events;
 pub mod incremental_merkle;
+pub mod merkle;
 pub mod signatures;
 pub mod zk_verifier;
 
 use accensa_common::Error;
-use sha2::{Digest, Sha256};
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, Address,
     BytesN, Env, InvokeError, Vec,
@@ -547,6 +547,27 @@ impl ReceiptAnchor {
         )
     }
 
+    /// Verify that `leaf` (the SHA-256 hash of an off-chain receipt) belongs
+    /// to the batch committed as `root` in `shard_id`.
+    ///
+    /// `proof` is the sorted-pair sibling path from leaf to root (ADR-001),
+    /// at most [`MAX_PROOF_LEN`] hashes. Sorted-pair hashing carries no
+    /// left/right position, so no leaf index is needed or accepted.
+    ///
+    /// Returns `Ok(true)` for a valid proof and `Ok(false)` for an invalid
+    /// one. Fails with [`Error::RootNotFound`] if `root` is not among the
+    /// shard's retained roots, and [`Error::ProofTooLong`] for oversize
+    /// proofs.
+    pub fn verify_receipt_leaf(
+        env: Env,
+        shard_id: u64,
+        root: BytesN<32>,
+        leaf: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+    ) -> Result<bool, Error> {
+        Self::verify_receipt_by_root(env, shard_id, root, leaf, proof)
+    }
+
     /// Verify a receipt against any root in `shard_id`'s historical ring
     /// buffer. Returns `true` if the root is in the buffer AND the Merkle
     /// proof is valid. Roots are isolated per shard, so a root anchored in one
@@ -581,28 +602,7 @@ impl ReceiptAnchor {
             return Err(Error::RootNotFound);
         }
 
-        let computed_hash = Self::fold_proof(leaf.to_array(), proof);
-
-        Ok(computed_hash == root.to_array())
-    }
-
-    /// Folds a sorted-pair Merkle proof with one allocation-free guest loop.
-    fn fold_proof(mut computed_hash: [u8; 32], proof: Vec<BytesN<32>>) -> [u8; 32] {
-        for sibling_bytes in proof.into_iter() {
-            let sibling = sibling_bytes.to_array();
-            let mut combined = [0u8; 64];
-            if computed_hash <= sibling {
-                combined[..32].copy_from_slice(&computed_hash);
-                combined[32..].copy_from_slice(&sibling);
-            } else {
-                combined[..32].copy_from_slice(&sibling);
-                combined[32..].copy_from_slice(&computed_hash);
-            }
-            let mut hasher = Sha256::new();
-            hasher.update(combined);
-            computed_hash = hasher.finalize().into();
-        }
-        computed_hash
+        Ok(merkle::verify(&root, &leaf, &proof))
     }
 
     /// Returns the current ring buffer of historical roots for `shard_id`

@@ -4,8 +4,6 @@
 //! governance tokens (`sqrt(deposit)`), preventing single-whale
 //! domination in protocol decision making.
 
-#![no_std]
-
 use soroban_sdk::{Address, Env};
 
 use crate::math::isqrt;
@@ -29,6 +27,8 @@ pub fn quadratic_weight(env: &Env, member: &Address) -> u64 {
 ///
 /// Called when a member votes on a proposal. Adds `quadratic_weight`
 /// to either the `yes_weight` or `no_weight` of the proposal.
+// Not yet called by the contract.
+#[allow(dead_code)]
 pub fn accumulate_quadratic_weight(
     env: &Env,
     proposal_id: u64,
@@ -68,6 +68,8 @@ pub fn register_deposit(env: &Env, member: &Address, deposit: u64) {
 }
 
 /// Read-only: get a member's raw deposit amount.
+// Not yet called by the contract.
+#[allow(dead_code)]
 pub fn get_deposit(env: &Env, member: &Address) -> u64 {
     env.storage()
         .persistent()
@@ -78,33 +80,43 @@ pub fn get_deposit(env: &Env, member: &Address) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{
-        contract, contractimpl, symbol_short, testutils::Address as _, Env, IntoVal,
-    };
+    use soroban_sdk::{testutils::Address as _, Env};
+
+    /// Storage is only reachable from inside a contract: register a
+    /// one-member governance instance to run the helpers against.
+    fn setup() -> (Env, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let founder = Address::generate(&env);
+        let members = soroban_sdk::Vec::from_array(&env, [founder]);
+        let deposits = soroban_sdk::Vec::from_array(&env, [1u64]);
+        let id = env.register(crate::Governance, (members, deposits, 10_000u32, 100u32));
+        (env, id)
+    }
 
     #[test]
     fn test_quadratic_weight_basic() {
-        let env = Env::default();
-        env.mock_all_auths();
-
+        let (env, id) = setup();
         let member = Address::generate(&env);
-        // Deposit 100 tokens -> weight = sqrt(100) = 10
-        register_deposit(&env, &member, 100);
-        assert_eq!(quadratic_weight(&env, &member), 10);
+        env.as_contract(&id, || {
+            // Deposit 100 tokens -> weight = sqrt(100) = 10
+            register_deposit(&env, &member, 100);
+            assert_eq!(quadratic_weight(&env, &member), 10);
 
-        // Deposit 25 tokens -> weight = sqrt(25) = 5
-        register_deposit(&env, &member, 25);
-        assert_eq!(quadratic_weight(&env, &member), 5);
+            // Deposit 25 tokens -> weight = sqrt(25) = 5
+            register_deposit(&env, &member, 25);
+            assert_eq!(quadratic_weight(&env, &member), 5);
+        });
     }
 
     #[test]
     fn test_quadratic_weight_large_deposits() {
-        let env = Env::default();
-        env.mock_all_auths();
-
+        let (env, id) = setup();
         let member = Address::generate(&env);
-        // Large deposit with 7 decimal places
-        register_deposit(&env, &member, 10_0000000); // 10 million tokens
-        assert_eq!(quadratic_weight(&env, &member), 100000);
+        env.as_contract(&id, || {
+            // 10 tokens with 7 decimal places = 100_000_000 units -> sqrt = 10_000
+            register_deposit(&env, &member, 10_0000000);
+            assert_eq!(quadratic_weight(&env, &member), 10_000);
+        });
     }
 }

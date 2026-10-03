@@ -1054,9 +1054,13 @@ fn test_regression_reversed_level_sequence_rejected() {
 const HEADROOM_PERCENT: u64 = 15;
 
 /// Cost baselines for `anchor_batch` (N=1000-leaf batch root, including first-anchor shard contract deployment)
-/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()` on 2026-08-26.
-const ANCHOR_BATCH_BASELINE_CPU: u64 = 1_591_284;
-const ANCHOR_BATCH_BASELINE_MEM: u64 = 3_819_993;
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()`.
+/// Re-measured on 2026-09-24: the shard now maintains its health-diagnostic
+/// counters (issue #419) on every anchor, one extra instance read/write plus a
+/// read of any record being overwritten (~1.749M -> ~1.882M CPU, ~3.942M ->
+/// ~3.981M mem against the pre-change main).
+const ANCHOR_BATCH_BASELINE_CPU: u64 = 1_881_937;
+const ANCHOR_BATCH_BASELINE_MEM: u64 = 3_981_062;
 
 /// Cost baselines for `verify_receipt` (4-leaf Merkle proof, including cross-contract shard routing)
 /// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().memory_bytes_cost()`.

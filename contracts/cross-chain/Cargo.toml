@@ -1,0 +1,21 @@
+[package]
+name = "accensa-cross-chain"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-chain bridging and Wormhole VAA state proof verification for Accensa"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+accensa-common = { workspace = true }
+
+[dev-dependencies]
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+soroban-sdk = { workspace = true, features = ["testutils"] }

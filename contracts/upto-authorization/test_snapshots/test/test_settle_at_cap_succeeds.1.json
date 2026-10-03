@@ -390,6 +390,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "created_ledger"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "expiry"
                     },
                     "val": {
@@ -402,6 +410,14 @@
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_slippage_bps"
+                    },
+                    "val": {
+                      "u32": 0
                     }
                   },
                   {

@@ -13,16 +13,28 @@
 //!
 //! Statelessness: configuration arrives as the `params` blob of a
 //! [`accensa_common::PolicyEntry`] (an [`accensa_common::VdfPolicyParams`]
-//! XDR blob) and the claim facts as [`accensa_common::PolicyContext`]. It
-//! keeps no storage and must not call back into the vault.
+//! XDR blob) and the claim facts as [`accensa_common::PolicyContext`].
+//! `evaluate` keeps no storage and must not call back into the vault.
+//!
+//! # Statefulness
+//!
+//! The one exception to the stateless rule is the optional randomness registry
+//! in [`vrf`] (issue #429): [`VdfPolicy::generate_randomness`] verifies a
+//! Wesolowski proof and records the derived 256-bit seed under
+//! `DataKey::Randomness(vdf_id)` so consumer contracts can read it
+//! deterministically. That entry point is the *only* stateful surface here;
+//! it writes one persistent record (with its TTL extended) and never touches
+//! the vault.
 
 #![no_std]
 
 use accensa_common::{Error, PolicyContext, RefundPolicy, VdfPolicyParams};
-use soroban_sdk::{contract, contractimpl, xdr::FromXdr, Bytes, Env};
+use soroban_sdk::{contract, contractimpl, xdr::FromXdr, Address, Bytes, BytesN, Env};
 
 mod vdf;
 use vdf::verify_vdf;
+
+pub mod vrf;
 
 #[contract]
 pub struct VdfPolicy;
@@ -70,3 +82,43 @@ impl RefundPolicy for VdfPolicy {
 }
 mod slashing;
 pub use slashing::*;
+
+/// Dispute-resolution extension (issue #469): escalates a dispute whose
+/// primary arbitrators failed to reach quorum to an external fallback oracle
+/// (e.g. an optimistic oracle), and settles it on the oracle's ruling.
+#[contractimpl]
+impl VdfPolicy {
+    /// Escalate a dispute to `oracle` for fallback resolution. `merchant`
+    /// (the party seeking a ruling) authorizes the escalation. Returns the
+    /// new dispute id.
+    pub fn request_fallback_dispute(
+        env: Env,
+        merchant: Address,
+        oracle: Address,
+        payment_ref: BytesN<32>,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<u32, Error> {
+        fallback::request_dispute(&env, &merchant, &oracle, &payment_ref, &recipient, amount)
+    }
+
+    /// The request payload handed to the fallback oracle for `dispute_id`:
+    /// the dispute serialized as XDR.
+    pub fn build_fallback_oracle_request(env: Env, dispute_id: u32) -> Result<Bytes, Error> {
+        fallback::oracle_request_bytes(&env, dispute_id)
+    }
+
+    /// Settle `dispute_id` with the oracle's ruling (`refund` true = refund,
+    /// false = deny). Only the dispute's designated oracle may call this.
+    pub fn settle_fallback_dispute(env: Env, dispute_id: u32, refund: bool) -> Result<(), Error> {
+        fallback::settle_dispute(&env, dispute_id, refund)
+    }
+
+    /// Read-only: the current state of a fallback dispute.
+    pub fn get_fallback_dispute(env: Env, dispute_id: u32) -> Result<FallbackDispute, Error> {
+        fallback::get_dispute(&env, dispute_id)
+    }
+}
+
+mod fallback;
+pub use fallback::*;
