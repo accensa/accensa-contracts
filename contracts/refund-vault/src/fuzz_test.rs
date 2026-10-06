@@ -247,7 +247,7 @@ const REFUND_BASELINE_MEM: u64 = 197_217;
 #[test]
 fn test_refund_resource_cost_budget() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &1_000_000);
+    client.deposit(&merchant, &1_000_000, &None);
 
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
     let recipient = Address::generate(&env);
@@ -705,7 +705,7 @@ proptest! {
     ) {
         let (env, client, merchant, _token) = setup(100);
         // Seed a refund record so there is a TTL to extend.
-        client.deposit(&merchant, &1_000_000);
+        client.deposit(&merchant, &1_000_000, &None);
         let buyer = Address::generate(&env);
         let ref_ = payment_ref(&env, 0);
         client.refund(&ref_, &buyer, &100_000, &0, &100_000, &None, &0);
@@ -780,7 +780,7 @@ proptest! {
     ) {
         let (env, client, merchant, _token) =
             setup(100);
-        client.deposit(&merchant, &100);
+        client.deposit(&merchant, &100, &None);
 
         let payment_ref =
             BytesN::from_array(&env, &[0u8; 32]);
@@ -971,7 +971,7 @@ fn test_regression_deposit_extreme_amounts() {
         Err(Ok(Error::InvalidAmount))
     );
 
-    client.deposit(&merchant, &5_000_000);
+    client.deposit(&merchant, &5_000_000, &None);
     assert_eq!(token_client.balance(&client.address), 5_000_000);
 
     // Beyond the merchant's remaining balance: the SAC transfer aborts.
@@ -984,8 +984,8 @@ fn test_regression_float_accounts_across_full_cycle() {
     let (env, client, merchant, token) = setup(100);
     let token_client = TokenClient::new(&env, &token);
 
-    client.deposit(&merchant, &1_000_000);
-    client.deposit(&merchant, &2_000_000);
+    client.deposit(&merchant, &1_000_000, &None);
+    client.deposit(&merchant, &2_000_000, &None);
     assert_eq!(token_client.balance(&client.address), 3_000_000);
 
     let ref_a = payment_ref(&env, 0);
@@ -1010,7 +1010,7 @@ fn test_regression_pause_blocks_and_preserves_state() {
     let (env, client, merchant, token) = setup(100);
     let token_client = TokenClient::new(&env, &token);
 
-    client.deposit(&merchant, &1_000_000);
+    client.deposit(&merchant, &1_000_000, &None);
     client.pause();
 
     assert_eq!(client.try_deposit(&merchant, &100), Err(Ok(Error::Paused)));

@@ -90,7 +90,7 @@ fn setup(mode: Mode) -> Setup {
 
     let vault = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let client = RefundVaultClient::new(&env, &vault);
-    client.deposit(&merchant, &FLOAT);
+    client.deposit(&merchant, &FLOAT, &None);
 
     let receiver = env.register(MockReceiver, ());
     MockReceiverClient::new(&env, &receiver).setup(&vault, &mode);

@@ -105,7 +105,7 @@ fn test_domain_separator_differs_per_instance() {
 #[test]
 fn test_refund_happy_path() {
     let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
@@ -123,7 +123,7 @@ fn test_refund_happy_path() {
 #[test]
 fn test_partial_refunds_cumulative_within_ceiling() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
@@ -148,7 +148,7 @@ fn test_partial_refunds_cumulative_within_ceiling() {
 #[test]
 fn test_refund_outside_window_fails() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     env.ledger().with_mut(|li| li.sequence_number = 500);
 
@@ -163,7 +163,7 @@ fn test_refund_outside_window_fails() {
 #[test]
 fn test_nonce_increments_on_refund() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     env.ledger().with_mut(|li| li.sequence_number = 200);
 
@@ -177,7 +177,7 @@ fn test_nonce_increments_on_refund() {
 #[test]
 fn test_zero_window_disables_expiry() {
     let (env, client, merchant, _token) = setup(0);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     env.ledger().with_mut(|li| li.sequence_number = 1_000_000);
 
@@ -197,7 +197,7 @@ fn test_zero_window_disables_expiry() {
 fn test_long_window_extends_guard_past_flat_ttl() {
     let window = TTL_EXTEND * 3;
     let (env, client, merchant, _token) = setup(window);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[10u8; 32]);
     let buyer = Address::generate(&env);
@@ -234,7 +234,7 @@ fn test_long_window_extends_guard_past_flat_ttl() {
 #[test]
 fn test_zero_window_extends_guard_to_max_ttl() {
     let (env, client, merchant, _token) = setup(0);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[11u8; 32]);
     let buyer = Address::generate(&env);
@@ -255,7 +255,7 @@ fn test_zero_window_extends_guard_to_max_ttl() {
 #[test]
 fn test_refund_exceeding_float_fails() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &100, &None);
+    client.deposit(&merchant, &100, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[4u8; 32]);
     let buyer = Address::generate(&env);
@@ -270,7 +270,7 @@ fn test_refund_exceeding_float_fails() {
 #[test]
 fn test_nonce_increments_on_withdraw() {
     let (_env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
     let nonce_before = client.get_nonce();
     client.withdraw(&100_000, &merchant);
     assert_eq!(client.get_nonce(), nonce_before + 1);
@@ -279,7 +279,7 @@ fn test_nonce_increments_on_withdraw() {
 #[test]
 fn test_nonce_does_not_increment_on_failed_operation() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     env.ledger().with_mut(|li| li.sequence_number = 500);
 
@@ -336,7 +336,7 @@ fn test_initialize_returns_already_initialized() {
 #[test]
 fn test_nonce_is_strictly_monotonic() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let mut previous = client.get_nonce();
 
@@ -393,7 +393,7 @@ fn test_refund_invalid_amount_fails() {
 #[test]
 fn test_claim_cooldown_enforced_per_recipient() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     // Set ledger timestamp and configure a 100-second cooldown.
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -435,7 +435,7 @@ fn test_withdraw_invalid_amount_fails() {
 #[test]
 fn test_pause_unpause() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     client.pause();
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
@@ -506,7 +506,7 @@ struct PausedSurfaceOp<'a> {
 #[test]
 fn test_paused_state_blocks_and_preserves_every_operation() {
     let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &600_000, &None);
+    client.deposit(&merchant, &600_000, &None, &None);
     let token_client = TokenClient::new(&env, &token);
 
     let payment_ref = BytesN::from_array(&env, &[0x80u8; 32]);
@@ -651,7 +651,7 @@ fn test_paused_state_blocks_and_preserves_every_operation() {
 #[test]
 fn test_extend_refund_ttl_fails_if_missing() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
     let payment_ref = BytesN::from_array(&env, &[99u8; 32]);
     assert_eq!(
         client.try_extend_refund_ttl(&payment_ref),
@@ -662,7 +662,7 @@ fn test_extend_refund_ttl_fails_if_missing() {
 #[test]
 fn test_extend_refund_ttl_succeeds() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
@@ -679,7 +679,7 @@ fn test_events_emitted() {
     use soroban_sdk::{vec, IntoVal, Symbol};
     let (env, client, merchant, _token) = setup(100);
 
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     assert_eq!(
         env.events().all().filter_by_contract(&client.address),
@@ -830,7 +830,7 @@ fn test_commit_meta_is_well_formed() {
 #[should_panic(expected = "HostError")]
 fn test_refund_without_trustline() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[11u8; 32]);
     let stranger = Address::from_string(&soroban_sdk::String::from_str(
@@ -1031,7 +1031,7 @@ fn test_admin_transfer_events_emitted() {
 #[test]
 fn test_process_batch_multiple_refunds_succeed() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let buyer1 = Address::generate(&env);
     let buyer2 = Address::generate(&env);
@@ -1064,7 +1064,7 @@ fn test_process_batch_multiple_refunds_succeed() {
 #[test]
 fn test_process_batch_mixed_success_failure() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let buyer1 = Address::generate(&env);
     let buyer2 = Address::generate(&env);
@@ -1101,7 +1101,7 @@ fn test_process_batch_mixed_success_failure() {
 #[test]
 fn test_process_batch_exceeds_max_size_fails() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let buyer = Address::generate(&env);
     let mut batch = vec![&env];
@@ -1133,7 +1133,7 @@ fn test_process_batch_exceeds_max_size_fails() {
 #[test]
 fn test_propose_and_execute_policy_happy_path() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     client.propose_policy(&200, &0, &0);
 
@@ -1197,7 +1197,7 @@ fn test_propose_policy_overwrites_existing() {
 #[test]
 fn test_execute_policy_applies_new_window() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     // Window = 100. Paid at ledger 1. Current ledger 300 > 1+100=101 => expired.
     env.ledger().with_mut(|li| li.sequence_number = 300);
@@ -1252,7 +1252,7 @@ fn test_get_policy_timelock() {
 /// fast-forwarding past the timelock so the proposal is live.
 fn apply_policy(window: u32, deadline: u64) -> (Env, RefundVaultClient<'static>, Address, Address) {
     let (env, client, merchant, token) = setup(window);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     client.propose_policy(&window, &deadline, &0);
     env.ledger().with_mut(|li| li.sequence_number += 17_280);
@@ -1475,7 +1475,7 @@ fn test_refund_fee_helper_math_rounds_up() {
 #[test]
 fn test_fee_defaults_disabled() {
     let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     assert_eq!(client.get_fee_bps(), 0);
     assert_eq!(client.get_fee_recipient(), None);
@@ -1500,7 +1500,7 @@ fn test_fee_deducted_and_collected_exactly() {
     let (env, client, merchant, token) = setup(100);
     let token_client = TokenClient::new(&env, &token);
     StellarAssetClient::new(&env, &token).mint(&merchant, &9_000_000);
-    client.deposit(&merchant, &10_000_000, &None);
+    client.deposit(&merchant, &10_000_000, &None, &None);
 
     let buyer = Address::generate(&env);
     let fee_collector = Address::generate(&env);
@@ -1553,7 +1553,7 @@ fn test_fee_math_various_bps_exact_balances() {
     let (env, client, merchant, token) = setup(100);
     let token_client = TokenClient::new(&env, &token);
     StellarAssetClient::new(&env, &token).mint(&merchant, &99_000_000);
-    client.deposit(&merchant, &100_000_000, &None);
+    client.deposit(&merchant, &100_000_000, &None, &None);
 
     let buyer = Address::generate(&env);
     let fee_collector = Address::generate(&env);
@@ -1619,7 +1619,7 @@ fn test_fee_claim_equal_to_float_succeeds_and_drains() {
     // both parties and drains the vault to zero.
     let (env, client, merchant, token) = setup(100);
     let token_client = TokenClient::new(&env, &token);
-    client.deposit(&merchant, &5_000, &None);
+    client.deposit(&merchant, &5_000, &None, &None);
 
     let buyer = Address::generate(&env);
     let fee_collector = Address::generate(&env);
@@ -1638,7 +1638,7 @@ fn test_fee_claim_equal_to_float_succeeds_and_drains() {
 fn test_fee_defaults_to_merchant_when_no_recipient_set() {
     let (env, client, merchant, token) = setup(100);
     let token_client = TokenClient::new(&env, &token);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     // Fee configured but no explicit recipient: the merchant collects the fee.
     client.set_fee_bps(&100); // 1%
@@ -1667,7 +1667,7 @@ fn test_fee_applies_to_partial_refunds_and_ceiling() {
     // the fee is an outflow split, not an expansion of what may be claimed.
     let (env, client, merchant, _token) = setup(100);
     StellarAssetClient::new(&env, &_token).mint(&merchant, &1_000_000);
-    client.deposit(&merchant, &2_000_000, &None);
+    client.deposit(&merchant, &2_000_000, &None, &None);
 
     let buyer = Address::generate(&env);
     let fee_collector = Address::generate(&env);
@@ -1867,7 +1867,7 @@ mod refund_vectors;
 #[test]
 fn test_shared_refund_vectors_match_typescript_sdk() {
     let (env, client, merchant, _token) = setup(1000);
-    client.deposit(&merchant, &1_000_000, &None);
+    client.deposit(&merchant, &1_000_000, &None, &None);
 
     let recipient = Address::generate(&env);
 
@@ -1922,7 +1922,7 @@ fn test_shared_refund_vectors_include_live_testnet_refund() {
 fn test_refund_to_contract_address_fails_self_transfer() {
     use soroban_sdk::testutils::Events;
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[12u8; 32]);
     let contract_addr = client.address.clone();
@@ -1973,7 +1973,7 @@ fn batch_params(env: &Env, n: u32, per_refund: i128) -> Vec<RefundParam> {
 fn test_process_batch_item_to_contract_address_skipped() {
     let (env, client, merchant, token) = setup(100);
     let per_refund = 10_000i128;
-    client.deposit(&merchant, &(2 * per_refund, &None));
+    client.deposit(&merchant, &(2 * per_refund, &None, &None));
 
     let mut params = batch_params(&env, 2, per_refund);
     let vault_addr = client.address.clone();
@@ -2013,7 +2013,7 @@ fn test_process_batch_item_to_contract_address_skipped() {
 #[test]
 fn test_withdraw_to_contract_address_fails_self_transfer() {
     let (_env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let contract_addr = client.address.clone();
     assert_eq!(
@@ -2025,7 +2025,7 @@ fn test_withdraw_to_contract_address_fails_self_transfer() {
 #[test]
 fn test_set_token_when_funded_fails() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let new_token_admin = Address::generate(&env);
     let new_sac = env.register_stellar_asset_contract_v2(new_token_admin);
@@ -2115,7 +2115,7 @@ fn expect_refund_event(
 #[test]
 fn test_claim_batch_successful_multiple_claims() {
     let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
     let token_client = TokenClient::new(&env, &token);
 
     let b1 = Address::generate(&env);
@@ -2152,7 +2152,7 @@ fn test_claim_batch_emits_one_event_per_item() {
     use soroban_sdk::testutils::Events;
 
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let b1 = Address::generate(&env);
     let b2 = Address::generate(&env);
@@ -2186,7 +2186,7 @@ fn test_claim_batch_partial_failure_reverts_everything() {
     use soroban_sdk::testutils::Events;
 
     let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
     let token_client = TokenClient::new(&env, &token);
 
     let b1 = Address::generate(&env);
@@ -2226,7 +2226,7 @@ fn test_claim_batch_partial_failure_reverts_everything() {
 fn test_claim_batch_same_ref_accumulates_and_excess_reverts() {
     let (env, client, merchant, token) = setup(100);
     StellarAssetClient::new(&env, &token).mint(&merchant, &1_000_000);
-    client.deposit(&merchant, &2_000_000, &None);
+    client.deposit(&merchant, &2_000_000, &None, &None);
     let token_client = TokenClient::new(&env, &token);
 
     let buyer = Address::generate(&env);
@@ -2262,7 +2262,7 @@ fn test_claim_batch_same_ref_accumulates_and_excess_reverts() {
 #[test]
 fn test_claim_batch_float_checked_per_item() {
     let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
     let token_client = TokenClient::new(&env, &token);
 
     let b1 = Address::generate(&env);
@@ -2294,7 +2294,7 @@ fn test_claim_batch_empty_succeeds() {
     use soroban_sdk::testutils::Events;
 
     let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &100_000, &None);
+    client.deposit(&merchant, &100_000, &None, &None);
     let token_client = TokenClient::new(&env, &token);
 
     let claims: Vec<RefundClaim> = Vec::new(&env);
@@ -2312,7 +2312,7 @@ fn test_claim_batch_empty_succeeds() {
 fn test_claim_batch_fee_applied_per_item() {
     let (env, client, merchant, token) = setup(100);
     StellarAssetClient::new(&env, &token).mint(&merchant, &9_000_000);
-    client.deposit(&merchant, &10_000_000, &None);
+    client.deposit(&merchant, &10_000_000, &None, &None);
     let token_client = TokenClient::new(&env, &token);
 
     let fee_collector = Address::generate(&env);
@@ -2363,7 +2363,7 @@ fn test_claim_batch_without_auth_panics() {
 #[test]
 fn test_claim_batch_when_paused_fails() {
     let (env, client, merchant, token) = setup(100);
-    client.deposit(&merchant, &100_000, &None);
+    client.deposit(&merchant, &100_000, &None, &None);
     client.pause();
     let token_client = TokenClient::new(&env, &token);
 
@@ -2382,7 +2382,7 @@ fn test_claim_batch_when_paused_fails() {
 #[test]
 fn test_claim_batch_cost_stays_within_budget() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &1_000_000, &None);
+    client.deposit(&merchant, &1_000_000, &None, &None);
 
     // Default test-host budget limits (soroban-env-host src/budget/limits.rs):
     // 100M CPU instructions and 40 MiB of memory per invocation. The charged
@@ -2451,7 +2451,7 @@ fn test_claim_batch_cost_stays_within_budget() {
 #[test]
 fn test_user_nonce_sequential_refunds_advance_and_reuse_reverts() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let ref1 = BytesN::from_array(&env, &[0xa1u8; 32]);
     let ref2 = BytesN::from_array(&env, &[0xa2u8; 32]);
@@ -2502,8 +2502,8 @@ fn test_user_nonces_are_per_caller() {
     let id_b = env.register(RefundVault, (vault_init(&env, &merchant_b, &token, 100),));
     let client_b = RefundVaultClient::new(&env, &id_b);
 
-    client_a.deposit(&merchant_a, &500_000);
-    client_b.deposit(&merchant_b, &500_000);
+    client_a.deposit(&merchant_a, &500_000, &None);
+    client_b.deposit(&merchant_b, &500_000, &None);
 
     let buyer = Address::generate(&env);
     let ref_a = BytesN::from_array(&env, &[0xb1u8; 32]);
@@ -2527,7 +2527,7 @@ fn test_user_nonces_are_per_caller() {
 #[test]
 fn test_failed_claim_does_not_consume_user_nonce() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let payment_ref = BytesN::from_array(&env, &[0xc1u8; 32]);
     let buyer = Address::generate(&env);
@@ -2548,7 +2548,7 @@ fn test_failed_claim_does_not_consume_user_nonce() {
 #[test]
 fn test_claim_batch_consumes_one_user_nonce() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     let b1 = Address::generate(&env);
     let b2 = Address::generate(&env);
@@ -2584,7 +2584,7 @@ fn test_claim_batch_consumes_one_user_nonce() {
 #[test]
 fn test_process_batch_consumes_one_user_nonce_but_empty_does_not() {
     let (env, client, merchant, _token) = setup(100);
-    client.deposit(&merchant, &500_000, &None);
+    client.deposit(&merchant, &500_000, &None, &None);
 
     // An empty batch is a no-op that returns early and must not consume a nonce.
     let empty: Vec<RefundParam> = Vec::new(&env);

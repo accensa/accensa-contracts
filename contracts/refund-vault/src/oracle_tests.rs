@@ -432,7 +432,7 @@ fn deposit_and_buyer(
     vault_client: &RefundVaultClient<'static>,
     merchant: &Address,
 ) -> (BytesN<32>, Address) {
-    vault_client.deposit(merchant, &1_000_000);
+    vault_client.deposit(merchant, &1_000_000, &None);
     let payment_ref = BytesN::from_array(env, &[0xBBu8; 32]);
     let buyer = Address::generate(env);
     (payment_ref, buyer)
@@ -644,7 +644,7 @@ fn test_process_batch_respects_oracle_policy() {
         max_staleness_ledgers: 0,
         refund_when_below: true,
     });
-    vault_client.deposit(&merchant, &1_000_000);
+    vault_client.deposit(&merchant, &1_000_000, &None);
 
     let buyer1 = Address::generate(&env);
     let buyer2 = Address::generate(&env);
