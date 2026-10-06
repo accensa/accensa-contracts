@@ -104,7 +104,7 @@ fn test_approve_strategy_requires_auth() {
 #[test]
 fn test_revoke_active_strategy_with_principal_fails() {
     let (_env, vault, merchant, _token, strategy, _tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&500_000);
 
     assert_eq!(
@@ -125,7 +125,7 @@ fn test_revoke_active_strategy_with_principal_fails() {
 #[test]
 fn test_replace_strategy_with_principal_fails() {
     let (env, vault, merchant, token, _strategy, _tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&500_000);
 
     let other = register_mock_strategy(&env, &vault, &token);
@@ -145,7 +145,7 @@ fn test_replace_strategy_with_principal_fails() {
 #[test]
 fn test_merchant_withdraw_recalls_principal() {
     let (env, vault, merchant, _token, _strategy, tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&800_000);
 
     let to = Address::generate(&env);
@@ -162,7 +162,7 @@ fn test_merchant_withdraw_recalls_principal() {
 #[test]
 fn test_refund_recall_books_proportional_yield() {
     let (env, vault, merchant, _token, strategy, tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&1_000_000);
     MockYieldStrategyClient::new(&env, &strategy).simulate_yield(&100_000);
 
@@ -182,7 +182,7 @@ fn test_refund_recall_books_proportional_yield() {
 #[test]
 fn test_process_batch_recalls_principal() {
     let (env, vault, merchant, _token, _strategy, tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&900_000);
 
     let buyer = Address::generate(&env);
@@ -221,7 +221,7 @@ fn test_shortchanging_strategy_recall_is_rejected() {
     let strategy = env.register(ShortchangingStrategy, ());
     vault.approve_yield_strategy(&strategy);
     vault.set_yield_strategy(&strategy);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&1_000_000);
 
     // The strategy claims to return principal but pays nothing: the vault
@@ -245,7 +245,7 @@ fn test_shortchanging_strategy_recall_is_rejected() {
 #[test]
 fn test_emergency_exit_works_while_paused() {
     let (env, vault, merchant, _token, strategy, tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &2_000_000);
+    vault.deposit(&merchant, &2_000_000, &None);
     vault.deploy_to_yield(&1_500_000);
     MockYieldStrategyClient::new(&env, &strategy).simulate_yield(&150_000);
 
@@ -272,7 +272,7 @@ fn test_emergency_exit_nothing_deployed_fails() {
 #[test]
 fn test_distribute_yield_to_treasury() {
     let (env, vault, merchant, _token, strategy, tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&1_000_000);
     MockYieldStrategyClient::new(&env, &strategy).simulate_yield(&70_000);
     vault.harvest_yield();
@@ -295,7 +295,7 @@ fn test_distribute_yield_to_treasury() {
 #[test]
 fn test_distribute_yield_defaults_to_merchant() {
     let (env, vault, merchant, _token, strategy, tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&500_000);
     MockYieldStrategyClient::new(&env, &strategy).simulate_yield(&25_000);
     vault.harvest_yield();
@@ -318,7 +318,7 @@ fn test_set_yield_recipient_to_vault_fails() {
 #[test]
 fn test_distribute_yield_when_paused_fails() {
     let (env, vault, merchant, _token, strategy, _tc) = setup_with_strategy(0, 10_000);
-    vault.deposit(&merchant, &1_000_000);
+    vault.deposit(&merchant, &1_000_000, &None);
     vault.deploy_to_yield(&500_000);
     MockYieldStrategyClient::new(&env, &strategy).simulate_yield(&25_000);
     vault.harvest_yield();
@@ -342,7 +342,7 @@ proptest! {
         refund_pct in 1u32..=100,
     ) {
         let (env, vault, merchant, _token, strategy, tc) = setup_with_strategy(0, 10_000);
-        vault.deposit(&merchant, &deposit);
+        vault.deposit(&merchant, &deposit, &None);
         let deploy = deposit * deploy_pct as i128 / 100;
         if deploy > 0 {
             vault.deploy_to_yield(&deploy);

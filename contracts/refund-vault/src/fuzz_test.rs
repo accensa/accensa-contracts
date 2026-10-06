@@ -188,7 +188,7 @@ impl Model {
             // Deposits: simulate multiple deposit operations
             for amt in deposit_amounts {
                 // If deposit succeeds, the vault balance increases by `amt`
-                if client.try_deposit(&merchant, &amt).is_ok() {
+                if client.try_deposit(&merchant, &amt, &None).is_ok() {
                     expected_balance += amt;
                 }
                 // Assert the actual balance matches expected after each deposit
@@ -347,7 +347,7 @@ fn execute_op(
 
     match op {
         Op::Deposit { amount } => {
-            let res = client.try_deposit(merchant, amount);
+            let res = client.try_deposit(merchant, amount, &None);
             match &res {
                 Ok(Ok(())) => {
                     if *amount <= 0 {
@@ -818,7 +818,7 @@ proptest! {
     ) {
         let (_, client, merchant, _) = setup(100);
         let res = client.try_deposit(
-            &merchant, &amount,
+            &merchant, &amount, &None,
         );
 
         if amount <= 0 {
@@ -874,7 +874,7 @@ proptest! {
                     if token_client.balance(&merchant)
                         >= amount
                         && client
-                            .try_deposit(&merchant, &amount)
+                            .try_deposit(&merchant, &amount, &None)
                             .is_ok()
                     {
                         total_deposits += amount;
@@ -963,11 +963,11 @@ fn test_regression_deposit_extreme_amounts() {
     let token_client = TokenClient::new(&env, &token);
 
     assert_eq!(
-        client.try_deposit(&merchant, &-1),
+        client.try_deposit(&merchant, &-1, &None),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(
-        client.try_deposit(&merchant, &0),
+        client.try_deposit(&merchant, &0, &None),
         Err(Ok(Error::InvalidAmount))
     );
 
@@ -975,7 +975,7 @@ fn test_regression_deposit_extreme_amounts() {
     assert_eq!(token_client.balance(&client.address), 5_000_000);
 
     // Beyond the merchant's remaining balance: the SAC transfer aborts.
-    assert!(client.try_deposit(&merchant, &6_000_000).is_err());
+    assert!(client.try_deposit(&merchant, &6_000_000, &None).is_err());
     assert_eq!(token_client.balance(&client.address), 5_000_000);
 }
 
@@ -1013,7 +1013,7 @@ fn test_regression_pause_blocks_and_preserves_state() {
     client.deposit(&merchant, &1_000_000, &None);
     client.pause();
 
-    assert_eq!(client.try_deposit(&merchant, &100), Err(Ok(Error::Paused)));
+    assert_eq!(client.try_deposit(&merchant, &100, &None), Err(Ok(Error::Paused)));
     assert_eq!(client.try_withdraw(&100, &merchant), Err(Ok(Error::Paused)));
 
     let buyer = Address::generate(&env);

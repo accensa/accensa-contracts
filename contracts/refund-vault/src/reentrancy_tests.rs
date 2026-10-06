@@ -840,7 +840,7 @@ fn test_guard_blocks_deposit_while_lock_held() {
     hold_lock(&env, &client.address);
 
     assert_eq!(
-        client.try_deposit(&merchant, &1_000),
+        client.try_deposit(&merchant, &1_000, &None),
         Err(Ok(Error::ReentrancyBlocked))
     );
 }

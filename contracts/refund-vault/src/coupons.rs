@@ -56,7 +56,12 @@ pub fn mint_coupon(
 }
 
 /// Verify ownership, compute the discounted amount, and mark the coupon as redeemed.
-pub fn apply_coupon(env: &Env, caller: &Address, coupon_id: u64, amount: i128) -> Result<i128, Error> {
+pub fn apply_coupon(
+    env: &Env,
+    caller: &Address,
+    coupon_id: u64,
+    amount: i128,
+) -> Result<i128, Error> {
     let key = DataKey::Coupon(coupon_id);
     let mut record: CouponRecord = env
         .storage()
@@ -72,9 +77,7 @@ pub fn apply_coupon(env: &Env, caller: &Address, coupon_id: u64, amount: i128) -
     }
 
     let discount = apply_fee_bps(amount, record.discount_bps).map_err(Error::from)?;
-    let effective_amount = amount
-        .checked_sub(discount)
-        .ok_or(Error::MathOverflow)?;
+    let effective_amount = amount.checked_sub(discount).ok_or(Error::MathOverflow)?;
 
     record.redeemed = true;
     env.storage().persistent().set(&key, &record);
@@ -87,7 +90,5 @@ pub fn apply_coupon(env: &Env, caller: &Address, coupon_id: u64, amount: i128) -
 
 /// Read-only accessor for a coupon record.
 pub fn get_coupon(env: &Env, coupon_id: u64) -> Option<CouponRecord> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Coupon(coupon_id))
+    env.storage().persistent().get(&DataKey::Coupon(coupon_id))
 }

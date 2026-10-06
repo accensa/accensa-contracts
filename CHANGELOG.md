@@ -9,6 +9,14 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 - security(multisig): implement 14-day TTL expiration for pending signatures and approvals (#449)
+- **`nft` (issue #453): Discount coupon NFTs for merchant stores.** New coupon
+  module (`contracts/refund-vault/src/coupons.rs`) implements single-use discount
+  coupons that grant percentage discounts on escrow deposits. Coupons are minted
+  by the vault admin, have an owner address, a discount rate in basis points
+  (max 50%), and are marked redeemed on first use. The `deposit` function now
+  accepts an optional `coupon_id` parameter; when provided, the discount is applied
+  atomically before the token transfer. Added error codes `CouponNotFound` and
+  `CouponAlreadyRedeemed` to the common Error enum.
 
 ### Added
 - **`privacy` (issue #440): Groth16 verification for concealed escrow amounts.**
