@@ -1013,7 +1013,10 @@ fn test_regression_pause_blocks_and_preserves_state() {
     client.deposit(&merchant, &1_000_000, &None);
     client.pause();
 
-    assert_eq!(client.try_deposit(&merchant, &100, &None), Err(Ok(Error::Paused)));
+    assert_eq!(
+        client.try_deposit(&merchant, &100, &None),
+        Err(Ok(Error::Paused))
+    );
     assert_eq!(client.try_withdraw(&100, &merchant), Err(Ok(Error::Paused)));
 
     let buyer = Address::generate(&env);
