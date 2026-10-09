@@ -23,6 +23,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # This job only reads history; nothing it runs needs push rights.
+          persist-credentials: false
 
       - name: Check CHANGELOG enforcement and version matching
         if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
