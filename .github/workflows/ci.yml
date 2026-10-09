@@ -31,9 +31,11 @@ jobs:
       # the released tag: upstream `main` is not guaranteed to compile (it can
       # carry in-progress work, e.g. #592 broke cargo-budget-report's main.rs).
       SOROBAN_BUDGET_ASSERT_REF: v0.1.0
-      # Funded testnet identity for the Tier B network-simulated report. Empty
-      # on fork runs, and Tier B is now merge-only regardless.
-      STELLAR_TESTNET_SECRET: ${{ secrets.STELLAR_TESTNET_SECRET }}
+      # Funded testnet identity for the Tier B network-simulated report. Both
+      # Tier B steps are merge-only, so no PR run needs this. Fork PRs never
+      # receive secrets anyway; the explicit scoping is for PRs opened from a
+      # branch *inside* this repo, which do.
+      STELLAR_TESTNET_SECRET: ${{ github.event_name != 'pull_request' && secrets.STELLAR_TESTNET_SECRET || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -113,14 +115,16 @@ jobs:
         # and fail the PR if any scaling op exceeds its committed threshold.
         run: cargo test -p receipt-anchor -p refund-vault --features budget-assert
 
-      - name: Vector parity, local half
+      - id: vector-parity-local
+        name: Vector parity, local half
         # Keep the two repos' Merkle vectors from silently drifting. Divergence
         # must fail a build, not produce a warning (issue #53). Regenerates
         # src/vectors.rs from merkle-vectors.json and fails if it drifted, and
         # fails if merkle-vectors.json.sha256 is stale.
         run: node contracts/receipt-anchor/scripts/build-vectors.mjs --check
 
-      - name: Vector parity, cross-repo hash
+      - id: vector-parity-hash
+        name: Vector parity, cross-repo hash
         # Copied verbatim, including the `ACCELSA_APP_REF` variable name, so
         # issue #556 still applies cleanly against this file.
         env:
@@ -200,10 +204,15 @@ jobs:
           cat budget-report.json >> $GITHUB_STEP_SUMMARY
 
       - name: Notify accensa-app on vector change
-        # Was its own `notify-vector-parity` job with `needs: vector-parity`; as
-        # the step after the parity steps it means the same thing (it only runs
-        # if they passed) and costs pull requests no line at all.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Was its own `notify-vector-parity` job with `needs: vector-parity`. As
+        # a plain step it would have inherited a dependency on every earlier
+        # step, so a cost-linter or Tier B failure on `main` would have silently
+        # dropped the dispatch. `always() && !cancelled()` plus the two parity
+        # outcomes removes that: only those two results are consulted. Not a
+        # full restoration — a failure *before* the parity steps still leaves
+        # them skipped and the dispatch unfired, which the next green run on
+        # `main` does send. One job cannot both serialize and stay independent.
+        if: ${{ always() && !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.vector-parity-local.outcome == 'success' && steps.vector-parity-hash.outcome == 'success' }}
         # When this repo's vectors change, tell accensa-app's parity job to run
         # so a stale SDK copy is caught promptly rather than only on its schedule.
         uses: peter-evans/repository-dispatch@v4
