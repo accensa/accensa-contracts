@@ -168,7 +168,7 @@ fn test_full_lifecycle_with_zero_decimal_token() {
     assert_eq!(token_client.decimals(), 0);
 
     // Deposit: the merchant funds the float in whole-token units.
-    client.deposit(&merchant, &1_000);
+    client.deposit(&merchant, &1_000, &None);
     assert_eq!(token_client.balance(&client.address), 1_000);
     assert_eq!(token_client.balance(&merchant), FLOAT - 1_000);
 
@@ -197,7 +197,7 @@ fn test_full_lifecycle_with_two_decimal_token() {
     assert_eq!(token_client.decimals(), 2);
 
     // 12_345 units == 123.45 whole tokens at 2 decimals.
-    client.deposit(&merchant, &12_345);
+    client.deposit(&merchant, &12_345, &None);
     assert_eq!(token_client.balance(&client.address), 12_345);
 
     // Refund 0.45 tokens, then withdraw the remaining 123.00 tokens.
@@ -219,7 +219,7 @@ fn test_float_bound_check_with_non_7_decimal_token() {
         token_client: _,
     } = setup_with_token(0);
 
-    client.deposit(&merchant, &100);
+    client.deposit(&merchant, &100, &None);
 
     // The float-bound check compares raw units, exactly as it does for the SAC.
     let payment_ref = BytesN::from_array(&env, &[14u8; 32]);
@@ -241,7 +241,7 @@ fn test_refund_exactly_equal_to_float_succeeds() {
         token_client,
     } = setup_with_token(0);
 
-    client.deposit(&merchant, &1_000);
+    client.deposit(&merchant, &1_000, &None);
 
     // A refund equal to the entire float is allowed...
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
@@ -268,7 +268,7 @@ fn test_smallest_unit_round_trip() {
 
     // 1 is the smallest representable unit of a 0-decimal token; the vault must
     // handle it in every direction (deposit, refund, withdraw).
-    client.deposit(&merchant, &2);
+    client.deposit(&merchant, &2, &None);
     assert_eq!(token_client.balance(&client.address), 2);
 
     let payment_ref = BytesN::from_array(&env, &[11u8; 32]);
@@ -290,7 +290,7 @@ fn test_i128_extreme_deposit_and_withdraw() {
         token_client,
     } = setup_with_token_and_float(0, extreme);
 
-    client.deposit(&merchant, &extreme);
+    client.deposit(&merchant, &extreme, &None);
     assert_eq!(token_client.balance(&client.address), extreme);
 
     // Withdraw the full i128 range to a third party.
@@ -310,7 +310,7 @@ fn test_i128_extreme_refund() {
         token_client,
     } = setup_with_token_and_float(0, extreme);
 
-    client.deposit(&merchant, &extreme);
+    client.deposit(&merchant, &extreme, &None);
 
     // A refund of the entire i128 range — the vault must not overflow or
     // miscompare at the boundary of its integer type.

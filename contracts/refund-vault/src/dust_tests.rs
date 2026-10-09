@@ -37,7 +37,7 @@ fn setup() -> Setup {
 
     let vault = env.register(RefundVault, (vault_init(&env, &merchant, &token, WINDOW),));
     let client = RefundVaultClient::new(&env, &vault);
-    client.deposit(&merchant, &FLOAT);
+    client.deposit(&merchant, &FLOAT, &None);
 
     Setup {
         token: TokenClient::new(&env, &token),

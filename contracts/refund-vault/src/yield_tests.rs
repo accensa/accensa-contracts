@@ -297,7 +297,7 @@ fn test_set_max_deploy_ratio_invalid_fails() {
 fn test_deploy_to_yield_happy_path() {
     let (_env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     assert_eq!(tc.balance(&vault_client.address), 5_000_000);
 
     vault_client.deploy_to_yield(&3_000_000);
@@ -320,7 +320,7 @@ fn test_deploy_without_strategy_fails() {
 
     let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let vault_client = RefundVaultClient::new(&env, &vault_id);
-    vault_client.deposit(&merchant, &500_000);
+    vault_client.deposit(&merchant, &500_000, &None);
 
     assert_eq!(
         vault_client.try_deploy_to_yield(&100_000),
@@ -332,7 +332,7 @@ fn test_deploy_without_strategy_fails() {
 fn test_deploy_insufficient_reserve_fails() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
 
     assert_eq!(
         vault_client.try_deploy_to_yield(&4_500_000),
@@ -344,7 +344,7 @@ fn test_deploy_insufficient_reserve_fails() {
 fn test_deploy_exceeds_max_ratio_fails() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 5000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
 
     assert_eq!(
         vault_client.try_deploy_to_yield(&3_000_000),
@@ -356,7 +356,7 @@ fn test_deploy_exceeds_max_ratio_fails() {
 fn test_deploy_insufficient_float_fails() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &1_000_000);
+    vault_client.deposit(&merchant, &1_000_000, &None);
 
     assert_eq!(
         vault_client.try_deploy_to_yield(&2_000_000),
@@ -368,7 +368,7 @@ fn test_deploy_insufficient_float_fails() {
 fn test_deploy_zero_fails() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
 
     assert_eq!(
         vault_client.try_deploy_to_yield(&0),
@@ -380,7 +380,7 @@ fn test_deploy_zero_fails() {
 fn test_deploy_when_paused_fails() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.pause();
 
     assert_eq!(
@@ -393,7 +393,7 @@ fn test_deploy_when_paused_fails() {
 fn test_deploy_multiple_times() {
     let (_env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(1000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
 
     vault_client.deploy_to_yield(&1_000_000);
     vault_client.deploy_to_yield(&1_000_000);
@@ -410,7 +410,7 @@ fn test_deploy_multiple_times() {
 fn test_withdraw_from_yield_returns_principal_and_yield() {
     let (env, vault_client, merchant, _token, strategy_addr, tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -436,7 +436,7 @@ fn test_withdraw_from_yield_returns_principal_and_yield() {
 fn test_withdraw_more_than_deployed_fails() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&2_000_000);
 
     assert_eq!(
@@ -449,7 +449,7 @@ fn test_withdraw_more_than_deployed_fails() {
 fn test_withdraw_zero_fails() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&2_000_000);
 
     assert_eq!(
@@ -482,7 +482,7 @@ fn test_withdraw_without_strategy_fails() {
 fn test_withdraw_full_principal() {
     let (env, vault_client, merchant, _token, strategy_addr, tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -502,7 +502,7 @@ fn test_withdraw_full_principal() {
 fn test_harvest_yield_happy_path() {
     let (env, vault_client, merchant, _token, strategy_addr, tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -525,7 +525,7 @@ fn test_harvest_yield_happy_path() {
 fn test_harvest_nothing_fails() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     assert_eq!(
@@ -538,7 +538,7 @@ fn test_harvest_nothing_fails() {
 fn test_harvest_accumulates() {
     let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -559,7 +559,7 @@ fn test_harvest_accumulates() {
 fn test_refund_succeeds_after_deploy_within_reserve() {
     let (env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
@@ -576,7 +576,7 @@ fn test_refund_succeeds_after_deploy_within_reserve() {
 fn test_refund_exceeding_liquid_after_deploy_recalls_principal() {
     let (env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
@@ -594,7 +594,7 @@ fn test_refund_exceeding_liquid_after_deploy_recalls_principal() {
 fn test_refund_exceeding_total_value_fails() {
     let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let payment_ref = BytesN::from_array(&env, &[2u8; 32]);
@@ -610,7 +610,7 @@ fn test_refund_exceeding_total_value_fails() {
 fn test_refund_after_withdraw_from_yield() {
     let (env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&4_000_000);
 
     vault_client.withdraw_from_yield(&2_000_000);
@@ -628,7 +628,7 @@ fn test_refund_after_withdraw_from_yield() {
 fn test_operator_withdraw_harvested_yield() {
     let (env, vault_client, merchant, _token, strategy_addr, tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -648,7 +648,7 @@ fn test_operator_withdraw_harvested_yield() {
 fn test_yield_accounting_after_full_cycle() {
     let (env, vault_client, merchant, _token, strategy_addr, tc) = setup_with_strategy(1000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -669,7 +669,7 @@ fn test_yield_accounting_after_full_cycle() {
 fn test_deploy_when_paused() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.pause();
 
     assert_eq!(
@@ -682,7 +682,7 @@ fn test_deploy_when_paused() {
 fn test_withdraw_from_yield_when_paused() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
     vault_client.pause();
 
@@ -696,7 +696,7 @@ fn test_withdraw_from_yield_when_paused() {
 fn test_harvest_when_paused() {
     let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -716,7 +716,7 @@ fn test_yield_deployed_event() {
 
     let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&2_000_000);
 
     let events = env.events().all().filter_by_contract(&vault_client.address);
@@ -754,7 +754,7 @@ fn test_yield_harvested_event() {
 
     let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -792,7 +792,7 @@ fn test_yield_harvested_event() {
 fn test_zero_reserve_full_deploy() {
     let (_env, vault_client, merchant, _token, _strategy, tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&5_000_000);
 
     let info = vault_client.get_yield_info();
@@ -805,7 +805,7 @@ fn test_full_reserve_cannot_deploy() {
     let (_env, vault_client, merchant, _token, _strategy, _tc) =
         setup_with_strategy(10_000, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
 
     assert_eq!(
         vault_client.try_deploy_to_yield(&1),
@@ -819,7 +819,7 @@ fn test_full_reserve_cannot_deploy() {
 fn test_existing_deposit_refund_withdraw_still_works() {
     let (env, vault_client, merchant, token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
 
     let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
     let buyer = Address::generate(&env);
@@ -900,7 +900,7 @@ fn test_deployed_principal_key_is_persistent_with_ttl() {
 
     let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let ttl = _env.as_contract(&vault_client.address, || {
@@ -922,7 +922,7 @@ fn test_harvested_yield_key_is_persistent_with_ttl() {
 
     let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup_with_strategy(0, 10_000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
@@ -947,7 +947,7 @@ fn test_non_yield_calls_do_not_create_yield_persistent_keys() {
     let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
     // Only do a deposit — no yield operations.
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
 
     // DeployedPrincipal and HarvestedYield should not exist yet.
     // (YieldStrategy, ReserveRatio, MaxDeployRatio were created by the
@@ -975,7 +975,7 @@ fn test_non_yield_calls_do_not_create_yield_persistent_keys() {
 fn test_yield_info_survives_refund() {
     let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
-    vault_client.deposit(&merchant, &5_000_000);
+    vault_client.deposit(&merchant, &5_000_000, &None);
     vault_client.deploy_to_yield(&3_000_000);
 
     // Snapshot yield info before refund.

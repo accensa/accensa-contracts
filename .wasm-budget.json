@@ -1,6 +1,6 @@
 {
   "receipt_anchor": 83000,
-  "refund_vault": 127000,
+  "refund_vault": 145000,
   "refund_policy_time": 25000,
   "refund_policy_vdf": 62000,
   "refund_vault_factory": 34000,

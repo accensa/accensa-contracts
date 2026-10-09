@@ -435,7 +435,7 @@ fn deployed_vault_honors_window_via_factory_time_policy() {
     let vault = factory.deploy_vault(&vault_init(&env, &merchant, &token, 100));
     let client = RefundVaultClient::new(&env, &vault);
 
-    client.deposit(&merchant, &FLOAT);
+    client.deposit(&merchant, &FLOAT, &None);
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
     let buyer = Address::generate(&env);
 
@@ -465,7 +465,7 @@ fn deployed_vault_refuses_when_time_policy_unconfigured() {
     let vault = factory.deploy_vault(&vault_init(&env, &merchant, &token, 100));
     let client = RefundVaultClient::new(&env, &vault);
 
-    client.deposit(&merchant, &FLOAT);
+    client.deposit(&merchant, &FLOAT, &None);
     let payment_ref = BytesN::from_array(&env, &[9u8; 32]);
     let buyer = Address::generate(&env);
     assert_eq!(
@@ -546,7 +546,7 @@ fn get_tvl_drops_by_the_refunded_amount() {
 
     let vault = factory.deploy_vault(&vault_init(&env, &merchant, &token, 0));
     let client = RefundVaultClient::new(&env, &vault);
-    client.deposit(&merchant, &FLOAT);
+    client.deposit(&merchant, &FLOAT, &None);
     assert_eq!(factory.get_tvl(&token), FLOAT);
 
     let buyer = Address::generate(&env);

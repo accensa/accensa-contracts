@@ -325,7 +325,7 @@ fn setup_with_malicious_token() -> MaliciousTokenVault {
 
     MaliciousTokenClient::new(&env, &token_id).initialize(&merchant, &vault_id);
     MaliciousTokenClient::new(&env, &token_id).mint(&merchant, &FLOAT);
-    client.deposit(&merchant, &FLOAT);
+    client.deposit(&merchant, &FLOAT, &None);
 
     MaliciousTokenVault {
         env,
@@ -727,7 +727,7 @@ fn setup_with_malicious_strategy(
     vault_client.set_reserve_ratio(&reserve_bp);
     vault_client.set_max_deploy_ratio(&max_deploy_bp);
 
-    vault_client.deposit(&merchant, &YIELD_FLOAT);
+    vault_client.deposit(&merchant, &YIELD_FLOAT, &None);
 
     (env, vault_client, token, strategy_id)
 }
@@ -821,7 +821,7 @@ fn setup_plain_vault() -> (Env, RefundVaultClient<'static>, Address, Address) {
 
     let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
     let client = RefundVaultClient::new(&env, &vault_id);
-    client.deposit(&merchant, &FLOAT);
+    client.deposit(&merchant, &FLOAT, &None);
 
     (env, client, merchant, token)
 }
@@ -840,7 +840,7 @@ fn test_guard_blocks_deposit_while_lock_held() {
     hold_lock(&env, &client.address);
 
     assert_eq!(
-        client.try_deposit(&merchant, &1_000),
+        client.try_deposit(&merchant, &1_000, &None),
         Err(Ok(Error::ReentrancyBlocked))
     );
 }

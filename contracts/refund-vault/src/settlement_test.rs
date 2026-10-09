@@ -40,7 +40,7 @@ fn setup(fee_bps: u32) -> Ctx {
     let client = RefundVaultClient::new(&env, &vault);
 
     StellarAssetClient::new(&env, &token).mint(&merchant, &FLOAT);
-    client.deposit(&merchant, &FLOAT);
+    client.deposit(&merchant, &FLOAT, &None);
 
     Ctx {
         env,

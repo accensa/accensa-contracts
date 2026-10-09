@@ -124,7 +124,7 @@ fn readme_claim_refunds_outlive_pruned_batches() {
 
     // The vault is unaffected: refunding the same payment_ref still works,
     // provided it falls within the refund window (paid_at_ledger >= 100 here).
-    vault.deposit(&merchant, &500_000);
+    vault.deposit(&merchant, &500_000, &None);
     let buyer = Address::generate(&env);
     vault.refund(&payment_ref, &buyer, &100, &150, &100, &None, &0);
 
@@ -155,7 +155,7 @@ fn readme_claim_payment_ref_is_receipt_leaf() {
     let proof = vec![&env, sibling.clone()];
     assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &leaf, &proof));
 
-    vault.deposit(&merchant, &500_000);
+    vault.deposit(&merchant, &500_000, &None);
     let buyer = Address::generate(&env);
     vault.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
 
@@ -188,7 +188,7 @@ fn test_happy_path_and_payment_ref_correspondence() {
     let proof = vec![&env, sibling.clone()];
     assert!(anchor.verify_receipt(&DEFAULT_SHARD, &1, &leaf, &proof));
 
-    vault.deposit(&merchant, &500_000);
+    vault.deposit(&merchant, &500_000, &None);
     let buyer = Address::generate(&env);
     vault.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
 
@@ -216,7 +216,7 @@ fn test_refund_of_payment_in_pruned_batch() {
     anchor.prune_batches(&DEFAULT_SHARD, &150);
     assert!(anchor.try_get_batch(&DEFAULT_SHARD, &1).is_err());
 
-    vault.deposit(&merchant, &500_000);
+    vault.deposit(&merchant, &500_000, &None);
     let buyer = Address::generate(&env);
     vault.refund(&payment_ref, &buyer, &100, &150, &100, &None, &0);
 
@@ -240,7 +240,7 @@ fn test_full_refund_then_exceed_payment() {
     let root = leaf.clone();
     anchor.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &100);
 
-    vault.deposit(&merchant, &500_000);
+    vault.deposit(&merchant, &500_000, &None);
     let buyer = Address::generate(&env);
 
     // First refund takes a partial; a second past the ceiling is rejected.
@@ -290,7 +290,7 @@ fn test_ttl_archival_across_both() {
     let root = payment_ref.clone();
 
     anchor.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &100);
-    vault.deposit(&merchant, &500_000);
+    vault.deposit(&merchant, &500_000, &None);
 
     let buyer = Address::generate(&env);
     vault.refund(&payment_ref, &buyer, &100, &0, &100, &None, &0);
