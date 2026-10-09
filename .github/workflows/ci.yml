@@ -5,168 +5,23 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-    types: [ opened, synchronize, reopened, labeled, unlabeled ]
+    # `labeled` / `unlabeled` moved to changelog.yml, the only job that reads
+    # labels. Re-running this whole pipeline because someone toggled a label was
+    # the single most expensive trigger in the repo.
+    types: [ opened, synchronize, reopened ]
 
+# One job. `main` has no required status checks (protection exists but
+# `required_status_checks` is empty), so today a PR carries nine lines and the
+# merge can proceed with any of them red. What this file does NOT change:
+# every command that could fail a PR before still can. Two whole wasm builds
+# (`budget` and `build-wasm` ran byte-identical `cargo build --workspace
+# --exclude testutils` + `optimize_wasm.sh`), two wasm-size checks, and three
+# cargo caches were the cost.
 jobs:
-  changelog:
-    name: changelog & version check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Check CHANGELOG enforcement and version matching
-        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
-        run: |
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.sha }}"
-          
-          # Find changed files in PR
-          CHANGED_FILES=$(git diff --name-only $BASE $HEAD)
-          
-          # Check if contract source files are modified
-          CONTRACT_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^contracts/.*/src/' || true)
-          
-          if [ -n "$CONTRACT_CHANGED" ]; then
-            echo "Contract source files modified:"
-            echo "$CONTRACT_CHANGED"
-            
-            # Check if CHANGELOG.md is in modified files
-            if ! echo "$CHANGED_FILES" | grep -q '^CHANGELOG.md$'; then
-              echo "Error: CHANGELOG.md was not updated for contract source changes."
-              echo "Add a changelog entry under ## [Unreleased], or add the 'skip-changelog' label to your PR for internal changes."
-              exit 1
-            fi
-            echo "CHANGELOG.md update confirmed."
-          fi
-
-      - name: Verify CHANGELOG released version matches workspace Cargo.toml
-        run: |
-          # Extract highest released version from CHANGELOG.md (excluding Unreleased)
-          CHANGELOG_VER=$(grep -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | head -n1 | sed -E 's/## \[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
-          
-          # Extract version from receipt-anchor and refund-vault Cargo.toml
-          RECEIPT_VER=$(grep '^version =' contracts/receipt-anchor/Cargo.toml | head -n1 | cut -d '"' -f 2)
-          REFUND_VER=$(grep '^version =' contracts/refund-vault/Cargo.toml | head -n1 | cut -d '"' -f 2)
-          
-          echo "CHANGELOG top released version: $CHANGELOG_VER"
-          echo "receipt-anchor version: $RECEIPT_VER"
-          echo "refund-vault version: $REFUND_VER"
-          
-          if [ "$CHANGELOG_VER" != "$RECEIPT_VER" ] || [ "$CHANGELOG_VER" != "$REFUND_VER" ]; then
-            echo "Error: CHANGELOG.md top released version ($CHANGELOG_VER) does not match crate versions ($RECEIPT_VER, $REFUND_VER)."
-            exit 1
-          fi
-          echo "Version matching confirmed."
-
-  fmt:
-    name: fmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Run fmt
-        run: cargo fmt --all -- --check
-
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-          targets: wasm32v1-none
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build the wasms the lint targets import
-        # `--all-targets` compiles the test targets too, and those pull in
-        # three contracts via `contractimport!`. Same set as the test job.
-        run: |
-          cargo build --target wasm32v1-none --release \
-            -p receipt-shard -p receipt-anchor -p refund-vault
-      - name: Run clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build the wasms the tests import
-        # Three contracts are pulled in via `contractimport!`: receipt-shard
-        # and receipt-anchor for the shard-factory tests, and refund-vault for
-        # refund-vault-factory's deploy_vault tests. All three must exist as
-        # built wasm before `cargo test`, or the importing crate fails to
-        # compile with a bare "No such file or directory".
-        run: |
-          cargo build --target wasm32v1-none --release \
-            -p receipt-shard -p receipt-anchor -p refund-vault
-      - name: Optimize the wasms the tests import
-        # `deploy.sh` builds with `stellar contract build`, which optimizes the
-        # wasm before uploading it. Tests have to import and upload that same
-        # artifact: cargo's raw output is ~25% larger, and the unoptimized
-        # refund_vault blob (138631 B) is rejected outright by
-        # `upload_contract_wasm` because a contract code ledger entry is capped
-        # at 131072 B. That made every deploy-based factory test panic with
-        # Error(Budget, ExceededLimit) on an artifact no one would ever deploy.
-        run: bash scripts/optimize_wasm.sh
-      - name: Run Tests
-        run: cargo test --locked --workspace
-
-  benchmarks:
-    name: benchmark-budgets
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
-      - name: Run Budget Measurement Tests
-        # Placeholder for actual budget enforcement (Issue #66).
-        # Ensures that the testutils budget harness compiles and works.
-        run: cargo test --locked -p testutils --profile release-with-logs
-
-  budget:
-    name: budget-limits
+  ci:
+    name: ci
     runs-on: ubuntu-latest
     env:
-      # Stated tolerance for committed baselines. A measured value that exceeds
-      # baseline * (1 + tolerance) fails the build. Wasm size: 10%. Budget
-      # assertions (Tier A macros / Tier B --check): 15% (see budget.toml).
-      WASM_SIZE_TOLERANCE: 0.10
       # Pinned tool versions (Tollcraft). Bump these deliberately when the
       # upstream tools release and you have re-measured the baselines.
       SOROBAN_COST_LINTER_TAG: v0.1.1
@@ -176,181 +31,65 @@ jobs:
       # the released tag: upstream `main` is not guaranteed to compile (it can
       # carry in-progress work, e.g. #592 broke cargo-budget-report's main.rs).
       SOROBAN_BUDGET_ASSERT_REF: v0.1.0
-      # Funded testnet identity for the Tier B network-simulated report. Empty in
-      # forks / untrusted runs, so the network step is skipped there.
+      # Funded testnet identity for the Tier B network-simulated report. Empty
+      # on fork runs, and Tier B is now merge-only regardless.
       STELLAR_TESTNET_SECRET: ${{ secrets.STELLAR_TESTNET_SECRET }}
     steps:
-      - uses: actions/checkout@v7
-      - name: Setup Rust (stable + wasm)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-budget-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # --- Build every contract to WASM (needed by the Tier A macro suite) ---
-      - name: Wasm build
-        # Exclude `testutils`: it is a std crate (no `#![no_std]`) and its
-        # soroban-sdk `testutils` feature is not supported on wasm, so it
-        # cannot compile for wasm32v1-none (same rationale as the build-wasm
-        # job). Only the contract crates are needed for the Tier A macros.
-        run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
-
-      - name: Optimize wasms
-        # Same reason as the test job: the Tier A assertions upload this wasm,
-        # and only the optimized (deployable) artifact fits the 131072-byte
-        # contract code entry limit.
-        run: bash scripts/optimize_wasm.sh
-
-      # --- WASM size ceiling (committed baseline + tolerance) ---
-      - name: Enforce WASM size budget
-        run: |
-          TOL=$WASM_SIZE_TOLERANCE
-          FAILED=0
-          PCT=$(awk "BEGIN{printf \"%.0f\", $TOL*100}")
-          echo "### WASM Build Sizes" >> $GITHUB_STEP_SUMMARY
-          echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
-
-          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm" "refund_policy_time:refund_policy_time.wasm" "refund_policy_vdf:refund_policy_vdf.wasm" "refund_vault_factory:refund_vault_factory.wasm"; do
-            name="${pair%%:*}"; wasm="${pair##*:}"
-            SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
-            BUDGET=$(jq -r ".$name" .wasm-budget.json)
-            CEIL=$(awk "BEGIN{printf \"%d\", $BUDGET*(1+$TOL)}")
-            if [ "$SIZE" -gt "$CEIL" ]; then
-              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
-              FAILED=1
-            else
-              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo "Error: WASM size budget exceeded beyond the stated tolerance." >&2
-            exit 1
-          fi
-
-      # --- Stage 1: soroban-cost-linter (static analysis, findings surfaced) ---
-      - name: Install soroban-cost-linter (pinned)
-        run: |
-          rustup toolchain install "$SOROBAN_COST_LINTER_NIGHTLY" --component rustc-dev --component llvm-tools-preview
-          cargo install cargo-dylint dylint-link --version "$DYLINT_VERSION" --locked
-          cargo +"$SOROBAN_COST_LINTER_NIGHTLY" install \
-            --git https://github.com/Tollcraft/soroban-cost-linter.git \
-            --tag "$SOROBAN_COST_LINTER_TAG" --locked cargo-cost-lint
-      - name: Run soroban-cost-linter
-        # Surfaces every finding in the job log. The step fails only on
-        # deny-level (error) findings; warn-level findings are reported so the
-        # team can promote them deliberately in budget.toml. Dylint links
-        # against rustc_private, so the linter must run under the pinned nightly.
-        run: |
-          echo "### soroban-cost-linter findings" >> $GITHUB_STEP_SUMMARY
-          cargo +"$SOROBAN_COST_LINTER_NIGHTLY" cost-lint --workspace --format text | tee -a "$GITHUB_STEP_SUMMARY" || true
-
-      # --- Stage 2: soroban-budget-assert Tier A (local, per-PR gate) ---
-      - name: Run Tier A budget assertions
-        # Compiles the contracts for the host and runs the `#[budget_cpu_lt(N)]`
-        # macro tests. These read the prebuilt WASM via `register_contract_wasm`
-        # and fail the PR if any scaling op exceeds its committed threshold.
-        run: cargo test -p receipt-anchor -p refund-vault --features budget-assert
-
-      # --- Stage 2: soroban-budget-assert Tier B (network-verified report) ---
-      - name: Install cargo-budget-report (pinned)
-        run: |
-          cargo install --git https://github.com/Tollcraft/soroban-budget-assert.git \
-            --tag "$SOROBAN_BUDGET_ASSERT_REF" --locked cargo-budget-report
-      - name: Install stellar-cli (Tier B only)
-        # `cargo budget-report` simulates against testnet via the stellar CLI.
-        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
-        run: cargo install --locked stellar-cli
-      - name: Run cargo budget-report (Tier B)
-        # Requires a funded testnet identity; only runs in the repo's own runs
-        # where the secret is set. `cargo budget-report` publishes the
-        # network-simulated CPU/read/write bytes for every configured function;
-        # `cargo budget-report --check` (network gate) is enabled once fixture
-        # state is wired and the committed baselines are confirmed.
-        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
-        run: |
-          echo "$STELLAR_TESTNET_SECRET" | stellar keys add alice --network testnet --secret-key-stdin
-          cargo budget-report --check --json | tee budget-report.json
-          echo "### Tier B budget report" >> $GITHUB_STEP_SUMMARY
-          cat budget-report.json >> $GITHUB_STEP_SUMMARY
-      - name: Upload Tier B report
-        if: ${{ env.STELLAR_TESTNET_SECRET != '' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: budget-report-${{ github.sha }}
-          path: budget-report.json
-
-  build-wasm:
-    name: build-wasm
-    runs-on: ubuntu-latest
-    env:
-      # Same stated tolerance as the budget-limits job so both size gates
-      # pass/fail consistently: measured value may exceed the committed
-      # baseline by up to (1 + tolerance) before the build fails.
-      WASM_SIZE_TOLERANCE: 0.10
-    steps:
-      - uses: actions/checkout@v7
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          components: rustfmt, clippy
           targets: wasm32v1-none
+
       - name: Cache cargo
+        # One key for one job. The old file had four near-identical keys
+        # (cargo-clippy-, cargo-test-, cargo-bench-, cargo-budget-,
+        # cargo-wasm-), so each job warmed its own copy of the same build.
         uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
-      - name: Wasm build
-        # Build the deployable contract crates only: building the `testutils`
-        # workspace member for the wasm target activates soroban-sdk's
-        # `testutils` feature, which is not supported on wasm and fails with
-        # `compile_error!("'testutils' feature is not supported on 'wasm'")`.
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: Build every contract to WASM
+        # One build serves clippy, the test suite, the Tier A budget macros and
+        # the size gate. Exclude `testutils`: it is a std crate (no `#![no_std]`)
+        # and its soroban-sdk `testutils` feature is not supported on wasm, so it
+        # cannot compile for wasm32v1-none. `--all-targets` lints and the
+        # contractimport!-using tests pull in receipt-shard, receipt-anchor and
+        # refund-vault, all inside this set.
         run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
 
       - name: Optimize wasms
-        # Optimize before both the size gate and the artifact upload, so
-        # `.wasm-budget.json` bounds the bytes that actually get deployed and
-        # the uploaded artifacts are what `deploy.sh` would ship.
+        # `deploy.sh` builds with `stellar contract build`, which optimizes the
+        # wasm before uploading it. Tests have to import and upload that same
+        # artifact: cargo's raw output is ~25% larger, and the unoptimized
+        # refund_vault blob (138631 B) is rejected outright by
+        # `upload_contract_wasm` because a contract code ledger entry is capped
+        # at 131072 B.
         run: bash scripts/optimize_wasm.sh
 
-      - name: Report WASM sizes & enforce size budget
-        run: |
-          TOL=$WASM_SIZE_TOLERANCE
-          FAILED=0
-          PCT=$(awk "BEGIN{printf \"%.0f\", $TOL*100}")
-          echo "### WASM Build Sizes" >> $GITHUB_STEP_SUMMARY
-          echo "| Contract | Size (bytes) | Budget (bytes) | +${PCT}% ceiling | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
 
-          for pair in "receipt_anchor:receipt_anchor.wasm" "refund_vault:refund_vault.wasm" "refund_policy_time:refund_policy_time.wasm" "refund_policy_vdf:refund_policy_vdf.wasm" "refund_vault_factory:refund_vault_factory.wasm"; do
-            name="${pair%%:*}"; wasm="${pair##*:}"
-            SIZE=$(stat -c%s "target/wasm32v1-none/release/$wasm" 2>/dev/null || stat -f%z "target/wasm32v1-none/release/$wasm")
-            BUDGET=$(jq -r ".$name" .wasm-budget.json)
-            CEIL=$(awk "BEGIN{printf \"%d\", $BUDGET*(1+$TOL)}")
-            if [ "$SIZE" -gt "$CEIL" ]; then
-              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ❌ Exceeded |" >> $GITHUB_STEP_SUMMARY
-              FAILED=1
-            else
-              echo "| \`$wasm\` | $SIZE | $BUDGET | $CEIL | ✅ Within Budget |" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo "Error: WASM size budget exceeded beyond the stated tolerance." >&2
-            exit 1
-          fi
+      - name: Tests
+        # Includes `testutils`, which the `benchmark-budgets` job used to run
+        # again on its own under the `release-with-logs` profile.
+        run: cargo test --locked --workspace
 
       - name: Install stellar-cli for WASM budget inspection
+        # Merges only. This is a multi-minute source build, and its only
+        # consumer is the informational `soroban contract inspect --wasm` block
+        # in the budget script below (that block runs `|| true` per contract, so
+        # it cannot fail a run either way). The size gate does not need it.
+        if: github.event_name != 'pull_request'
         run: |
           if command -v stellar &>/dev/null; then
             echo "stellar-cli already installed"
@@ -358,42 +97,32 @@ jobs:
             cargo install --locked stellar-cli 2>/dev/null || echo "stellar-cli install skipped"
           fi
 
-      - name: Run WASM budget check script
-        run: |
-          chmod +x scripts/check_wasm_budget.sh
-          ./scripts/check_wasm_budget.sh
+      - name: WASM size budget
+        # The binding gate is this script, not the inline loops that used to run
+        # in the `budget-limits` and `build-wasm` jobs: it checks all 11 contracts
+        # against `.wasm-budget.json` with NO tolerance, plus the 131072-byte
+        # ledger-entry deploy limit. The inline loops covered 5 contracts at
+        # baseline * 1.10, so anything they rejected the script had already
+        # rejected. That is why `WASM_SIZE_TOLERANCE` is gone: the advertised 10%
+        # slack has never actually been granted on a PR.
+        run: bash scripts/check_wasm_budget.sh
 
-      - name: Upload WASM Artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: wasm-artifacts-${{ github.sha }}
-          path: |
-            target/wasm32v1-none/release/receipt_anchor.wasm
-            target/wasm32v1-none/release/refund_vault.wasm
+      - name: Tier A budget assertions
+        # Compiles the contracts for the host and runs the `#[budget_cpu_lt(N)]`
+        # macro tests. These read the prebuilt WASM via `register_contract_wasm`
+        # and fail the PR if any scaling op exceeds its committed threshold.
+        run: cargo test -p receipt-anchor -p refund-vault --features budget-assert
 
-  vector-parity:
-    name: vector parity (cross-repo)
-    runs-on: ubuntu-latest
-    # Keep the two repos' Merkle vectors from silently drifting. Divergence must
-    # fail a build, not produce a warning (issue #53). Triggered on every push
-    # to main, on PRs, on a daily schedule (so a stale SDK copy is caught even
-    # when nothing changes here), and can be fired from accensa-app via
-    # repository_dispatch / workflow_dispatch.
-    concurrency:
-      group: vector-parity-${{ github.ref }}
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@v7
+      - name: Vector parity, local half
+        # Keep the two repos' Merkle vectors from silently drifting. Divergence
+        # must fail a build, not produce a warning (issue #53). Regenerates
+        # src/vectors.rs from merkle-vectors.json and fails if it drifted, and
+        # fails if merkle-vectors.json.sha256 is stale.
+        run: node contracts/receipt-anchor/scripts/build-vectors.mjs --check
 
-      - name: Verify local fixture is in sync with its source of truth
-        # Regenerates src/vectors.rs from merkle-vectors.json and fails if it
-        # drifted, and fails if merkle-vectors.json.sha256 is stale. This is the
-        # in-repo half of the parity guarantee.
-        run: |
-          node contracts/receipt-anchor/scripts/build-vectors.mjs --check
-
-      - name: Fetch SDK vector fixture from accensa-app (pinned ref)
-        id: fetch
+      - name: Vector parity, cross-repo hash
+        # Copied verbatim, including the `ACCELSA_APP_REF` variable name, so
+        # issue #556 still applies cleanly against this file.
         env:
           ACCENSA_APP_REF: ${{ vars.ACCELSA_APP_REF || 'main' }}
           # On a PR we have not yet synced accensa-app, so a hash mismatch must
@@ -431,13 +160,50 @@ jobs:
             echo "::warning::cannot verify until the SDK copy exists. Open the accensa-app PR."
           fi
 
-  notify-vector-parity:
-    name: notify accensa-app on vector change
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: vector-parity
-    steps:
-      - name: Ping accensa-app to re-check parity
+      # --- Tollcraft dogfood: static cost linting ---
+      - name: Install soroban-cost-linter (pinned)
+        run: |
+          rustup toolchain install "$SOROBAN_COST_LINTER_NIGHTLY" --component rustc-dev --component llvm-tools-preview
+          cargo install cargo-dylint dylint-link --version "$DYLINT_VERSION" --locked
+          cargo +"$SOROBAN_COST_LINTER_NIGHTLY" install \
+            --git https://github.com/Tollcraft/soroban-cost-linter.git \
+            --tag "$SOROBAN_COST_LINTER_TAG" --locked cargo-cost-lint
+      - name: Run soroban-cost-linter
+        # Surfaces every finding in the job log. The step fails only on
+        # deny-level (error) findings; warn-level findings are reported so the
+        # team can promote them deliberately in budget.toml. Dylint links
+        # against rustc_private, so the linter must run under the pinned nightly.
+        run: |
+          echo "### soroban-cost-linter findings" >> $GITHUB_STEP_SUMMARY
+          cargo +"$SOROBAN_COST_LINTER_NIGHTLY" cost-lint --workspace --format text | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+      # --- Stage 2: soroban-budget-assert Tier B (network-verified report) ---
+      - name: Install cargo-budget-report (pinned)
+        # Merge-only. `cargo install --git` of this crate was the PR-time cost;
+        # the report it produces is checked against committed baselines, which is
+        # a property of the merged tree, not of one proposed diff.
+        if: github.event_name != 'pull_request'
+        run: |
+          cargo install --git https://github.com/Tollcraft/soroban-budget-assert.git \
+            --tag "$SOROBAN_BUDGET_ASSERT_REF" --locked cargo-budget-report
+      - name: Run cargo budget-report (Tier B)
+        # Requires a funded testnet identity; only runs in the repo's own runs
+        # where the secret is set. `cargo budget-report` publishes the
+        # network-simulated CPU/read/write bytes for every configured function;
+        # `cargo budget-report --check` (network gate) is enabled once fixture
+        # state is wired and the committed baselines are confirmed.
+        if: ${{ github.event_name != 'pull_request' && env.STELLAR_TESTNET_SECRET != '' }}
+        run: |
+          echo "$STELLAR_TESTNET_SECRET" | stellar keys add alice --network testnet --secret-key-stdin
+          cargo budget-report --check --json | tee budget-report.json
+          echo "### Tier B budget report" >> $GITHUB_STEP_SUMMARY
+          cat budget-report.json >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify accensa-app on vector change
+        # Was its own `notify-vector-parity` job with `needs: vector-parity`; as
+        # the step after the parity steps it means the same thing (it only runs
+        # if they passed) and costs pull requests no line at all.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         # When this repo's vectors change, tell accensa-app's parity job to run
         # so a stale SDK copy is caught promptly rather than only on its schedule.
         uses: peter-evans/repository-dispatch@v4
