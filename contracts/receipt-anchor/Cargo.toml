@@ -37,7 +37,7 @@ budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git"
 ed25519-dalek = "3.0"
 multisig-account = { path = "../multisig-account", features = ["testutils"] }
 proptest = "1.4"
-soroban-env-host = "28.0.2"
+soroban-env-host = "29.0.0"
 soroban-sdk = { workspace = true, features = ["testutils"] }
 # Test-only: lets fuzz_test.rs peek at a shard's own storage (e.g. TTLs) by
 # its DataKey type. Safe as a dev-dependency only — soroban-sdk's contract
