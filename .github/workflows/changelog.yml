@@ -1,0 +1,72 @@
+name: Changelog
+
+# Split out of ci.yml, where it was the `changelog & version check` job. It
+# needs no toolchain (six seconds against 127 for `test`), and it is the only
+# job in this repo that reads PR labels — `skip-changelog` is its escape hatch.
+# Keeping it in ci.yml would have forced the whole contract pipeline to re-run
+# on every `labeled` / `unlabeled` event.
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+    types: [ opened, synchronize, reopened, labeled, unlabeled ]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    name: changelog & version check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check CHANGELOG enforcement and version matching
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+        # Event payload through env, never interpolated into the script body.
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          HEAD="${GITHUB_SHA}"
+
+          # Find changed files in PR
+          CHANGED_FILES=$(git diff --name-only "$BASE" "$HEAD")
+
+          # Check if contract source files are modified
+          CONTRACT_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^contracts/.*/src/' || true)
+
+          if [ -n "$CONTRACT_CHANGED" ]; then
+            echo "Contract source files modified:"
+            echo "$CONTRACT_CHANGED"
+
+            # Check if CHANGELOG.md is in modified files
+            if ! echo "$CHANGED_FILES" | grep -q '^CHANGELOG.md$'; then
+              echo "Error: CHANGELOG.md was not updated for contract source changes."
+              echo "Add a changelog entry under ## [Unreleased], or add the 'skip-changelog' label to your PR for internal changes."
+              exit 1
+            fi
+            echo "CHANGELOG.md update confirmed."
+          fi
+
+      - name: Verify CHANGELOG released version matches workspace Cargo.toml
+        run: |
+          # Extract highest released version from CHANGELOG.md (excluding Unreleased)
+          CHANGELOG_VER=$(grep -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | head -n1 | sed -E 's/## \[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+
+          # Extract version from receipt-anchor and refund-vault Cargo.toml
+          RECEIPT_VER=$(grep '^version =' contracts/receipt-anchor/Cargo.toml | head -n1 | cut -d '"' -f 2)
+          REFUND_VER=$(grep '^version =' contracts/refund-vault/Cargo.toml | head -n1 | cut -d '"' -f 2)
+
+          echo "CHANGELOG top released version: $CHANGELOG_VER"
+          echo "receipt-anchor version: $RECEIPT_VER"
+          echo "refund-vault version: $REFUND_VER"
+
+          if [ "$CHANGELOG_VER" != "$RECEIPT_VER" ] || [ "$CHANGELOG_VER" != "$REFUND_VER" ]; then
+            echo "Error: CHANGELOG.md top released version ($CHANGELOG_VER) does not match crate versions ($RECEIPT_VER, $REFUND_VER)."
+            exit 1
+          fi
+          echo "Version matching confirmed."
