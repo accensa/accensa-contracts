@@ -11,13 +11,17 @@
 
 extern crate std;
 
-use crate::strategies::{split_by_weights, AllocationConfig, MAX_STRATEGIES, TOTAL_WEIGHT_BPS};
+use crate::strategies::{
+    split_by_weights, AllocationConfig, AllocationsUpdatedEvent, MAX_STRATEGIES,
+    PortfolioRebalancedEvent, StrategyAllocation, StrategyRecalledEvent, StrategyWhitelistedEvent,
+    TOTAL_WEIGHT_BPS,
+};
 use crate::{Error, Treasury, TreasuryClient};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype,
-    testutils::{Address as _, Ledger as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, Env, Vec,
+    vec, Address, Env, Event, Vec,
 };
 
 // ── Mock strategy contracts ───────────────────────────────────────────────
@@ -920,4 +924,252 @@ fn the_strategy_lock_blocks_a_nested_entry_and_then_releases() {
     assert_eq!(failed, Err(Error::NothingToRecall));
     let after_failure = env.as_contract(&treasury, || crate::strategies::with_lock(env, || Ok(2)));
     assert_eq!(after_failure, Ok(2));
+}
+
+// ── Event shapes (issue #605) ───────────────────────────────────────────────
+
+/// Assert the last invocation published exactly `expected` for `contract`, in
+/// publish order, by XDR comparison — the same style as
+/// `state-channel/src/hashlock_test.rs`. `env.events().all()` covers only the
+/// last invocation, so this must run immediately after the entry point under
+/// test and before any other contract call (including token balance reads).
+fn assert_emitted(
+    env: &Env,
+    contract: &Address,
+    expected: std::vec::Vec<soroban_sdk::xdr::ContractEvent>,
+) {
+    assert_eq!(env.events().all().filter_by_contract(contract), expected);
+}
+
+#[test]
+fn the_yield_lifecycle_publishes_each_event_shape() {
+    let ctx = setup();
+
+    // Site 1: `whitelist` publishes the grant.
+    ctx.client.whitelist_strategy(&ctx.aave);
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![StrategyWhitelistedEvent {
+            strategy: ctx.aave.clone(),
+            whitelisted: true,
+        }
+        .to_xdr(&ctx.env, &ctx.treasury)],
+    );
+    ctx.client.whitelist_strategy(&ctx.compound);
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![StrategyWhitelistedEvent {
+            strategy: ctx.compound.clone(),
+            whitelisted: true,
+        }
+        .to_xdr(&ctx.env, &ctx.treasury)],
+    );
+
+    // A complete weight set: the event carries the allocations that were
+    // actually stored, `weight_bps` included.
+    ctx.client.set_allocations(&vec![
+        &ctx.env,
+        AllocationConfig {
+            strategy: ctx.aave.clone(),
+            weight_bps: 7_500,
+        },
+        AllocationConfig {
+            strategy: ctx.compound.clone(),
+            weight_bps: 2_500,
+        },
+    ]);
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![AllocationsUpdatedEvent {
+            allocations: vec![
+                &ctx.env,
+                StrategyAllocation {
+                    strategy: ctx.aave.clone(),
+                    weight_bps: 7_500,
+                    deployed: 0,
+                    yield_earned: 0,
+                },
+                StrategyAllocation {
+                    strategy: ctx.compound.clone(),
+                    weight_bps: 2_500,
+                    deployed: 0,
+                    yield_earned: 0,
+                },
+            ],
+        }
+        .to_xdr(&ctx.env, &ctx.treasury)],
+    );
+
+    ctx.client.set_reserve_bps(&0);
+
+    // The first rotation deploys the whole balance across both strategies.
+    ctx.client.rebalance_portfolio();
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![PortfolioRebalancedEvent {
+            total_deployed: SUPPLY,
+            allocations: vec![
+                &ctx.env,
+                StrategyAllocation {
+                    strategy: ctx.aave.clone(),
+                    weight_bps: 7_500,
+                    deployed: 75_000_000,
+                    yield_earned: 0,
+                },
+                StrategyAllocation {
+                    strategy: ctx.compound.clone(),
+                    weight_bps: 2_500,
+                    deployed: 25_000_000,
+                    yield_earned: 0,
+                },
+            ],
+        }
+        .to_xdr(&ctx.env, &ctx.treasury)],
+    );
+
+    // Governance flips the split 75/25 → 20/80: only the weights change.
+    ctx.client.set_allocations(&vec![
+        &ctx.env,
+        AllocationConfig {
+            strategy: ctx.aave.clone(),
+            weight_bps: 2_000,
+        },
+        AllocationConfig {
+            strategy: ctx.compound.clone(),
+            weight_bps: 8_000,
+        },
+    ]);
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![AllocationsUpdatedEvent {
+            allocations: vec![
+                &ctx.env,
+                StrategyAllocation {
+                    strategy: ctx.aave.clone(),
+                    weight_bps: 2_000,
+                    deployed: 75_000_000,
+                    yield_earned: 0,
+                },
+                StrategyAllocation {
+                    strategy: ctx.compound.clone(),
+                    weight_bps: 8_000,
+                    deployed: 25_000_000,
+                    yield_earned: 0,
+                },
+            ],
+        }
+        .to_xdr(&ctx.env, &ctx.treasury)],
+    );
+
+    // The rotation recalls every position first — one `StrategyRecalledEvent`
+    // per strategy, in allocation order — then redeploys, so the funds really
+    // move between the two whitelisted strategies (not a no-op rebalance).
+    ctx.client.rebalance_portfolio();
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![
+            StrategyRecalledEvent {
+                strategy: ctx.aave.clone(),
+                principal: 75_000_000,
+                yield_amount: 0,
+            }
+            .to_xdr(&ctx.env, &ctx.treasury),
+            StrategyRecalledEvent {
+                strategy: ctx.compound.clone(),
+                principal: 25_000_000,
+                yield_amount: 0,
+            }
+            .to_xdr(&ctx.env, &ctx.treasury),
+            PortfolioRebalancedEvent {
+                total_deployed: SUPPLY,
+                allocations: vec![
+                    &ctx.env,
+                    StrategyAllocation {
+                        strategy: ctx.aave.clone(),
+                        weight_bps: 2_000,
+                        deployed: 20_000_000,
+                        yield_earned: 0,
+                    },
+                    StrategyAllocation {
+                        strategy: ctx.compound.clone(),
+                        weight_bps: 8_000,
+                        deployed: 80_000_000,
+                        yield_earned: 0,
+                    },
+                ],
+            }
+            .to_xdr(&ctx.env, &ctx.treasury),
+        ],
+    );
+
+    // A recall emits `StrategyRecalledEvent` with the amount recalled equal
+    // to the deployed principal.
+    let deployed = ctx.client.get_allocation(&ctx.aave).unwrap().deployed;
+    assert_eq!(deployed, 20_000_000);
+    let (principal, yield_amount) = ctx.client.recall_strategy(&ctx.aave, &deployed);
+    assert_eq!(
+        principal,
+        deployed,
+        "the recalled amount is the deployed principal"
+    );
+    assert_eq!(yield_amount, 0);
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![StrategyRecalledEvent {
+            strategy: ctx.aave.clone(),
+            principal,
+            yield_amount,
+        }
+        .to_xdr(&ctx.env, &ctx.treasury)],
+    );
+
+    // Site 2: `revoke` publishes the revocation, now that the position is
+    // empty (and the strategy still holds no yield).
+    ctx.client.revoke_strategy(&ctx.aave);
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![StrategyWhitelistedEvent {
+            strategy: ctx.aave.clone(),
+            whitelisted: false,
+        }
+        .to_xdr(&ctx.env, &ctx.treasury)],
+    );
+}
+
+#[test]
+fn a_recall_that_returns_yield_reports_it_in_the_event() {
+    let ctx = setup();
+    configure_two_way(&ctx);
+    ctx.client.rebalance_portfolio();
+
+    // The strategy earns 5M; recalling the full position brings principal
+    // and the proportional yield home in a single event.
+    accrue(&ctx.env, &ctx.token, &ctx.aave, 5_000_000);
+    let deployed = ctx.client.get_allocation(&ctx.aave).unwrap().deployed;
+    assert_eq!(deployed, 50_000_000);
+    let (principal, yield_amount) = ctx.client.recall_strategy(&ctx.aave, &deployed);
+    assert_eq!(
+        principal,
+        deployed,
+        "the recalled amount is the deployed principal"
+    );
+    assert_eq!(yield_amount, 5_000_000);
+    assert_emitted(
+        &ctx.env,
+        &ctx.treasury,
+        std::vec![StrategyRecalledEvent {
+            strategy: ctx.aave.clone(),
+            principal,
+            yield_amount,
+        }
+        .to_xdr(&ctx.env, &ctx.treasury)],
+    );
 }

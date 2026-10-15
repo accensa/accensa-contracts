@@ -3,8 +3,9 @@
 All notable changes to `ReceiptAnchor` and `RefundVault` are recorded here.
 
 The two contracts are versioned together and share a tag. Versioning follows the
-policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0,
-breaking changes bump the **minor** version, and they are called out as such.
+policy in [`docs/RELEASING.md`](docs/RELEASING.md), including its pre-1.0
+exception: while the project is below `1.0.0`, breaking changes bump the
+**minor** version, and they are called out as such.
 
 ## [Unreleased]
 
