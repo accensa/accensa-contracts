@@ -101,12 +101,15 @@ jobs:
 
       - name: WASM size budget
         # The binding gate is this script, not the inline loops that used to run
-        # in the `budget-limits` and `build-wasm` jobs: it checks all 11 contracts
-        # against `.wasm-budget.json` with NO tolerance, plus the 131072-byte
-        # ledger-entry deploy limit. The inline loops covered 5 contracts at
-        # baseline * 1.10, so anything they rejected the script had already
-        # rejected. That is why `WASM_SIZE_TOLERANCE` is gone: the advertised 10%
-        # slack has never actually been granted on a PR.
+        # in the `budget-limits` and `build-wasm` jobs: it checks the union of the
+        # script's contract list and every key in `.wasm-budget.json` with NO
+        # tolerance, plus the 131072-byte ledger-entry deploy limit. A missing
+        # artifact, a missing or non-numeric budget entry, or a missing/broken
+        # `jq` is a hard failure, so nothing is silently dropped from the gate
+        # (issue #623). The inline loops covered 5 contracts at baseline * 1.10,
+        # so anything they rejected the script had already rejected. That is why
+        # `WASM_SIZE_TOLERANCE` is gone: the advertised 10% slack has never
+        # actually been granted on a PR.
         run: bash scripts/check_wasm_budget.sh
 
       - name: Tier A budget assertions
