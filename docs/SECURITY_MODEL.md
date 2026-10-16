@@ -8,23 +8,29 @@ This document outlines the threat model, trust assumptions, and attack mitigatio
 
 ## Trust Assumptions
 
-### 0. Immutability of Deployed Contracts
-
-Both `ReceiptAnchor` and `RefundVault` are **immutable**: they contain no upgrade
-entry point and no call to `update_current_contract_wasm`. This is a deliberate
-security property, not an omission — see
-[ADR 003](ADR-003-upgradeability.md).
+### 0. Immutability and Upgradeability Posture
+ 
+While `ReceiptAnchor` is **immutable** (containing no upgrade entry point and no
+call to `update_current_contract_wasm`), `RefundVault` is **admin-upgradeable**
+via a deliberate two-phase migration and upgrade flow (`migrate_state` and
+`upgrade_wasm`, calling `env.deployer().update_current_contract_wasm`). This
+differentiated posture is documented in [ADR 003](ADR-003-upgradeability.md) and
+[REFUND_VAULT_MIGRATION.md](REFUND_VAULT_MIGRATION.md).
 
 Consequences for the threat model:
-- **No admin — including the operator — can change contract behaviour after
-deployment.** A merchant can withdraw float, pause/unpause, and (via the two-step
-transfer) hand over admin, but cannot install new rules or alter the refund policy
-or anchoring behaviour.
-- **A compromised admin key cannot rewrite wasm.** Its blast radius is bounded by
-the authorisation surface the contract already encodes (drain float, pause, refund
-within policy).
-- **Bugs are permanent at a deployed address.** The response to a logic defect is
-withdraw-and-redeploy per the migration runbook in ADR 003, not an in-place patch.
+- **ReceiptAnchor cannot be altered post-deployment.** Anchored Merkle roots and
+  historic payment attestations are permanently anchored; a logic defect or
+  interface change requires deploying a new anchor instance.
+- **RefundVault logic can be upgraded only by the authenticated Admin.** Both
+  `migrate_state` and `upgrade_wasm` strictly require `admin.require_auth()`. A
+  compromised admin key can authorize a WASM upgrade in addition to standard admin
+  powers (withdrawing float, pausing, configuring policy/windows/yield). This
+  amplifies the critical importance of admin key custody, multisig administration,
+  and cold storage governance (see §1).
+- **In-place state migrations on RefundVault must preserve integrity.** Upgrades
+  must adhere to the two-phase runbook in `docs/REFUND_VAULT_MIGRATION.md`: pause
+  activity, call `migrate_state` to monotonically advance storage versioning and
+  validate invariants, execute `upgrade_wasm`, and verify balances before unpausing.
 
 ### 1. The Admin (Merchant)
 The admin is assumed to be a trusted entity in the context of configuring the contract. They are responsible for:
@@ -39,7 +45,7 @@ If the admin's private key is compromised, the attacker could drain the vault's 
 store a single `Address` as `Admin` and put no constraint on what it is, so a
 `RefundVault` or `ReceiptAnchor` initialised with a multisig contract account as
 its merchant already requires that account's threshold of signers for `pause`,
-`unpause`, `set_refund_window`, `refund`, `withdraw`, `anchor_batch` and
+`unpause`, `propose_policy`, `execute_policy`, `refund`, `withdraw`, `anchor_batch` and
 `prune_batches` — with no threshold logic in this repository. This is covered by
 tests in `contracts/refund-vault/tests/multisig_admin_vault.rs` and
 `contracts/receipt-anchor/tests/multisig_admin_anchor.rs` (see
@@ -212,17 +218,19 @@ window-based refunds.
   `contracts/refund-vault/src/vdf.rs` stays unknown — anyone who factors `N`
   can compute `x^(2^T) mod N` in `O(log T)` steps via `phi(N)`. The constant
   shipped in this release was generated for the source release with its prime
-  factors discarded after generation; because the contracts are immutable,
-  rotating the modulus requires a new deployment (ADR 003). A production
+  factors discarded after generation; rotating the modulus requires either a
+  WASM upgrade via `upgrade_wasm` on `RefundVault` (per ADR 003 and
+  `docs/REFUND_VAULT_MIGRATION.md`) or a new deployment. A production
   deployment should replace `MODULUS` with one from a trusted-setup ceremony
   (ideally ≥2048 bits, which would require a larger big-int implementation
   than the SDK's 256-bit host integers — the 1024-bit arithmetic here is pure
   WASM). Treat the shipped modulus as a testnet-grade placeholder, not a
   mainnet parameter.
 
-### Zero Window Misconfiguration
-- **Threat:** A merchant accidentally or intentionally sets a refund window of `0`, implicitly attempting to create an 'unlimited' refund window.
-- **Mitigation:** Unlimited refund windows are deemed illegitimate to eliminate silent misconfigurations and unsafe defaults. Both `initialize` and `set_refund_window` explicitly reject any window value of `0` (or below `MIN_REFUND_WINDOW`) with an `InvalidWindow` error.
+### Zero Window Semantics (Unbounded Window)
+- **Design & Posture:** Setting a refund window of `0` in `initialize` (or via timelocked `propose_policy` / `execute_policy`) is permitted by design and explicitly represents an **unbounded window** (no time limit on refund claims). The contract does not reject `window == 0`.
+- **TTL Guard Handling:** When `window == 0`, `claim_single` bypasses the time-window expiration check, and `refund_record_ttl_extend_to` (in `contracts/refund-vault/src/lib.rs`) extends the `RefundV2` persistent entry to the network's `max_ttl()`. This prevents the anti-replay tombstone of an unbounded policy from expiring prematurely while claims remain valid.
+- **Verification:** Proven by unit tests `test_zero_window_disables_expiry` and `test_zero_window_extends_guard_to_max_ttl` in `contracts/refund-vault/src/test.rs`. The getter `get_refund_window` returns `0` when no time limit is imposed.
 
 ### Float Draining (Negative/Zero Amounts)
 - **Threat:** An attacker tries to refund a negative amount to cause an underflow or steal funds.

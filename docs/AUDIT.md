@@ -99,7 +99,7 @@ Drawn as of `main`. Who is trusted, and to do what:
 
 | Actor | Trusted to | Not trusted to | Notes |
 |---|---|---|---|
-| **Merchant admin** (one `Address` per contract) | Everything the contracts allow: anchor/prune, deposit/refund/withdraw, pause/unpause, set policy (window, ratios, strategy), deploy/withdraw/harvest yield, two-step admin handover. Fully trusted *within the contract's rules*. | Change code (contracts are immutable), rewrite anchored history, refund the same `payment_ref` twice, move float outside the vault's accounting. | A compromised admin key = total float loss. Stated plainly in [§5](#5-known-issues-and-accepted-risks). |
+| **Merchant admin** (one `Address` per contract) | Everything the contracts allow: anchor/prune, deposit/refund/withdraw, pause/unpause, set policy (window, ratios, strategy), deploy/withdraw/harvest yield, two-step admin handover, and (for `RefundVault`) two-phase state migration and WASM upgrade. Fully trusted *within the contract's rules*. | Change code on `ReceiptAnchor` (which is strictly immutable), bypass admin auth or version monotonicity on `RefundVault` upgrades, rewrite anchored history, refund the same `payment_ref` twice, move float outside the vault's accounting. | A compromised admin key = total float loss (and potential code replacement on `RefundVault`). Stated plainly in [§5](#5-known-issues-and-accepted-risks). |
 | **Multi-sig set** (`Admins`/`Threshold` keys) | Nothing. The keys are reserved for issue #23 and are inert today. | — | Must not be treated as an existing control. |
 | **Public TTL-extenders** (anyone) | Nothing. `extend_batch_ttl` / `extend_refund_ttl` are deliberately permissionless so anyone can keep records alive. | Mutating anything except TTL. Extension cannot create/delete records, cannot shorten TTL, and errors on unknown refs. | Griefing cost analysed in [I-11](#i-11-ttl-extension-is-public-and-cannot-grief). |
 | **Token contract (SAC)** | Correct SEP-41 behaviour: honest `balance`, honest `transfer`, trustline enforcement. | — | A broken/malicious token breaks the vault's float accounting. Accepted platform trust. |
@@ -335,19 +335,24 @@ TTL-griefing cost, window-as-policy nuance).
 Stated plainly, including the uncomfortable ones. None of these is hidden from
 an auditor; each is a deliberate position or a documented operational property.
 
-1. **Admin key compromise means total float loss.** A stolen merchant key can
-   `withdraw` the entire float, `refund` arbitrarily (within policy and balance),
-   pause, change the window/ratios/strategy, deploy or withdraw yield, and hand
-   over admin. Immutability bounds this: the key cannot change code, rewrite
-   roots, or double-refund. The residual control is key custody, which is
-   explicitly out of scope (§1.2) and is the operator's operational risk.
-2. **An immutable contract with a bug requires migration, not a patch.** There
-   is no `update_current_contract_wasm`; a logic defect at a deployed address is
-   permanent there. The response is the ADR-003 runbook: pause → withdraw →
-   redeploy → resume. Refund tombstones and anchored roots do **not** move to the
-   new instance — open-window refunds must be settled or rejected before
-   cutover. This is why the audit must pin the artifact that will actually be
-   deployed (§1.3).
+1. **Admin key compromise means total float loss and potential vault code upgrade.**
+   A stolen merchant key can `withdraw` the entire float, `refund` arbitrarily
+   (within policy and balance), pause, change the window/ratios/strategy, deploy
+   or withdraw yield, hand over admin, and call `upgrade_wasm` on `RefundVault`.
+   On `ReceiptAnchor`, immutability bounds this (the key cannot change code,
+   rewrite roots, or alter historic batches). On `RefundVault`, the two-phase
+   upgrade flow is admin-gated, so key compromise allows WASM replacement. Key
+   custody is explicitly out of scope (§1.2) and is the operator's operational risk.
+2. **Upgrades and logic migrations.** `ReceiptAnchor` is immutable; a defect or
+   breaking change at a deployed anchor address requires deploying a new instance
+   per ADR-003. `RefundVault` implements an admin-authorized upgrade mechanism via
+   `migrate_state` and `upgrade_wasm` (`env.deployer().update_current_contract_wasm`),
+   governed by the runbook in `docs/REFUND_VAULT_MIGRATION.md`. If an in-place upgrade
+   is ever unsuitable, the fallback procedure remains pause → withdraw → redeploy →
+   resume. In both cases, refund tombstones and anchored roots do **not** move to
+   a newly deployed instance — open-window refunds must be settled or rejected
+   before cutover. This is why the audit must pin the artifact that will actually
+   be deployed (§1.3).
 3. **Rent exhaustion archives records.** Without TTL extension, `BatchRecord`s
    and `RefundRecord`s archive after ~30 days and reads on them fail until a
    `RestoreFootprint` restores them. Archival does **not** weaken the

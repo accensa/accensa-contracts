@@ -8,6 +8,15 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`state-channel` (issue #622): hashlock reserve bookkeeping pinned by
+  tests.** New tests in `contracts/state-channel/src/hashlock_test.rs`
+  assert, after every add/resolve/refund transition, that `HashlockReserved`
+  equals the sum of the still-pending payments' amounts; that
+  `HashlockPaymentCount` allocates distinct sequential ids that a resolve
+  neither rewinds nor reuses; and that a reveal and a timed-out HTLC refund
+  each release exactly their own amount, with a double reveal rejected and
+  the reserve left at the pending sum. Test-only — no contract behavior
+  change.
 - security(multisig): implement 14-day TTL expiration for pending signatures and approvals (#449)
 - **`nft` (issue #453): Discount coupon NFTs for merchant stores.** New coupon
   module (`contracts/refund-vault/src/coupons.rs`) implements single-use discount

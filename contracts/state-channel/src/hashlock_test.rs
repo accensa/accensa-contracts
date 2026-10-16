@@ -4,6 +4,7 @@ extern crate std;
 
 use super::*;
 use crate::hashlock::HashlockPaymentState;
+use crate::htlc::HtlcState;
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
@@ -336,4 +337,137 @@ fn close_with_preimage_rejects_revealing_twice() {
         Err(Ok(Error::HtlcNotPending))
     );
     assert_eq!(client.get_channel(&channel_id).phase, ChannelPhase::Open);
+}
+
+// ── Reserve bookkeeping: allocation cursor and reserved total (issue #622) ──
+
+/// Recompute the reserve invariant from the payment records themselves
+/// (`DataKey::HashlockPayment`): `DataKey::HashlockReserved` (lib.rs:129)
+/// must equal the sum of the amounts of the still-`Pending` payments among
+/// `ids` after every transition — nothing more (escrow stays over-committed)
+/// and nothing less (a resolve left the reserve stale). `expected_pending` is
+/// spelled out at every call site so the invariant is pinned against an
+/// independently-derived number, not just against itself.
+fn assert_reserve_invariant(
+    client: &StateChannelClient<'static>,
+    channel_id: u64,
+    ids: &[u64],
+    expected_pending: i128,
+) {
+    let mut pending_sum: i128 = 0;
+    for id in ids {
+        let payment = client.get_hashlock_payment(&channel_id, id);
+        if payment.state == HashlockPaymentState::Pending {
+            pending_sum += payment.amount;
+        }
+    }
+    assert_eq!(
+        pending_sum, expected_pending,
+        "test bug: wrong pending expectation"
+    );
+    assert_eq!(client.get_hashlock_reserved(&channel_id), pending_sum);
+}
+
+#[test]
+fn count_key_allocates_distinct_sequential_ids() {
+    let (env, client, _token, sender, receiver) = setup();
+    let channel_id = client.open_channel(&sender, &receiver, &pk(&env), &DEPOSIT, &720);
+
+    // `DataKey::HashlockPaymentCount` (lib.rs:126) is the allocation
+    // cursor: ids start at 1 and advance by exactly one per add, so two
+    // payments on the same channel can never collide.
+    let one = client.add_hashlock_payment(&channel_id, &hash(&env, b"one"), &100);
+    let two = client.add_hashlock_payment(&channel_id, &hash(&env, b"two"), &150);
+    assert_eq!(one, 1);
+    assert_eq!(two, one + 1);
+
+    // Resolving a payment must not rewind the cursor: the next add still
+    // gets the next id and never reuses a settled slot.
+    client.reveal_preimage(&channel_id, &one, &preimage_bytes(&env, b"one"));
+    let three = client.add_hashlock_payment(&channel_id, &hash(&env, b"three"), &50);
+    assert_eq!(three, two + 1);
+
+    // 150 still pending (two) + 50 just added (three); one's 100 released.
+    assert_reserve_invariant(&client, channel_id, &[one, two, three], 200);
+}
+
+#[test]
+fn hashlock_reserved_equals_pending_sum_after_every_transition() {
+    let (env, client, _token, sender, receiver) = setup();
+    let channel_id = client.open_channel(&sender, &receiver, &pk(&env), &DEPOSIT, &720);
+
+    // Every add raises the reserve by exactly the new payment's amount.
+    let one = client.add_hashlock_payment(&channel_id, &hash(&env, b"one"), &100);
+    assert_reserve_invariant(&client, channel_id, &[one], 100);
+    let two = client.add_hashlock_payment(&channel_id, &hash(&env, b"two"), &150);
+    assert_reserve_invariant(&client, channel_id, &[one, two], 250);
+    let three = client.add_hashlock_payment(&channel_id, &hash(&env, b"three"), &50);
+    assert_reserve_invariant(&client, channel_id, &[one, two, three], 300);
+
+    // A reveal releases exactly the revealed payment's own amount.
+    client.reveal_preimage(&channel_id, &two, &preimage_bytes(&env, b"two"));
+    assert_eq!(client.get_channel(&channel_id).balance, 150);
+    assert_reserve_invariant(&client, channel_id, &[one, two, three], 150);
+
+    // A double reveal is rejected, and the reserve is left exactly at the
+    // pending sum — it can neither re-release nor keep escrow reserved.
+    assert_eq!(
+        client.try_reveal_preimage(&channel_id, &two, &preimage_bytes(&env, b"two")),
+        Err(Ok(Error::HtlcNotPending))
+    );
+    assert_reserve_invariant(&client, channel_id, &[one, two, three], 150);
+
+    client.reveal_preimage(&channel_id, &one, &preimage_bytes(&env, b"one"));
+    assert_reserve_invariant(&client, channel_id, &[one, two, three], 50);
+
+    client.reveal_preimage(&channel_id, &three, &preimage_bytes(&env, b"three"));
+    assert_reserve_invariant(&client, channel_id, &[one, two, three], 0);
+    assert_eq!(client.get_channel(&channel_id).balance, 300);
+    assert_eq!(client.get_hashlock_reserved(&channel_id), 0);
+}
+
+#[test]
+fn refund_and_resolve_each_release_exactly_their_own_amount() {
+    let (env, client, _token, sender, receiver) = setup();
+    let channel_id = client.open_channel(&sender, &receiver, &pk(&env), &DEPOSIT, &720);
+
+    // A hashlock invoice (120) and an HTLC hop (300) share the escrow; the
+    // invoice's reserve lives under its own key, separate from the hop's.
+    let payment_id = client.add_hashlock_payment(&channel_id, &hash(&env, b"inv"), &120);
+    let htlc_id = client.add_htlc(&channel_id, &hash(&env, b"hop"), &300, &100, &None);
+    assert_reserve_invariant(&client, channel_id, &[payment_id], 120);
+    assert_eq!(client.get_htlc_reserved(&channel_id), 300);
+    assert_eq!(client.get_reserved_escrow(&channel_id), 420);
+
+    // The hop cannot be refunded before its timeout has passed.
+    assert_eq!(
+        client.try_refund_htlc(&channel_id, &htlc_id),
+        Err(Ok(Error::HtlcNotExpired))
+    );
+
+    env.ledger().set_sequence_number(101);
+    client.refund_htlc(&channel_id, &htlc_id);
+
+    // The refund released exactly the hop's own 300 back to free escrow —
+    // the hashlock reserve and the pending invoice are untouched — and a
+    // refunded hop cannot be refunded again.
+    assert_eq!(client.get_htlc_reserved(&channel_id), 0);
+    assert_eq!(
+        client.get_htlc(&channel_id, &htlc_id).state,
+        HtlcState::Refunded
+    );
+    assert_reserve_invariant(&client, channel_id, &[payment_id], 120);
+    assert_eq!(client.get_reserved_escrow(&channel_id), 120);
+    assert_eq!(
+        client.try_refund_htlc(&channel_id, &htlc_id),
+        Err(Ok(Error::HtlcNotPending))
+    );
+
+    // The reveal released exactly the invoice's own 120 into the
+    // receiver's balance.
+    let credited = client.reveal_preimage(&channel_id, &payment_id, &preimage_bytes(&env, b"inv"));
+    assert_eq!(credited, 120);
+    assert_reserve_invariant(&client, channel_id, &[payment_id], 0);
+    assert_eq!(client.get_channel(&channel_id).balance, 120);
+    assert_eq!(client.get_reserved_escrow(&channel_id), 120);
 }
