@@ -35,3 +35,23 @@
   - Corrected generator and generated file paths in `docs/CONFORMANCE.md` to `contracts/receipt-anchor/`
   - Verified `node contracts/receipt-anchor/scripts/build-vectors.mjs --check` matches CI
 
+## Issue #758: rustdoc for `common/events`' 8 undocumented action symbols
+
+- [x] Document `deposit`, `withdraw`, `refund`, `transfer`, `open`, `close`, `dispute` and `claim` (#758)
+  - `contracts/common/src/events.rs` — doc comments only, no signature, body or ordering change
+
+## Issue #759: rustdoc for refund-vault/lib's 8 exported names
+
+- [x] Document `get_pending_policy`, `get_policy_timelock`, `get_refund`, `set_settlement_contract`, `get_claim_cooldown`, `set_fee_recipient`, `extend_refund_ttl` and `transfer_admin` (#759)
+  - `contracts/refund-vault/src/lib.rs` — doc comments only, each stating the pre-condition and the `Error` arm the body returns
+
+## Issue #760: rustdoc for the remaining 5 action symbols in `common/events`
+
+- [x] Document `settle`, `anchor`, `prune`, `pause` and `unpause` (#760)
+  - `contracts/common/src/events.rs` — doc comments only, inside the lines #760 names and nowhere else in the file
+
+## Issue #769: rustdoc for `FallbackDisputeRequestedEvent`'s 6 public fields
+
+- [x] Document `dispute_id`, `oracle`, `payment_ref`, `merchant`, `recipient` and `amount` (#769)
+  - `contracts/refund-policy-vdf/src/fallback.rs` — doc comments only; field, type, order and derives unchanged, and no unit invented for `amount`
+

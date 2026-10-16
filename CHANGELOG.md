@@ -29,6 +29,12 @@ breaking changes bump the **minor** version, and they are called out as such.
 - docs: rustdoc for `receipt-shard`'s 4 exported names (#749) and for the 5
   public fields of `BuybackConfiguredEvent` (#790). Doc comments only — no
   signature, struct layout or behaviour change.
+- docs: rustdoc for the 13 action symbols in `common/events` (#758, #760), the
+  8 exported getters and admin setters of `refund-vault` (#759), and the 6
+  public fields of `FallbackDisputeRequestedEvent` (#769). Each entry states the
+  pre-condition and the `Error` arm the body returns, and no unit is claimed
+  for a value the code does not fix. Doc comments only — no signature, struct
+  layout, ordering or behaviour change.
 
 ### Added
 - **`privacy` (issue #440): Groth16 verification for concealed escrow amounts.**
