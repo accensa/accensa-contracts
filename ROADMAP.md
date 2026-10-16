@@ -43,7 +43,7 @@
 ## Issue #759: rustdoc for refund-vault/lib's 8 exported names
 
 - [x] Document `get_pending_policy`, `get_policy_timelock`, `get_refund`, `set_settlement_contract`, `get_claim_cooldown`, `set_fee_recipient`, `extend_refund_ttl` and `transfer_admin` (#759)
-  - `contracts/refund-vault/src/lib.rs` — doc comments only, each stating the pre-condition and the `Error` arm the body returns
+  - `contracts/refund-vault/src/lib.rs` — doc comments only; the 4 fallible setters state the pre-condition and the `Error` arm their body returns, the 4 getters are marked infallible
 
 ## Issue #760: rustdoc for the remaining 5 action symbols in `common/events`
 
