@@ -82,11 +82,17 @@ pub struct Htlc {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HtlcAddedEvent {
     #[topic]
+    /// Id of the channel whose escrow this hop reserves.
     pub channel_id: u64,
     #[topic]
+    /// Per-channel id assigned to the new hop by `htlc::add`.
     pub htlc_id: u64,
+    /// SHA-256 digest that the resolving preimage must hash to.
     pub hash_lock: BytesN<32>,
+    /// Escrow amount reserved from the channel for this hop.
     pub amount: i128,
+    /// Ledger after which the hop expires; when a parent hop is supplied,
+    /// this must be strictly smaller than the parent's `timeout_ledger`.
     pub timeout_ledger: u32,
     /// Upstream hop channel id, or `0` when this is a route's first hop.
     pub parent_channel_id: u64,
