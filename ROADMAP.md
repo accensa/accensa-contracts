@@ -8,6 +8,10 @@
   - Exchange rate progression and lock-epoch-based redemption
   - CHANGELOG.md entry added
 
+## Issue #670: iterate members in the governance constructor
+
+- [x] `Governance::__constructor` iterates `members`/`deposits` instead of `get(i).unwrap()` (#670)
+
 ## Issue #749: rustdoc for receipt-shard's 4 exported names
 
 - [x] Document `DataKey`, `ReceiptShard`, `get_batch` and `extend_batch_ttl` (#749)

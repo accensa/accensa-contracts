@@ -18,6 +18,11 @@ breaking changes bump the **minor** version, and they are called out as such.
   `Error::InvalidVotingPeriod` for a missing total weight, threshold and voting
   period. `governance::vote_anonymous` iterates its ring instead of indexing it.
   No new `Error` variants, and no change for any input that was valid before.
+- **`governance` (issue #670): the constructor iterates its members.**
+  `Governance::__constructor` pairs each member with its deposit by zipping the
+  two vectors instead of indexing them with `get(i).unwrap()`. The vectors are
+  already checked to have equal length, so behaviour for every valid input is
+  unchanged and the constructor has no panic path left.
 - **`governance` (issue #447): 48-hour timelock for approved proposals.**
   New `timelock` module. Once `enable_timelock` has been called (gated like
   `set_treasury_token`, and permanent), an approved proposal has to be queued

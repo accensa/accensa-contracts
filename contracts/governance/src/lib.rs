@@ -368,9 +368,9 @@ impl Governance {
 
         let mut total_weight: u64 = 0;
         let mut total_deposits: u64 = 0;
-        for i in 0..members.len() {
-            let member = members.get(i).unwrap();
-            let deposit = deposits.get(i).unwrap();
+        // `members` and `deposits` have equal length (checked above), so the
+        // zip pairs every member with its own deposit and never runs short.
+        for (member, deposit) in members.iter().zip(deposits.iter()) {
             if deposit == 0 {
                 return Err(Error::InvalidMembers);
             }
