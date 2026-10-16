@@ -70,6 +70,7 @@ mod quorum;
 mod ragequit;
 mod ring_sig;
 pub mod simulation;
+mod timelock;
 mod voting;
 
 pub use liquid_staking::{
@@ -174,6 +175,14 @@ pub enum Error {
     VotingKeyAlreadyRegistered = 30,
     /// A registered voting key is not a canonical Ristretto255 point.
     InvalidVotingKey = 31,
+    /// The timelock is enabled and this proposal has not been queued
+    /// (issue #447).
+    TimelockRequired = 32,
+    /// The proposal is queued but its 48-hour delay has not passed
+    /// (issue #447).
+    TimelockNotExpired = 33,
+    /// The proposal is already in the timelock queue (issue #447).
+    AlreadyQueued = 34,
 }
 
 #[contracttype]
@@ -735,6 +744,10 @@ impl Governance {
         if !quorum_met || proposal.yes_weight <= proposal.no_weight {
             return Err(Error::QuorumNotMet);
         }
+
+        // With the timelock on, the proposal must have been queued and its
+        // delay must have passed (issue #447). A no-op while it is off.
+        timelock::require_matured(&env, proposal_id, &proposal)?;
 
         // Effects before interaction: persist `executed = true` before the
         // external call, so a reentrant `execute(proposal_id)` triggered
