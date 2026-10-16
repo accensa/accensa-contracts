@@ -329,11 +329,17 @@ impl CustomAccountInterface for MultisigAccount {
             return Err(Error::Paused);
         }
 
-        let threshold = env
+        // Fail closed (issue #644): `Threshold` is written exactly once, in
+        // `__constructor`, and no entry point in this crate extends the
+        // instance TTL it lives on, so the entry can lapse. Reading a missing
+        // entry as `1` would let a single attached signer authorize a 2-of-3
+        // account; without the stored threshold the quorum cannot be
+        // evaluated, so authorization is refused instead.
+        let threshold: u32 = env
             .storage()
             .instance()
             .get(&DataKey::Threshold)
-            .unwrap_or(1);
+            .ok_or(Error::InsufficientSignatures)?;
 
         let delegates = env.custom_account().get_delegated_signers();
 
@@ -359,4 +365,143 @@ pub struct Call {
     pub contract: Address,
     pub function: soroban_sdk::Symbol,
     pub args: Vec<soroban_sdk::Val>,
+}
+
+#[cfg(test)]
+mod tests {
+    //! Issue #644: a missing `DataKey::Threshold` must fail closed.
+    //!
+    //! `Threshold` is written exactly once, in `__constructor`, and no entry
+    //! point in this crate extends the instance TTL it lives on, so the entry
+    //! can lapse. These tests drive the account's real `__check_auth` with
+    //! hand-built delegated-signer auth entries (never `mock_all_auths`), and
+    //! assert that an authorization the old `unwrap_or(1)` default would have
+    //! granted is refused once the entry is gone.
+
+    use crate::testutils::make_auth_entry_with_nonce;
+    use crate::{DataKey, Error, MultisigAccount, MultisigAccountClient};
+    use soroban_sdk::{
+        auth::{Context, ContractContext},
+        testutils::Address as _,
+        vec, Address, BytesN, Env, IntoVal, Symbol, Val,
+    };
+
+    /// A real 2-of-3 account, driven through hand-built auth entries so the
+    /// host runs the account's actual `__check_auth`.
+    struct Fx {
+        env: Env,
+        account: Address,
+        s1: Address,
+        s2: Address,
+        s3: Address,
+        nonce: core::cell::Cell<i64>,
+    }
+
+    fn setup() -> Fx {
+        let env = Env::default();
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+        let s3 = Address::generate(&env);
+        let account = env.register(
+            MultisigAccount,
+            (vec![&env, s1.clone(), s2.clone(), s3.clone()], 2u32),
+        );
+        Fx {
+            env,
+            account,
+            s1,
+            s2,
+            s3,
+            nonce: core::cell::Cell::new(1),
+        }
+    }
+
+    impl Fx {
+        fn client(&self) -> MultisigAccountClient<'_> {
+            MultisigAccountClient::new(&self.env, &self.account)
+        }
+
+        /// Try to set the guardian through the account's real `__check_auth`
+        /// with `delegates` attached. Returns whether the host accepted it.
+        fn try_set_guardian(&self, guardian: &Address, delegates: &[Address]) -> bool {
+            let args: [Val; 1] = [Some(guardian.clone()).into_val(&self.env)];
+            let nonce = self.nonce.get();
+            self.nonce.set(nonce + 1);
+            let entry = make_auth_entry_with_nonce(
+                &self.env,
+                &self.account,
+                &self.account,
+                "set_guardian",
+                &args,
+                delegates,
+                nonce,
+            );
+            self.env.set_auths(&[entry]);
+            self.client()
+                .try_set_guardian(&Some(guardian.clone()))
+                .is_ok()
+        }
+
+        /// Drop `DataKey::Threshold` from instance storage: the state a
+        /// lapsed TTL leaves behind (issue #644).
+        fn remove_threshold(&self) {
+            self.env.as_contract(&self.account, || {
+                self.env.storage().instance().remove(&DataKey::Threshold);
+                assert!(!self.env.storage().instance().has(&DataKey::Threshold));
+            });
+        }
+
+        /// Invoke the account's `__check_auth` directly so its own error code
+        /// is observable.
+        fn check_auth(&self) -> Result<(), Error> {
+            self.env.set_auths(&[]);
+            let context = Context::Contract(ContractContext {
+                contract: self.account.clone(),
+                fn_name: Symbol::new(&self.env, "set_guardian"),
+                args: vec![&self.env],
+            });
+            self.env
+                .try_invoke_contract_check_auth::<Error>(
+                    &self.account,
+                    &BytesN::from_array(&self.env, &[0; 32]),
+                    ().into_val(&self.env),
+                    &vec![&self.env, context],
+                )
+                .map_err(|e| e.expect("__check_auth returned a non-contract error"))
+        }
+    }
+
+    #[test]
+    fn a_lapsed_threshold_entry_rejects_authorization() {
+        let fx = setup();
+        assert_eq!(fx.client().get_threshold(), 2);
+
+        // Baseline, threshold present: one registered delegate is not enough
+        // for a 2-of-3 account, two are.
+        let first = Address::generate(&fx.env);
+        assert!(!fx.try_set_guardian(&first, core::slice::from_ref(&fx.s1)));
+        assert_eq!(fx.client().get_guardian(), None);
+        let second = Address::generate(&fx.env);
+        assert!(fx.try_set_guardian(&second, &[fx.s1.clone(), fx.s2.clone()]));
+        assert_eq!(fx.client().get_guardian(), Some(second.clone()));
+
+        // The threshold entry lapses: nothing in this crate extends the
+        // instance TTL it lives on.
+        fx.remove_threshold();
+
+        // The exact bug: a single registered delegate on a 2-of-3 account.
+        // The old `unwrap_or(1)` default authorized this; it must be refused.
+        let third = Address::generate(&fx.env);
+        assert!(!fx.try_set_guardian(&third, core::slice::from_ref(&fx.s3)));
+        assert_eq!(fx.client().get_guardian(), Some(second.clone()));
+
+        // Not even the previously valid 2-of-3 quorum can be evaluated
+        // without the stored threshold — authority never widens.
+        let fourth = Address::generate(&fx.env);
+        assert!(!fx.try_set_guardian(&fourth, &[fx.s1.clone(), fx.s2.clone()]));
+        assert_eq!(fx.client().get_guardian(), Some(second.clone()));
+
+        // And the account's own error code says why.
+        assert_eq!(fx.check_auth(), Err(Error::InsufficientSignatures));
+    }
 }

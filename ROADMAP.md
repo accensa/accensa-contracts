@@ -20,6 +20,10 @@
   - Reconciled zero-window semantics in `docs/SECURITY_MODEL.md` to reflect unbounded window and TTL handling
   - Aligned `docs/storage-audit.md` and removed references to non-existent `set_refund_window`, `InvalidWindow`, and `MIN_REFUND_WINDOW`
 
+## Issue #644: Fail closed when DataKey::Threshold is missing from instance storage
+
+- [x] Read `DataKey::Threshold` with `ok_or(...)` in `__check_auth` instead of `unwrap_or(1)` so a lapsed entry rejects authorization rather than lowering the threshold to 1 (#644)
+
 ## Issue #665: Fix CONFORMANCE.md build-vectors paths to the receipt-anchor crate
 
 - [x] Fix CONFORMANCE.md build-vectors paths to the receipt-anchor crate (#665)

@@ -8,6 +8,15 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`multisig-account` (issue #644): `__check_auth` fails closed when the
+  stored threshold is missing.** `DataKey::Threshold` was read with
+  `.unwrap_or(1)`, so if the instance-storage entry lapsed (nothing in the
+  crate extends its TTL) a 2-of-3 account authorized calls carrying a single
+  attached signer. The read now uses `.ok_or(Error::InsufficientSignatures)`:
+  without the stored threshold the quorum cannot be evaluated, so
+  authorization is refused. Adds an inline test in `lib.rs` that drives the
+  real `__check_auth` through hand-built auth entries, removes the `Threshold`
+  entry, and asserts the previously-possible 1-of-3 authorization is rejected.
 - **`state-channel` (issue #622): hashlock reserve bookkeeping pinned by
   tests.** New tests in `contracts/state-channel/src/hashlock_test.rs`
   assert, after every add/resolve/refund transition, that `HashlockReserved`
