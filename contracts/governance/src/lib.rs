@@ -433,7 +433,7 @@ impl Governance {
             .storage()
             .instance()
             .get(&DataKey::VotingPeriod)
-            .unwrap();
+            .ok_or(Error::InvalidVotingPeriod)?;
         let deadline_ledger = env.ledger().sequence() + voting_period;
 
         let proposal = Proposal {
@@ -613,8 +613,8 @@ impl Governance {
             return Err(Error::VotingClosed);
         }
         let mut weight: Option<u64> = None;
-        for i in 0..ring.len() {
-            let public_key = ring.get(i).unwrap();
+        for (i, public_key) in ring.iter().enumerate() {
+            let i = i as u32;
             let Some(member) = env
                 .storage()
                 .persistent()
@@ -706,17 +706,21 @@ impl Governance {
             return Err(Error::AlreadyExecuted);
         }
 
-        let total_weight: u64 = env.storage().instance().get(&DataKey::TotalWeight).unwrap();
+        let total_weight: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalWeight)
+            .ok_or(Error::InvalidMembers)?;
         let threshold_bps: u32 = env
             .storage()
             .instance()
             .get(&DataKey::ThresholdBps)
-            .unwrap();
+            .ok_or(Error::InvalidThreshold)?;
         let voting_period: u32 = env
             .storage()
             .instance()
             .get(&DataKey::VotingPeriod)
-            .unwrap();
+            .ok_or(Error::InvalidVotingPeriod)?;
 
         // A proposal's window opened the ledger it was created on; the
         // effective quorum decays linearly from the initial threshold toward

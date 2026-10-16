@@ -8,6 +8,16 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`cross-chain` / `governance`: panic paths now return typed errors (#669, #671, #672, #673).**
+  `cross-chain::verify_vaa` no longer unwraps `vaa.signatures.get(i)` or the
+  guardian lookup: signatures are iterated, and a guardian index past the end of
+  the guardian set resolves to `Error::InvalidSignature` before any signature
+  work. `governance::propose` returns `Error::InvalidVotingPeriod` when the
+  voting period is missing from instance storage, and `governance::execute`
+  returns `Error::InvalidMembers`, `Error::InvalidThreshold` and
+  `Error::InvalidVotingPeriod` for a missing total weight, threshold and voting
+  period. `governance::vote_anonymous` iterates its ring instead of indexing it.
+  No new `Error` variants, and no change for any input that was valid before.
 - security(multisig): implement 14-day TTL expiration for pending signatures and approvals (#449)
 - **`nft` (issue #453): Discount coupon NFTs for merchant stores.** New coupon
   module (`contracts/refund-vault/src/coupons.rs`) implements single-use discount
