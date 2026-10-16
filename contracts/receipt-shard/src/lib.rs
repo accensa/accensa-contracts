@@ -255,22 +255,27 @@ impl ReceiptShard {
         }
 
         (cursor, pruned)
-    }
-
-    pub fn get_router(env: Env) -> Address {
-        env.storage().instance().get(&DataKey::Router).unwrap()
+    }    pub fn get_router(env: Env) -> Result<Address, Error> {
+        let router = env
+            .storage()
+            .instance()
+            .get(&DataKey::Router)
+            .ok_or(Error::NotInitialized)?;
+        env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok(router)
     }
 
     /// Returns `(start_batch_id, end_batch_id)`, the shard's assigned
     /// half-open range.
-    pub fn get_range(env: Env) -> (u64, u64) {
-        (
-            env.storage()
-                .instance()
-                .get(&DataKey::StartBatchId)
-                .unwrap(),
-            env.storage().instance().get(&DataKey::EndBatchId).unwrap(),
-        )
+    pub fn get_range(env: Env) -> Result<(u64, u64), Error> {
+        let start = env
+            .storage()
+            .instance()
+            .get(&DataKey::StartBatchId)
+            .ok_or(Error::NotInitialized)?;
+        let end = env.storage().instance().get(&DataKey::EndBatchId).ok_or(Error::NotInitialized)?;
+        env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        Ok((start, end))
     }
 }
 
@@ -284,3 +289,5 @@ pub mod pruning;
 #[cfg(test)]
 mod pruning_test;
 mod test;
+#[cfg(test)]
+mod getter_test;
