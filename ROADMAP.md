@@ -88,3 +88,7 @@
 
 - [x] `set_tier_ladder` uses a checked lookup for the selected tier's fee (#690)
   - `contracts/refund-vault/src/tiers.rs` — `set_tier_ladder` performs a checked `tiers.get(current_tier)` lookup with `Error::InvalidTierLadder` as a defensive fallback when the preserved volume points past the last rung; validated ladders retain their existing behaviour.
+
+## Issue #679: receipt-shard::prune_batches traps on an uninitialised Router
+
+- [x] `prune_batches` answers `Error::NotInitialized` instead of aborting the host call when `Router`, `EndBatchId` or `PrunedUpTo` is absent (before construction or after the instance entry ages out) (#679)

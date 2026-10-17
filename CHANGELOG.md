@@ -8,20 +8,15 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
-- **`governance` / `refund-vault` (issue #572): delete three committed source
-  files that never enter a build.** Removed
-  `contracts/governance/src/liquid_staking_impl.rs` (its own `Error`, events
-  and `__initialize`, with no `mod liquid_staking_impl;` anywhere),
-  `contracts/refund-vault/src/guard.rs` (a lone `pub fn flash_loan_guard() {}`
-  with no declaring module) and the stray nested
-  `contracts/refund-vault/src/test/test/refund_vectors.rs` (a second copy of
-  the live `src/refund_vectors.rs`, two directories deep in a path no module
-  resolves — `mod refund_vectors;` in `src/test.rs` loads the live copy).
-  None was compiled, linted, tested or wasm-built; deleting them cannot break
-  a module tree. Last touching commits, recorded in the PR for review:
-  `9811c8a` (#443 stACC minting), `65408c8` ("resolve assigned issues") and
-  `7d95468` (#278 PolicyContext) respectively. Deletions only — no source
-  file was edited.
+- **`receipt-shard` (issue #679): `prune_batches` returns a typed error
+  instead of trapping.** `prune_batches` now returns `Result<(u64, u64),
+  Error>`; its three construction-time instance reads (`Router`, `EndBatchId`,
+  `PrunedUpTo`) answer `Error::NotInitialized` when the key is absent — before
+  the shard is constructed, or after the instance entry has aged out — instead
+  of aborting the host call through `.unwrap()`. The success return type is
+  unchanged, so existing callers and the router's `ShardInterface` trait keep
+  their wire shape. New `contracts/receipt-shard/tests/prune_before_init.rs`
+  pins the typed error on all three read sites before initialisation.
 - **`automation` (issue #557): remove stray scratch files from repository root.**
   Removed 10 automation scratch files (`fix.sh`, `fix_budget.sh`,
   `fix_common.sh`, `fix_lib.sh`, `patch.sed`, `patch_changelog.py`,
