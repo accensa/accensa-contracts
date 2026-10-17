@@ -64,3 +64,9 @@
 - [x] `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` on missing state (#678)
   - `contracts/receipt-shard/src/consolidation.rs` — returns typed error instead of unwrap on missing `StartBatchId` or `EndBatchId`
 
+## Issue #753: rustdoc for upto-authorization/lib's 4 exported names
+
+- [x] Document `Error`, `DataKey`, `UptoAuthorization` and `initialize` (#753)
+  - `contracts/upto-authorization/src/lib.rs` — doc comments only, no signature, body or test changes
+
+
