@@ -1192,6 +1192,8 @@ impl ReceiptAnchor {
 #[cfg(test)]
 mod fuzz_test;
 #[cfg(test)]
+mod incremental_api_test;
+#[cfg(test)]
 mod signatures_test;
 #[cfg(test)]
 mod test;
