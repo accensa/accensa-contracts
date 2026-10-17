@@ -8,6 +8,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`refund-policy-time` (issue #701): unit tests for check_time_gates.**
+  Extended `contracts/refund-policy-time/src/oracle_test.rs` with coverage for `check_time_gates` window and deadline gates.
 - **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
   for the exported surface missing `///` comments.**
   `contracts/stream-vault/src/lib.rs` now documents `DataKey`, `StreamVault`,
