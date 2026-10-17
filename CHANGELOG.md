@@ -8,6 +8,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`automation` (issue #557): remove stray scratch files from repository root.**
+  Removed 10 automation scratch files (`fix.sh`, `fix_budget.sh`,
+  `fix_common.sh`, `fix_lib.sh`, `patch.sed`, `patch_changelog.py`,
+  `pr_body.md`, `pr_body.txt`, `pr_description.md`, `pr_document.md`) from
+  the repository root and added `.gitignore` patterns to prevent recommittal.
 - **`upto-authorization` / `governance` (issues #564, #565): pin the
   domain-separator context and enforce the absolute quorum floor.**
   `domain.rs` gains inline tests proving the authorization digest differs
