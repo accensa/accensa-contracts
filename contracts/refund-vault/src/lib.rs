@@ -1052,11 +1052,11 @@ impl RefundVault {
     }
 
     /// Domain separator for this vault instance (issue #136).
-    pub fn get_domain_separator(env: Env) -> BytesN<32> {
+    pub fn get_domain_separator(env: Env) -> Result<BytesN<32>, Error> {
         env.storage()
             .instance()
             .get(&DataKey::DomainSeparator)
-            .unwrap()
+            .ok_or(Error::NotInitialized)
     }
 
     /// Current monotonic nonce (issue #136).

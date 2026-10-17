@@ -64,9 +64,8 @@
 - [x] `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` on missing state (#678)
   - `contracts/receipt-shard/src/consolidation.rs` — returns typed error instead of unwrap on missing `StartBatchId` or `EndBatchId`
 
-## Issue #753: rustdoc for upto-authorization/lib's 4 exported names
+## Issue #683: error arm for absent state in refund-vault::get_domain_separator
 
-- [x] Document `Error`, `DataKey`, `UptoAuthorization` and `initialize` (#753)
-  - `contracts/upto-authorization/src/lib.rs` — doc comments only, no signature, body or test changes
-
+- [x] `get_domain_separator` returns `Result<BytesN<32>, Error>` with `Error::NotInitialized` on missing state (#683)
+  - `contracts/refund-vault/src/lib.rs` — returns typed error instead of unwrap on missing `DomainSeparator`
 
