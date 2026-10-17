@@ -17,6 +17,69 @@ breaking changes bump the **minor** version, and they are called out as such.
   authorization is refused. Adds an inline test in `lib.rs` that drives the
   real `__check_auth` through hand-built auth entries, removes the `Threshold`
   entry, and asserts the previously-possible 1-of-3 authorization is rejected.
+- **`receipt-shard` (issue #678): return typed error on missing state in has_live_records.**
+  `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` when `StartBatchId` or `EndBatchId` is absent from instance storage instead of trapping.
+- **`privacy` (issue #439): dual-key stealth-address registry for vault deposits.**
+  New `stealth` module on BN254 G1 (the SDK's `bn254` host functions). A
+  recipient publishes a spend key `S` and a view key `V` with
+  `register_stealth_keys`; a buyer derives, off chain, an ephemeral key `R = r*G`
+  and a one-time stealth key `P = S + H(r*V)*G` and calls `stealth_deposit`,
+  which takes the tokens into custody and emits `R` and `P` for the recipient to
+  scan (`P' = S + H(v*R)*G`). `stealth_claim` pays the deposit out against a
+  Schnorr proof of knowledge of `p = s + H(v*R)`, bound to the deposit and to the
+  receiving account, so a proof cannot be replayed or redirected. Errors are a
+  module-local `StealthError`. The derivation helpers
+  (`derive_stealth_address`, `scan_stealth_address`, `stealth_private_key`) are
+  library functions for off-chain code.
+- **`cross-chain` / `governance`: panic paths now return typed errors (#669, #671, #672, #673).**
+  `cross-chain::verify_vaa` no longer unwraps `vaa.signatures.get(i)` or the
+  guardian lookup: signatures are iterated, and a guardian index past the end of
+  the guardian set resolves to `Error::InvalidSignature` before any signature
+  work. `governance::propose` returns `Error::InvalidVotingPeriod` when the
+  voting period is missing from instance storage, and `governance::execute`
+  returns `Error::InvalidMembers`, `Error::InvalidThreshold` and
+  `Error::InvalidVotingPeriod` for a missing total weight, threshold and voting
+  period. `governance::vote_anonymous` iterates its ring instead of indexing it.
+  No new `Error` variants, and no change for any input that was valid before.
+- **`privacy` (issue #609): escrow lifecycle events pinned in XDR form.** New
+  `escrow_events` module in `contracts/privacy/src/test.rs` asserts the exact
+  XDR of `EscrowCreatedEvent` on `create_escrow` (and that its payload agrees
+  with `get_escrow`), `EscrowRejectedEvent` on a verification whose proof
+  fails the commitment, and `EscrowVerifiedEvent` on one the verifier accepts
+  — each as the only event of its invocation. The reject branch returns
+  `Ok(false)` rather than erroring, so that invocation succeeds and its events
+  are observable, which is what makes "exactly one event, and never the
+  verified type" falsifiable there; the all-zero commitment and the
+  amount-below-floor refusals are asserted as errors that publish nothing.
+  Test-only — no contract behavior change.
+- **`cross-chain` (issue #619): LayerZero delivery-guard keys pinned by
+  tests.** New `delivery_guard_keys` module in
+  `contracts/cross-chain/src/layerzero_test.rs` reads the three persistent
+  keys that guard inbound deliveries back through the crate's own getters.
+  `is_trusted_peer` is true only for the registered `(chain_id, sender)` pair;
+  `get_peer_nonce` is absent until a delivery is accepted and then holds the
+  highest accepted nonce, so a strictly higher nonce is taken even when it
+  skips packets that were never delivered while every nonce at or below the
+  mark stays refused; and `is_dispute_settled` keeps a settled dispute
+  settled while its accepted delivery remains the only event published, with
+  a fresh dispute free to claim the nonce the refused duplicate named.
+  Test-only — no contract behavior change.
+- **`governance` (issue #670): the constructor iterates its members.**
+  `Governance::__constructor` pairs each member with its deposit by zipping the
+  two vectors instead of indexing them with `get(i).unwrap()`. The vectors are
+  already checked to have equal length, so behaviour for every valid input is
+  unchanged and the constructor has no panic path left.
+- **`governance` (issue #447): 48-hour timelock for approved proposals.**
+  New `timelock` module. Once `enable_timelock` has been called (gated like
+  `set_treasury_token`, and permanent), an approved proposal has to be queued
+  with `queue_transaction` and can only execute `34_560` ledgers (48 hours)
+  later, through `execute_queued_transaction` or a plain `execute`; earlier
+  attempts fail with `Error::TimelockNotExpired`, and an unqueued one with
+  `Error::TimelockRequired`. The queue entry stores the SHA-256 of
+  `(target, function, args)` and the unlock ledger, and queueing extends the
+  proposal's TTL so it outlives the delay. The timelock is off by default, so
+  existing deployments behave as before. Adds `Error::TimelockRequired` (32),
+  `TimelockNotExpired` (33) and `AlreadyQueued` (34).
 - **`state-channel` (issue #622): hashlock reserve bookkeeping pinned by
   tests.** New tests in `contracts/state-channel/src/hashlock_test.rs`
   assert, after every add/resolve/refund transition, that `HashlockReserved`
@@ -35,6 +98,15 @@ breaking changes bump the **minor** version, and they are called out as such.
   accepts an optional `coupon_id` parameter; when provided, the discount is applied
   atomically before the token transfer. Added error codes `CouponNotFound` and
   `CouponAlreadyRedeemed` to the common Error enum.
+- docs: rustdoc for `receipt-shard`'s 4 exported names (#749) and for the 5
+  public fields of `BuybackConfiguredEvent` (#790). Doc comments only — no
+  signature, struct layout or behaviour change.
+- docs: rustdoc for the 13 action symbols in `common/events` (#758, #760), the
+  8 exported getters and admin setters of `refund-vault` (#759), and the 6
+  public fields of `FallbackDisputeRequestedEvent` (#769). Each entry states the
+  pre-condition and the `Error` arm the body returns, and no unit is claimed
+  for a value the code does not fix. Doc comments only — no signature, struct
+  layout, ordering or behaviour change.
 
 ### Added
 - **`privacy` (issue #440): Groth16 verification for concealed escrow amounts.**
@@ -520,6 +592,19 @@ deposit)` escrows a buyer's deposit and streams it linearly to the
 
 ### Changed
 
+- **`common`: `keys` module docs now mark the namespace partition as reserved
+  (issue #626).** The module docs implied the partition was enforced
+  workspace-wide, but no contract imports `keys::` — every contract still
+  defines its own flat `DataKey` — so on-chain storage written today is not
+  routed through these namespaces. The docs now state there is no production
+  consumer, that adopting these key types in a deployed contract needs a
+  storage-compatibility plan (persisted ledger keys encode their namespace by
+  variant position), and scope the compile-time collision guarantee to this
+  module's own key enums. New unit tests pin `discriminant()` folding for
+  every namespace pair (boundary values of the 32-bit local window included)
+  and the uniqueness of each namespace's local discriminants. Documentation
+  and tests only — no public-item or behavior change.
+
 - **`receipt-anchor`: extracted `push_shard_root` and `check_no_duplicate_root`
   helpers from `anchor_batch_internal` (issue #292).** The ring-buffer update
   and per-shard duplicate-root guard are now private methods, shortening the
@@ -537,6 +622,12 @@ deposit)` escrows a buyer's deposit and streams it linearly to the
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+- **`receipt-shard` (issue #642): typed errors from the config getters.**
+  `get_router` and `get_range` now return `Result<_, Error>` and answer
+  `NotInitialized` (2) when the instance config is absent — before construction
+  or after instance TTL eviction — instead of aborting the host call with a
+  generic error; a successful read extends the instance TTL the same way the
+  write paths do.
 - **`treasury`: the yield distribution module is now part of the build (issue
   #523).** #523 landed `distribution.rs` and `distribution_test.rs` without the
   `pub mod distribution;` / `#[cfg(test)] mod distribution_test;` declarations

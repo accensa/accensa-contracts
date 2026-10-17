@@ -52,42 +52,68 @@ pub mod modules {
 pub mod actions {
     use soroban_sdk::{symbol_short, Symbol};
 
+    /// Action topic for a deposit: the `deposit` short symbol, third element of
+    /// the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn deposit() -> Symbol {
         symbol_short!("deposit")
     }
+    /// Action topic for a withdraw: the `withdraw` short symbol, third element
+    /// of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn withdraw() -> Symbol {
         symbol_short!("withdraw")
     }
+    /// Action topic for a refund: the `refund` short symbol, published as the
+    /// third topic of every `RefundEventPayload` by `emit_refund`.
     pub fn refund() -> Symbol {
         symbol_short!("refund")
     }
+    /// Action topic for a transfer: the `transfer` short symbol, published as
+    /// the third topic of every `TransferEventPayload` by `emit_transfer`.
     pub fn transfer() -> Symbol {
         symbol_short!("transfer")
     }
+    /// Action topic for an open transition: the `open` short symbol, third
+    /// element of the `[Protocol, Module, Action]` tuple.
     pub fn open() -> Symbol {
         symbol_short!("open")
     }
+    /// Action topic for a close transition: the `close` short symbol, third
+    /// element of the `[Protocol, Module, Action]` tuple.
     pub fn close() -> Symbol {
         symbol_short!("close")
     }
+    /// Action topic for a dispute raised against a state: the `dispute` short
+    /// symbol, third element of the `[Protocol, Module, Action]` tuple.
     pub fn dispute() -> Symbol {
         symbol_short!("dispute")
     }
+    /// Action topic for a claim: the `claim` short symbol, third element of the
+    /// `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn claim() -> Symbol {
         symbol_short!("claim")
     }
+    /// Action topic for a settle: the `settle` short symbol, published as the
+    /// third topic of every `ChannelStatePayload` by `emit_channel_state`.
     pub fn settle() -> Symbol {
         symbol_short!("settle")
     }
+    /// Action topic for an anchor: the `anchor` short symbol, third element of
+    /// the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn anchor() -> Symbol {
         symbol_short!("anchor")
     }
+    /// Action topic for a prune: the `prune` short symbol, third element of the
+    /// `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn prune() -> Symbol {
         symbol_short!("prune")
     }
+    /// Action topic for a pause: the `pause` short symbol, third element of the
+    /// `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn pause() -> Symbol {
         symbol_short!("pause")
     }
+    /// Action topic for an unpause: the `unpause` short symbol, third element
+    /// of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn unpause() -> Symbol {
         symbol_short!("unpause")
     }

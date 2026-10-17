@@ -1571,20 +1571,37 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Reads the policy proposal that is waiting out its timelock, if any.
+    /// Read-only and unauthenticated. Returns `None` when nothing was ever
+    /// proposed and again after `execute_policy` runs, which removes the
+    /// entry once the new values are applied.
     pub fn get_pending_policy(env: Env) -> Option<PolicyProposal> {
         env.storage().instance().get(&DataKey::PendingPolicy)
     }
 
+    /// The timelock every policy change must sit out before it can be
+    /// executed, in ledgers: `POLICY_TIMELOCK`, 17,280, about 24 hours at
+    /// ~5 s/ledger. Infallible — it reads a compile-time constant, not storage.
     pub fn get_policy_timelock() -> u32 {
         POLICY_TIMELOCK
     }
 
+    /// Reads the v2 refund record stored under `payment_ref`, or `None` when
+    /// the vault holds no record for that reference. Read-only and
+    /// unauthenticated; the caller checks the record's own state fields.
     pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {
         env.storage()
             .persistent()
             .get(&DataKey::RefundV2(payment_ref))
     }
 
+    /// Admin setter: store `contract` under the instance `SettlementContract`
+    /// key, overwriting any previous value. Pre-condition: the vault has an
+    /// `Admin` in instance storage, else `Error::NotInitialized`, and that
+    /// admin must authorize (an unauthorized call traps in `require_auth`
+    /// rather than returning an `Error`). Extends the instance TTL. No code in
+    /// this crate reads the key back, so this records the intended settlement
+    /// contract rather than changing how a refund is settled.
     pub fn set_settlement_contract(env: Env, contract: Address) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
@@ -1618,6 +1635,9 @@ impl RefundVault {
         Ok(())
     }
 
+    /// The minimum seconds between successive claims by the same recipient, as
+    /// written by `set_claim_cooldown`. Read-only; returns `0` when no value
+    /// has ever been set, which is the same value that disables the cooldown.
     pub fn get_claim_cooldown(env: Env) -> u64 {
         env.storage()
             .instance()
@@ -2048,6 +2068,11 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Admin setter: move the address fees accrue to, replacing the recipient
+    /// captured at initialization. Returns `Error::SelfTransfer` before any
+    /// auth if `recipient` is this contract, and `Error::NotInitialized` when
+    /// the vault has no `Admin`; the admin must authorize otherwise. Publishes
+    /// `FeeConfigUpdatedEvent` with `field` set to "fee_recipient".
     pub fn set_fee_recipient(env: Env, recipient: Address) -> Result<(), Error> {
         if recipient == env.current_contract_address() {
             return Err(Error::SelfTransfer);
@@ -2612,6 +2637,14 @@ impl RefundVault {
         flash_loan::flash_loan(&env, receiver, amount, data)
     }
 
+    /// Tops up the TTL of the v2 refund record for `payment_ref`: the entry is
+    /// extended by the ledgers still remaining before `paid_at_ledger +
+    /// refund_window` (the window read from instance storage), with a floor of
+    /// `TTL_EXTEND`, or by the network maximum TTL when the window is 0 — the
+    /// same "no time bound" reading `refund` gives it. Takes no auth, requires
+    /// no admin, and changes nothing but the extension, so any caller may keep
+    /// a record alive. Returns `Error::RefundNotFound` when the vault holds no
+    /// v2 record for that reference.
     pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), Error> {
         let record: RefundRecord = env
             .storage()
@@ -2639,6 +2672,11 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Begins the two-step admin handover: stores `new_admin` under
+    /// `PendingAdmin` and publishes `AdminTransferInitiatedEvent`.
+    /// Pre-condition: the vault has an `Admin`, else `Error::NotInitialized`,
+    /// and that admin must authorize. Nothing changes until `accept_admin`
+    /// runs with the pending admin's own auth.
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()

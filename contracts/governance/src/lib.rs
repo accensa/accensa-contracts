@@ -70,6 +70,7 @@ mod quorum;
 mod ragequit;
 mod ring_sig;
 pub mod simulation;
+mod timelock;
 mod voting;
 
 pub use liquid_staking::{
@@ -174,6 +175,14 @@ pub enum Error {
     VotingKeyAlreadyRegistered = 30,
     /// A registered voting key is not a canonical Ristretto255 point.
     InvalidVotingKey = 31,
+    /// The timelock is enabled and this proposal has not been queued
+    /// (issue #447).
+    TimelockRequired = 32,
+    /// The proposal is queued but its 48-hour delay has not passed
+    /// (issue #447).
+    TimelockNotExpired = 33,
+    /// The proposal is already in the timelock queue (issue #447).
+    AlreadyQueued = 34,
 }
 
 #[contracttype]
@@ -359,9 +368,9 @@ impl Governance {
 
         let mut total_weight: u64 = 0;
         let mut total_deposits: u64 = 0;
-        for i in 0..members.len() {
-            let member = members.get(i).unwrap();
-            let deposit = deposits.get(i).unwrap();
+        // `members` and `deposits` have equal length (checked above), so the
+        // zip pairs every member with its own deposit and never runs short.
+        for (member, deposit) in members.iter().zip(deposits.iter()) {
             if deposit == 0 {
                 return Err(Error::InvalidMembers);
             }
@@ -433,7 +442,7 @@ impl Governance {
             .storage()
             .instance()
             .get(&DataKey::VotingPeriod)
-            .unwrap();
+            .ok_or(Error::InvalidVotingPeriod)?;
         let deadline_ledger = env.ledger().sequence() + voting_period;
 
         let proposal = Proposal {
@@ -613,8 +622,8 @@ impl Governance {
             return Err(Error::VotingClosed);
         }
         let mut weight: Option<u64> = None;
-        for i in 0..ring.len() {
-            let public_key = ring.get(i).unwrap();
+        for (i, public_key) in ring.iter().enumerate() {
+            let i = i as u32;
             let Some(member) = env
                 .storage()
                 .persistent()
@@ -706,17 +715,21 @@ impl Governance {
             return Err(Error::AlreadyExecuted);
         }
 
-        let total_weight: u64 = env.storage().instance().get(&DataKey::TotalWeight).unwrap();
+        let total_weight: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalWeight)
+            .ok_or(Error::InvalidMembers)?;
         let threshold_bps: u32 = env
             .storage()
             .instance()
             .get(&DataKey::ThresholdBps)
-            .unwrap();
+            .ok_or(Error::InvalidThreshold)?;
         let voting_period: u32 = env
             .storage()
             .instance()
             .get(&DataKey::VotingPeriod)
-            .unwrap();
+            .ok_or(Error::InvalidVotingPeriod)?;
 
         // A proposal's window opened the ledger it was created on; the
         // effective quorum decays linearly from the initial threshold toward
@@ -731,6 +744,10 @@ impl Governance {
         if !quorum_met || proposal.yes_weight <= proposal.no_weight {
             return Err(Error::QuorumNotMet);
         }
+
+        // With the timelock on, the proposal must have been queued and its
+        // delay must have passed (issue #447). A no-op while it is off.
+        timelock::require_matured(&env, proposal_id, &proposal)?;
 
         // Effects before interaction: persist `executed = true` before the
         // external call, so a reentrant `execute(proposal_id)` triggered
