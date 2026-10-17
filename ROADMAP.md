@@ -17,6 +17,8 @@
 - [x] Document `DataKey`, `ReceiptShard`, `get_batch` and `extend_batch_ttl` (#749)
   - `contracts/receipt-shard/src/lib.rs` — doc comments only, no signature, body or test changes
 
+- [x] Document the 5 public fields of `AnchorEventPayload` (#772)
+
 ## Issue #790: rustdoc for `BuybackConfiguredEvent`'s 5 public fields
 
 - [x] Document the struct's 5 public fields (#790)
