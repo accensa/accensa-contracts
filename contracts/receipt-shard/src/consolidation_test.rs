@@ -131,3 +131,115 @@ fn consolidation_emits_source_and_destination_ids() {
         ]
     );
 }
+
+// ── Decommission and diagnostics coverage (#699) ─────────────────────────────
+
+#[test]
+fn test_decommission_on_empty_shard() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    assert!(source.is_active());
+
+    // Shard is empty, decommission by router succeeds
+    env.as_contract(&source.address, || {
+        ReceiptShard::decommission(env.clone());
+    });
+    assert!(!source.is_active());
+}
+
+#[test]
+#[should_panic(expected = "shard is inactive")]
+fn test_decommission_already_inactive_fails() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    env.as_contract(&source.address, || {
+        ReceiptShard::decommission(env.clone());
+    });
+    assert!(!source.is_active());
+    env.as_contract(&source.address, || {
+        ReceiptShard::decommission(env.clone());
+    });
+}
+
+#[test]
+#[should_panic(expected = "shard is not drained")]
+fn test_decommission_not_drained_fails() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    let record = BatchRecord {
+        root: BytesN::from_array(&env, &[1u8; 32]),
+        count: 10,
+        period_start: 10,
+        period_end: 20,
+        anchored_ledger: env.ledger().sequence(),
+    };
+    env.as_contract(&source.address, || {
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::Batch(1), &record);
+        ReceiptShard::decommission(env.clone());
+    });
+}
+
+#[test]
+fn test_decommission_has_live_records_uninitialized_returns_error() {
+    let env = Env::default();
+    let contract_id = env.register(ReceiptShard, ());
+    let res = env.as_contract(&contract_id, || ReceiptShard::has_live_records(&env));
+    assert_eq!(res, Err(crate::Error::NotInitialized));
+}
+
+#[test]
+fn test_diagnostics_record_anchor_and_removals() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+
+    let before = source.get_shard_diagnostics();
+    assert_eq!(before.live_batches, 0);
+    assert_eq!(before.live_leaves, 0);
+
+    // Initial anchor (previous = None)
+    env.as_contract(&source.address, || {
+        crate::diagnostics::record_anchor(&env, 5, None, 40);
+    });
+
+    let d1 = source.get_shard_diagnostics();
+    assert_eq!(d1.live_batches, 1);
+    assert_eq!(d1.live_leaves, 40);
+    assert_eq!(d1.total_leaves, 40);
+    assert_eq!(d1.high_water_batch_id, 6);
+
+    // Overwrite anchor (previous = Some(old))
+    let old_rec = BatchRecord {
+        root: BytesN::from_array(&env, &[1u8; 32]),
+        count: 40,
+        period_start: 10,
+        period_end: 20,
+        anchored_ledger: env.ledger().sequence(),
+    };
+    env.as_contract(&source.address, || {
+        crate::diagnostics::record_anchor(&env, 5, Some(&old_rec), 60);
+    });
+
+    let d2 = source.get_shard_diagnostics();
+    assert_eq!(d2.live_batches, 1);
+    assert_eq!(d2.live_leaves, 60);
+    assert_eq!(d2.total_leaves, 100);
+
+    // Record removals with count == 0 is no-op
+    env.as_contract(&source.address, || {
+        crate::diagnostics::record_removals(&env, 0, 0);
+    });
+    let d3 = source.get_shard_diagnostics();
+    assert_eq!(d3.live_batches, 1);
+    assert_eq!(d3.live_leaves, 60);
+
+    // Record removals with count > 0
+    env.as_contract(&source.address, || {
+        crate::diagnostics::record_removals(&env, 1, 60);
+    });
+    let d4 = source.get_shard_diagnostics();
+    assert_eq!(d4.live_batches, 0);
+    assert_eq!(d4.live_leaves, 0);
+    assert_eq!(d4.total_leaves, 100);
+}
