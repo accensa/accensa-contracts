@@ -18,6 +18,29 @@ breaking changes bump the **minor** version, and they are called out as such.
   `Error::InvalidVotingPeriod` for a missing total weight, threshold and voting
   period. `governance::vote_anonymous` iterates its ring instead of indexing it.
   No new `Error` variants, and no change for any input that was valid before.
+- **`privacy` (issue #609): escrow lifecycle events pinned in XDR form.** New
+  `escrow_events` module in `contracts/privacy/src/test.rs` asserts the exact
+  XDR of `EscrowCreatedEvent` on `create_escrow` (and that its payload agrees
+  with `get_escrow`), `EscrowRejectedEvent` on a verification whose proof
+  fails the commitment, and `EscrowVerifiedEvent` on one the verifier accepts
+  — each as the only event of its invocation. The reject branch returns
+  `Ok(false)` rather than erroring, so that invocation succeeds and its events
+  are observable, which is what makes "exactly one event, and never the
+  verified type" falsifiable there; the all-zero commitment and the
+  amount-below-floor refusals are asserted as errors that publish nothing.
+  Test-only — no contract behavior change.
+- **`cross-chain` (issue #619): LayerZero delivery-guard keys pinned by
+  tests.** New `delivery_guard_keys` module in
+  `contracts/cross-chain/src/layerzero_test.rs` reads the three persistent
+  keys that guard inbound deliveries back through the crate's own getters.
+  `is_trusted_peer` is true only for the registered `(chain_id, sender)` pair;
+  `get_peer_nonce` is absent until a delivery is accepted and then holds the
+  highest accepted nonce, so a strictly higher nonce is taken even when it
+  skips packets that were never delivered while every nonce at or below the
+  mark stays refused; and `is_dispute_settled` keeps a settled dispute
+  settled while its accepted delivery remains the only event published, with
+  a fresh dispute free to claim the nonce the refused duplicate named.
+  Test-only — no contract behavior change.
 - **`governance` (issue #670): the constructor iterates its members.**
   `Governance::__constructor` pairs each member with its deposit by zipping the
   two vectors instead of indexing them with `get(i).unwrap()`. The vectors are
@@ -55,6 +78,12 @@ breaking changes bump the **minor** version, and they are called out as such.
 - docs: rustdoc for `receipt-shard`'s 4 exported names (#749) and for the 5
   public fields of `BuybackConfiguredEvent` (#790). Doc comments only — no
   signature, struct layout or behaviour change.
+- docs: rustdoc for the 13 action symbols in `common/events` (#758, #760), the
+  8 exported getters and admin setters of `refund-vault` (#759), and the 6
+  public fields of `FallbackDisputeRequestedEvent` (#769). Each entry states the
+  pre-condition and the `Error` arm the body returns, and no unit is claimed
+  for a value the code does not fix. Doc comments only — no signature, struct
+  layout, ordering or behaviour change.
 
 ### Added
 - **`privacy` (issue #440): Groth16 verification for concealed escrow amounts.**
