@@ -8,6 +8,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`refund-vault` (issue #683): return typed error on missing DomainSeparator in get_domain_separator.**
+  `get_domain_separator` returns `Result<BytesN<32>, Error>` with `Error::NotInitialized` when `DomainSeparator` is absent from instance storage instead of trapping.
 - **`privacy` (issue #439): dual-key stealth-address registry for vault deposits.**
   New `stealth` module on BN254 G1 (the SDK's `bn254` host functions). A
   recipient publishes a spend key `S` and a view key `V` with
