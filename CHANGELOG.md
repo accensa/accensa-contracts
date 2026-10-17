@@ -15,6 +15,16 @@ breaking changes bump the **minor** version, and they are called out as such.
   reproducible for identical inputs. `current_quorum_bps` now raises a
   `start_bps` below `QUORUM_FLOOR_BPS` to the floor, so the documented
   absolute floor holds for every constructor-valid threshold.
+- **`governance` (issue #438): time-weighted vote escrow (veToken).**
+  New `vetoken` module. A member locks governance tokens with `create_lock`
+  for between 30 days and 4 years (`518_400` to `25_228_800` ledgers) and gets
+  voting power `amount * remaining_ledgers / MAX_LOCK_LEDGERS`, which decays
+  linearly to zero at the unlock ledger. `withdraw_lock` pays the tokens back
+  only at or after the unlock ledger. The power is added to the input of
+  `voting::quadratic_weight` (`isqrt(deposit + voting_power)`), so a member
+  without a lock has exactly the weight they had before. The escrowed token is
+  set once with `set_ve_token`, gated like `set_treasury_token`. Escrow errors
+  are a separate `VeError` enum, so the governance `Error` spec does not grow.
 - **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
   Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
 - **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
