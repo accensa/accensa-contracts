@@ -8,6 +8,9 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+### Removed
+- Issue #572: Removed the uncompiled, unreferenced source files `contracts/governance/src/liquid_staking_impl.rs`, `contracts/refund-vault/src/guard.rs`, and `contracts/refund-vault/src/test/test/refund_vectors.rs`. No compiled contract behavior changed.
+  
 - **`common` (issue #745): rustdoc for the reentrancy module's 4 exported
   names.** `contracts/common/src/reentrancy.rs` now documents
   `ReentrancyDataKey`, `ReentrancyGuard`, `acquire` (pre-condition plus the
