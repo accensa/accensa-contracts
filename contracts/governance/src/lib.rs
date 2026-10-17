@@ -97,6 +97,7 @@ contractmeta!(
     val = "https://github.com/accensa/accensa-contracts"
 );
 
+/// Every failure `Governance` can return; each variant documents the condition that raises it.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -186,6 +187,7 @@ pub enum Error {
     AlreadyQueued = 34,
 }
 
+/// Storage keys for governance's instance settings, member deposits, proposals and per-voter markers.
 #[contracttype]
 pub enum DataKey {
     /// Instance: sum of every member's quadratic weight.
@@ -241,6 +243,7 @@ pub enum DataKey {
     KeyImage(u64, BytesN<32>),
 }
 
+/// A linkable LSAG ring signature: the key image, the challenge closing the ring, and one response per ring member.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RingSignature {
@@ -333,6 +336,7 @@ const MAX_THRESHOLD_BPS: u32 = 10_000;
 /// TTL lapses, so a same-ledger `execute` at the deadline still finds it.
 const PROPOSAL_TTL_GRACE: u32 = 100;
 
+/// The governance contract: a fixed member set that proposes, votes on and executes calls against a target contract.
 #[contract]
 pub struct Governance;
 

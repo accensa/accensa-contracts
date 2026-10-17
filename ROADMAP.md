@@ -92,3 +92,8 @@
 ## Issue #679: receipt-shard::prune_batches traps on an uninitialised Router
 
 - [x] `prune_batches` answers `Error::NotInitialized` instead of aborting the host call when `Router`, `EndBatchId` or `PrunedUpTo` is absent (before construction or after the instance entry ages out) (#679)
+
+## Issue #746: rustdoc for governance/lib's 4 undocumented public items
+
+- [x] Document `Error`, `DataKey`, `RingSignature` and `Governance` (#746)
+  - `contracts/governance/src/lib.rs` — doc comments only, no signature, body or test changes
