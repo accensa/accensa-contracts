@@ -8,6 +8,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`reputation` (issue #650): authority guard behavior pinned by tests.**
+  Tests cover calls before initialization, refusal when the stored admin is
+  unauthenticated, unchanged badge state after a refused call, and successful
+  calls by the initialized admin through reputation and credit-scoring entry
+  points. Test-only — no contract behavior change.
 - **`refund-vault` (issue #689): `on_settled` walks the fee ladder without indexing.**
   The promoting rung's fee is read by iterating the ladder, so an out-of-range rung can no longer trap the claim path. Behaviour for every valid ladder is unchanged.
 - **`insurance` (issue #608): assert deposit, withdraw, borrow and repay lifecycle events.**
