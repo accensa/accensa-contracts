@@ -71,6 +71,7 @@ mod ragequit;
 mod ring_sig;
 pub mod simulation;
 mod timelock;
+mod vetoken;
 mod voting;
 
 pub use liquid_staking::{

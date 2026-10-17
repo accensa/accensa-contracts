@@ -54,6 +54,8 @@ pub fn signer_list(env: &Env) -> Vec<Address> {
         .unwrap_or_else(|| Vec::new(env))
 }
 
+/// Persist `signers` as the authoritative signer list backing
+/// [`signer_list`] and [`total_weight`]. A storage write; infallible.
 pub(crate) fn store_signer_list(env: &Env, signers: &Vec<Address>) {
     env.storage()
         .persistent()
@@ -68,12 +70,19 @@ pub fn signer_weight(env: &Env, signer: &Address) -> u32 {
         .unwrap_or(DEFAULT_SIGNER_WEIGHT)
 }
 
+/// Write `signer`'s voting weight as `weight`, overriding the
+/// [`DEFAULT_SIGNER_WEIGHT`] fallback used by [`signer_weight`]. Callers are
+/// responsible for the governance checks (auth, registration, `total >=
+/// threshold`) before writing.
 pub(crate) fn store_signer_weight(env: &Env, signer: &Address, weight: u32) {
     env.storage()
         .persistent()
         .set(&DataKey::SignerWeight(signer.clone()), &weight);
 }
 
+/// Delete `signer`'s stored weight so [`signer_weight`] falls back to
+/// [`DEFAULT_SIGNER_WEIGHT`] again; used when a signer is dropped from the
+/// account. A no-op when no explicit weight was ever stored.
 pub(crate) fn clear_signer_weight(env: &Env, signer: &Address) {
     env.storage()
         .persistent()

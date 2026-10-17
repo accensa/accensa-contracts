@@ -203,7 +203,14 @@ pub(crate) fn on_settled(env: &Env, amount: i128) {
         if let Some(ladder) = ladder {
             let new_tier = tier_for_volume(&ladder, state.settled_volume);
             if new_tier > state.current_tier {
-                let fee_bps = ladder.get(new_tier).unwrap().fee_bps;
+                // `tier_for_volume` only returns an index inside the ladder,
+                // but read the fee by walking it so a future change to that
+                // bound cannot turn this claim into a host trap.
+                let fee_bps = ladder
+                    .iter()
+                    .enumerate()
+                    .find(|(index, _)| *index as u32 == new_tier)
+                    .map_or(state.fee_bps, |(_, tier)| tier.fee_bps);
                 MerchantTierPromoted {
                     new_tier,
                     previous_tier: state.current_tier,
@@ -245,7 +252,12 @@ impl RefundVault {
             .map_or(0, |state| state.settled_volume);
 
         let current_tier = tier_for_volume(&tiers, settled_volume);
-        let fee_bps = tiers.get(current_tier).unwrap().fee_bps;
+        // `current_tier` is always inside the ladder for a validated one, but
+        // keep the missing-rung arm typed instead of unwrapping the lookup.
+        let fee_bps = tiers
+            .get(current_tier)
+            .ok_or(Error::InvalidTierLadder)?
+            .fee_bps;
         let state = MerchantTierState {
             settled_volume,
             current_tier,
