@@ -8,6 +8,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- test(cross-chain): cover non-admin auth rejection and admin happy path for `set_guardian_set`, `set_axelar_gateway`, `set_trusted_peer` and `set_layerzero_endpoint` (#643)
 - security(multisig): implement 14-day TTL expiration for pending signatures and approvals (#449)
 - **`nft` (issue #453): Discount coupon NFTs for merchant stores.** New coupon
   module (`contracts/refund-vault/src/coupons.rs`) implements single-use discount
