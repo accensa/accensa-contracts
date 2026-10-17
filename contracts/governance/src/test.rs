@@ -776,3 +776,66 @@ fn prior_transparent_vote_prevents_that_member_from_entering_an_anonymous_ring()
     );
     assert_eq!(h.gov.get_proposal(&id).yes_weight, 1);
 }
+
+// ── Missing configuration is a typed error, not a trap (#671, #673) ──────────
+
+/// Remove one configuration entry from the governance contract's instance
+/// storage, the way a partially migrated deployment could be missing it.
+fn remove_config(h: &Harness, key: crate::DataKey) {
+    h.env.as_contract(&h.gov.address, || {
+        h.env.storage().instance().remove(&key);
+    });
+}
+
+#[test]
+fn propose_without_voting_period_returns_typed_error() {
+    let h = setup();
+    remove_config(&h, crate::DataKey::VotingPeriod);
+
+    let (target, function, args) = set_value_call(&h.env, &h.target, 7);
+    let res = h.gov.try_propose(&h.m1, &target, &function, &args);
+    assert_eq!(res, Err(Ok(Error::InvalidVotingPeriod)));
+}
+
+/// Propose and fully vote a proposal while the configuration is intact, then
+/// remove `key` and try to execute it.
+fn execute_after_removing(key: crate::DataKey) -> Result<(), Error> {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 9);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    h.gov.vote(&h.m3, &id, &true);
+    h.gov.vote(&h.m1, &id, &true);
+
+    remove_config(&h, key);
+
+    match h.gov.try_execute(&id) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => panic!("execute returned a value of the wrong type"),
+        Err(Ok(error)) => Err(error),
+        Err(Err(_)) => panic!("execute trapped instead of returning a typed error"),
+    }
+}
+
+#[test]
+fn execute_without_total_weight_returns_typed_error() {
+    assert_eq!(
+        execute_after_removing(crate::DataKey::TotalWeight),
+        Err(Error::InvalidMembers)
+    );
+}
+
+#[test]
+fn execute_without_threshold_returns_typed_error() {
+    assert_eq!(
+        execute_after_removing(crate::DataKey::ThresholdBps),
+        Err(Error::InvalidThreshold)
+    );
+}
+
+#[test]
+fn execute_without_voting_period_returns_typed_error() {
+    assert_eq!(
+        execute_after_removing(crate::DataKey::VotingPeriod),
+        Err(Error::InvalidVotingPeriod)
+    );
+}

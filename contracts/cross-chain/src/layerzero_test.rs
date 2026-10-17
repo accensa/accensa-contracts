@@ -418,3 +418,177 @@ fn direct_call_without_endpoint_auth_panics() {
         &s.payload(&s.dispute_id(1), 100),
     );
 }
+
+// ── Delivery-guard keys (issue #619) ────────────────────────────────────────
+
+/// The three persistent keys [`crate::layerzero`] uses to guard inbound
+/// packets — the registered peer set (`TrustedPeer`), the per-channel packet
+/// nonce high-water mark (`PeerNonce`) and the settled-dispute ledger
+/// (`DisputeSettled`) — exercised through the entry points the crate exposes
+/// (`is_trusted_peer`, `get_peer_nonce`, `is_dispute_settled`) rather than out
+/// of storage. `TrustedPeer` has no other getter, and adding one is out of
+/// scope for this change.
+///
+/// The cases above pin the refusals themselves; these pin what a delivery
+/// *records* and which packets stay refused behind it: a nonce is stored per
+/// `(chain_id, sender)` channel and read back, a strictly higher nonce is
+/// accepted even when it skips packets that were never delivered, every nonce
+/// at or below the mark stays refused, and a settled dispute stays settled
+/// while its one accepted delivery stays the only event published.
+///
+/// One caveat the host imposes, worth stating because it shapes what these
+/// tests can prove: a refused invocation is rolled back, so asserting after a
+/// refusal restates an invariant that refusal has to preserve rather than
+/// detecting an implementation that writes and then fails. The assertions here
+/// that can actually fail are the accepted-path ones — which values get
+/// stored, and how many events a delivery publishes.
+mod delivery_guard_keys {
+    use super::*;
+
+    /// The peer set is keyed by `(chain_id, sender)`: the registered pair is
+    /// trusted, and neither half of it is trusted on its own.
+    #[test]
+    fn only_the_registered_pair_is_trusted() {
+        let s = setup();
+        let stranger = BytesN::from_array(&s.env, &[0xee_u8; 32]);
+        // Trusted on 101; never registered on 102.
+        let other_chain = 102_u32;
+
+        assert!(s.bridge.is_trusted_peer(&s.src_eid, &s.peer));
+        assert!(!s.bridge.is_trusted_peer(&other_chain, &s.peer));
+        assert!(!s.bridge.is_trusted_peer(&s.src_eid, &stranger));
+    }
+
+    /// The mark is absent until a delivery is accepted, then holds that
+    /// packet's nonce, and every nonce at or below it stays refused —
+    /// including the gap a forward jump skips over.
+    #[test]
+    fn the_mark_holds_the_highest_accepted_nonce() {
+        let s = setup();
+        assert_eq!(s.bridge.get_peer_nonce(&s.src_eid, &s.peer), 0);
+
+        s.endpoint.deliver(
+            &s.bridge_id,
+            &s.src_eid,
+            &s.peer,
+            &2,
+            &s.payload(&s.dispute_id(1), 100),
+        );
+        assert_eq!(s.bridge.get_peer_nonce(&s.src_eid, &s.peer), 2);
+
+        // 9 is not the next packet, but it is higher: accepted and recorded.
+        let later = s.dispute_id(2);
+        s.endpoint.deliver(
+            &s.bridge_id,
+            &s.src_eid,
+            &s.peer,
+            &9,
+            &s.payload(&later, 200),
+        );
+        assert_eq!(s.bridge.get_peer_nonce(&s.src_eid, &s.peer), 9);
+        assert!(s.bridge.is_dispute_settled(&later));
+
+        // Everything the jump skipped, and the accepted nonce itself, is at or
+        // below the mark and stays refused: `nonce <= last`, not `nonce < last`.
+        for nonce in 3_u64..=9 {
+            assert_eq!(
+                s.bridge.try_lz_receive(
+                    &s.endpoint_id,
+                    &s.src_eid,
+                    &s.peer,
+                    &nonce,
+                    &s.payload(&s.dispute_id(3), 100),
+                ),
+                Err(Ok(Error::StaleState))
+            );
+        }
+        assert_eq!(s.bridge.get_peer_nonce(&s.src_eid, &s.peer), 9);
+        assert!(!s.bridge.is_dispute_settled(&s.dispute_id(3)));
+    }
+
+    /// An accepted delivery publishes exactly one event, and the dispute it
+    /// settles stays settled: a second packet naming it is refused, while the
+    /// channel keeps moving for a dispute that has not been settled.
+    #[test]
+    fn a_settled_dispute_publishes_one_event_and_stays_settled() {
+        let s = setup();
+        let dispute_id = s.dispute_id(1);
+        s.endpoint.deliver(
+            &s.bridge_id,
+            &s.src_eid,
+            &s.peer,
+            &1,
+            &s.payload(&dispute_id, 100),
+        );
+        // `events().all()` covers the last invocation only: the accepted
+        // delivery is the whole log at this point, and one event is all a
+        // delivery may add to it.
+        assert_eq!(
+            s.env
+                .events()
+                .all()
+                .filter_by_contract(&s.bridge_id)
+                .events()
+                .len(),
+            1
+        );
+
+        assert_eq!(
+            s.bridge.try_lz_receive(
+                &s.endpoint_id,
+                &s.src_eid,
+                &s.peer,
+                &2,
+                &s.payload(&dispute_id, 100),
+            ),
+            Err(Ok(Error::AlreadyRefunded))
+        );
+        assert!(s.bridge.is_dispute_settled(&dispute_id));
+        assert_eq!(s.bridge.get_peer_nonce(&s.src_eid, &s.peer), 1);
+
+        // The channel still advances for a dispute that has not been settled,
+        // and the settled one is still settled afterwards.
+        let fresh = s.dispute_id(2);
+        s.endpoint.deliver(
+            &s.bridge_id,
+            &s.src_eid,
+            &s.peer,
+            &2,
+            &s.payload(&fresh, 100),
+        );
+        assert!(s.bridge.is_dispute_settled(&fresh));
+        assert!(s.bridge.is_dispute_settled(&dispute_id));
+        assert_eq!(s.bridge.get_peer_nonce(&s.src_eid, &s.peer), 2);
+    }
+
+    /// A packet naming an unregistered `(chain_id, sender)` is refused and the
+    /// trusted channel still takes its own first packet afterwards.
+    #[test]
+    fn a_packet_from_an_unregistered_channel_is_refused() {
+        let s = setup();
+        let other_chain = 102_u32;
+
+        // The claimed nonce is far above the trusted channel's mark: were the
+        // packet accepted, every nonce below 9 would be stale for good.
+        assert_eq!(
+            s.bridge.try_lz_receive(
+                &s.endpoint_id,
+                &other_chain,
+                &s.peer,
+                &9,
+                &s.payload(&s.dispute_id(1), 100),
+            ),
+            Err(Ok(Error::Unauthorized))
+        );
+
+        s.endpoint.deliver(
+            &s.bridge_id,
+            &s.src_eid,
+            &s.peer,
+            &1,
+            &s.payload(&s.dispute_id(1), 100),
+        );
+        assert_eq!(s.bridge.get_peer_nonce(&s.src_eid, &s.peer), 1);
+        assert!(s.bridge.is_dispute_settled(&s.dispute_id(1)));
+    }
+}
