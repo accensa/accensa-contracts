@@ -8,8 +8,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
-- **`receipt-shard` (issue #700): unit tests for record_migration.**
-  Extended `contracts/receipt-shard/src/pruning_test.rs` with coverage for `record_migration` and diagnostic metrics progression.
+- **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
+  Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
 - **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
   for the exported surface missing `///` comments.**
   `contracts/stream-vault/src/lib.rs` now documents `DataKey`, `StreamVault`,
