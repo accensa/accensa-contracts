@@ -969,6 +969,7 @@ dependencies = [
 name = "governance"
 version = "0.1.0"
 dependencies = [
+ "budget-macros",
  "curve25519-dalek 5.0.0",
  "receipt-anchor",
  "soroban-sdk",

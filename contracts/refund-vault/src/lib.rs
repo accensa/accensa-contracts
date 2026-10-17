@@ -2778,5 +2778,3 @@ mod commit_reveal_tests;
 // free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
 #[cfg(all(test, feature = "budget-assert"))]
 mod budget_test;
-mod dual_asset;
-pub use dual_asset::*;

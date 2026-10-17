@@ -8,6 +8,25 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`governance`: Tier A budget assertions; `vote_anonymous` is over the per-tx CPU limit.**
+  New `budget-assert`-gated `budget_test` module registers the real governance
+  WASM and gates `propose` (1.17M CPU) and `vote` (1.18M CPU) against committed
+  `measured * 1.15` ceilings. `vote_anonymous` measures ~0.74B CPU at ring size 2
+  and ~2.95B at ring size 8 — 7x and 30x the 100M Mainnet per-transaction limit —
+  so its gate is a regression ceiling, not a budget claim. The pre-existing
+  native-mode `maximum_anonymity_set_fits_soroban_cpu_budget` test under-reports
+  because the SDK does not meter native Rust per instruction. Bringing LSAG
+  verification within budget is tracked separately.
+- **`receipt-anchor`: `zk_verifier` docs now describe a structural pre-filter, not Groth16 verification.**
+  `verify_groth16` / `verify_batch_zk_proof` validate only the IC/public-input
+  count, element sizes and all-zero points; Soroban exposes no pairing
+  precompile, so no pairing equation is checked. The module docs previously said
+  "Groth16 verification" and implied cryptographic validity; `true` now means
+  "passes shape validation" only. A boundary-table test pins every accept/reject
+  arm.
+- **Internal cleanup:** removed the unused `refund-vault` `dual_asset` and
+  `state-channel` `epoch` modules, and simplified
+  `StateChannel::get_reserved_escrow` to return the `checked_add` chain directly.
 - **`automation` (issue #557): remove stray scratch files from repository root.**
   Removed 10 automation scratch files (`fix.sh`, `fix_budget.sh`,
   `fix_common.sh`, `fix_lib.sh`, `patch.sed`, `patch_changelog.py`,
