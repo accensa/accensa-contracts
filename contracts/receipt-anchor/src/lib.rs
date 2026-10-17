@@ -215,11 +215,33 @@ pub struct InitializedEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RateLimitUpdatedEvent {
     #[topic]
+    /// Burst capacity in force *before* the change, in whole anchors: the
+    /// max number of `anchor_batch` submissions an identity could make
+    /// back-to-back. `0` only as part of the disabled `{0, 0}` config.
+    /// Written here by [`ReceiptAnchor::set_anchor_rate_limit`] from the
+    /// stored [`RateLimitConfig`].
     pub previous_burst_capacity: u32,
     #[topic]
+    /// Seconds per one-token refill of the bucket in force *before* the
+    /// change. `0` only as part of the disabled `{0, 0}` config. Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from the stored
+    /// [`RateLimitConfig`].
     pub previous_refill_interval_secs: u32,
+    /// Burst capacity configured *after* the change, in whole anchors: the
+    /// number of back-to-back `anchor_batch` submissions the limiter now
+    /// allows (capped at 1000, `MAX_RATE_BURST`). Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from its caller's argument
+    /// and read by `anchor_batch`'s admission check.
     pub new_burst_capacity: u32,
+    /// Seconds per one-token refill configured *after* the change (capped at
+    /// 86,400, `MAX_RATE_REFILL_INTERVAL`). Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from its caller's argument
+    /// and read by `anchor_batch`'s admission check.
     pub new_refill_interval_secs: u32,
+    /// Sequence number of the ledger that executed
+    /// [`ReceiptAnchor::set_anchor_rate_limit`]
+    /// (`env.ledger().sequence()` at publish time), not a wall-clock
+    /// timestamp. Set only by that function, the event's sole publisher.
     pub ledger: u32,
 }
 
