@@ -8,6 +8,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`receipt-shard` (issue #699): unit tests for decommission, record_anchor, and record_removals.**
+  Extended `contracts/receipt-shard/src/consolidation_test.rs` with coverage for shard decommissioning and diagnostics counter updates.
 - **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
   for the exported surface missing `///` comments.**
   `contracts/stream-vault/src/lib.rs` now documents `DataKey`, `StreamVault`,
