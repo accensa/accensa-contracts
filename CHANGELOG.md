@@ -22,6 +22,12 @@ breaking changes bump the **minor** version, and they are called out as such.
 ### Removed
 - Issue #572: Removed the uncompiled, unreferenced source files `contracts/governance/src/liquid_staking_impl.rs`, `contracts/refund-vault/src/guard.rs`, and `contracts/refund-vault/src/test/test/refund_vectors.rs`. No compiled contract behavior changed.
   
+- **`governance` (issue #743): rustdoc for `liquid_staking.rs`'s 6 undocumented
+  public items.** `contracts/governance/src/liquid_staking.rs` now documents
+  `LiquidStakingError`, the `Mint` and `Burn` events (each field's role),
+  `ExchangeRate`, `UserData` and the `LiquidStaking` contract struct. Doc
+  comments only — no signature, body, ordering or test change, and
+  `missing_docs` is deliberately not enabled.
 - **`receipt-anchor` (issue #744): rustdoc for `lib.rs`'s 6 undocumented
   public items.** `contracts/receipt-anchor/src/lib.rs` now documents
   `DataKey`, `ReceiptAnchor`, `initialize` (its no-auth, once-only pre-condition
