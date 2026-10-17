@@ -8,15 +8,10 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
-- **`multisig-account` (issue #644): `__check_auth` fails closed when the
-  stored threshold is missing.** `DataKey::Threshold` was read with
-  `.unwrap_or(1)`, so if the instance-storage entry lapsed (nothing in the
-  crate extends its TTL) a 2-of-3 account authorized calls carrying a single
-  attached signer. The read now uses `.ok_or(Error::InsufficientSignatures)`:
-  without the stored threshold the quorum cannot be evaluated, so
-  authorization is refused. Adds an inline test in `lib.rs` that drives the
-  real `__check_auth` through hand-built auth entries, removes the `Threshold`
-  entry, and asserts the previously-possible 1-of-3 authorization is rejected.
+- **`refund-vault` (issue #689): `on_settled` walks the fee ladder without indexing.**
+  The promoting rung's fee is read by iterating the ladder, so an out-of-range rung can no longer trap the claim path. Behaviour for every valid ladder is unchanged.
+- **`insurance` (issue #608): assert deposit, withdraw, borrow and repay lifecycle events.**
+  Extended `contracts/insurance/src/test.rs` with `lifecycle_events` asserting exact event XDR, cross-checking storage values, and asserting zero balance on emptied positions.
 - **`receipt-shard` (issue #678): return typed error on missing state in has_live_records.**
   `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` when `StartBatchId` or `EndBatchId` is absent from instance storage instead of trapping.
 - **`privacy` (issue #439): dual-key stealth-address registry for vault deposits.**

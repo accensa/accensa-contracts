@@ -68,3 +68,15 @@
 - [x] `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` on missing state (#678)
   - `contracts/receipt-shard/src/consolidation.rs` — returns typed error instead of unwrap on missing `StartBatchId` or `EndBatchId`
 
+## Issue #683: error arm for absent state in refund-vault::get_domain_separator
+
+- [x] `get_domain_separator` returns `Result<BytesN<32>, Error>` with `Error::NotInitialized` on missing state (#683)
+  - `contracts/refund-vault/src/lib.rs` — returns typed error instead of unwrap on missing `DomainSeparator`
+
+## Issue #662: Correct the soroban-sdk version quoted in SUPPORT.md
+
+- [x] Correct the soroban-sdk version quoted in SUPPORT.md (#662)
+  - Updated `SUPPORT.md` to reference `soroban-sdk` 27.0.6 matching the resolved workspace pin
+  - Cited `Cargo.lock` as the single source of truth for the SDK version
+
+
