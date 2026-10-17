@@ -8,6 +8,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`insurance` (issue #608): assert deposit, withdraw, borrow and repay lifecycle events.**
+  Extended `contracts/insurance/src/test.rs` with `lifecycle_events` asserting exact event XDR, cross-checking storage values, and asserting zero balance on emptied positions.
 - **`privacy` (issue #439): dual-key stealth-address registry for vault deposits.**
   New `stealth` module on BN254 G1 (the SDK's `bn254` host functions). A
   recipient publishes a spend key `S` and a view key `V` with
