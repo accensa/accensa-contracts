@@ -69,3 +69,10 @@
 - [x] `get_domain_separator` returns `Result<BytesN<32>, Error>` with `Error::NotInitialized` on missing state (#683)
   - `contracts/refund-vault/src/lib.rs` — returns typed error instead of unwrap on missing `DomainSeparator`
 
+## Issue #649: Return a typed error when the yield float cannot cover a claim
+
+- [x] Return `Error::InsufficientBalance` when yield float is insufficient (#649)
+  - `contracts/treasury/src/distribution.rs` — verified contract holding balance of yield token before mutating user `pending`/`claimed`
+  - Added unit test in `contracts/treasury/src/distribution.rs` asserting typed error and unchanged pending yield
+
+
