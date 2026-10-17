@@ -11,6 +11,13 @@ breaking changes bump the **minor** version, and they are called out as such.
 ### Removed
 - Issue #572: Removed the uncompiled, unreferenced source files `contracts/governance/src/liquid_staking_impl.rs`, `contracts/refund-vault/src/guard.rs`, and `contracts/refund-vault/src/test/test/refund_vectors.rs`. No compiled contract behavior changed.
   
+- **`receipt-anchor` (issue #744): rustdoc for `lib.rs`'s 6 undocumented
+  public items.** `contracts/receipt-anchor/src/lib.rs` now documents
+  `DataKey`, `ReceiptAnchor`, `initialize` (its no-auth, once-only pre-condition
+  plus the `Error::AlreadyInitialized` arm), `get_batch` and `verify_receipt`
+  (the `BatchNotFound` / `ProofTooLong` / `ShardCallFailed` arms) and the
+  read-only `get_shard_capacity`. Doc comments only — no signature, body,
+  ordering or test change, and `missing_docs` is deliberately not enabled.
 - **`common` (issue #745): rustdoc for the reentrancy module's 4 exported
   names.** `contracts/common/src/reentrancy.rs` now documents
   `ReentrancyDataKey`, `ReentrancyGuard`, `acquire` (pre-condition plus the
