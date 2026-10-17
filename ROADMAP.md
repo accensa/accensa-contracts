@@ -59,3 +59,8 @@
 - [x] Document `dispute_id`, `oracle`, `payment_ref`, `merchant`, `recipient` and `amount` (#769)
   - `contracts/refund-policy-vdf/src/fallback.rs` — doc comments only; field, type, order and derives unchanged, and no unit invented for `amount`
 
+## Issue #753: rustdoc for upto-authorization/lib's 4 exported names
+
+- [x] Document `Error`, `DataKey`, `UptoAuthorization` and `initialize` (#753)
+  - `contracts/upto-authorization/src/lib.rs` — doc comments only, no signature, body or test changes
+
