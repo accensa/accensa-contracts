@@ -102,3 +102,8 @@
 
 - [x] Document `DataKey`, `ReceiptAnchor`, `initialize`, `get_batch`, `verify_receipt` and `get_shard_capacity` (#744)
   - `contracts/receipt-anchor/src/lib.rs` — doc comments only; `initialize` states its no-auth/once pre-condition and `Error::AlreadyInitialized` arm, `get_batch` and `verify_receipt` state the `BatchNotFound`/`ProofTooLong`/`ShardCallFailed` arms, and the getter is marked infallible
+
+## Issue #728: guard state-channel::add's reservation sum against overflow
+
+- [x] Compute the new HTLC reservation with `add_amounts` so an out-of-range sum returns `Error::MathOverflow` instead of trapping (#728)
+  - `contracts/state-channel/src/htlc.rs` — the reservation update uses the shared checked helper; the escrow ceiling above it remains the precondition that keeps every reachable sum in range
