@@ -349,10 +349,7 @@ mod tests {
             recipient: recipient.clone(),
             amount: 100,
         };
-        assert_eq!(
-            &events.events()[0],
-            &expected.to_xdr(&env, &client.address)
-        );
+        assert_eq!(&events.events()[0], &expected.to_xdr(&env, &client.address));
     }
 
     #[test]
