@@ -36,6 +36,8 @@ mod credit_score;
 #[cfg(test)]
 mod credit_score_decay_overflow_test;
 #[cfg(test)]
+mod credit_score_fraud_overflow_test;
+#[cfg(test)]
 mod credit_score_test;
 mod sbt;
 #[cfg(test)]
@@ -367,7 +369,15 @@ impl Reputation {
             credit_score::apply_decay(record.score, record.last_update, env.ledger().sequence());
 
         // Penalty: a fraction of the current score.
-        let penalty = (old_score as u128 * PENALTY_RATE_BPS as u128 / 10_000) as u64;
+        // The product of two `u64` values always fits in `u128`
+        // (`(2^64 - 1)^2 < 2^128`), so it is exact for every score. The
+        // multiplication is checked rather than bare so the guard does not
+        // rely on the release profile's overflow checks; the failure arm
+        // states the precondition that keeps it provably in range.
+        let penalty = ((old_score as u128)
+            .checked_mul(PENALTY_RATE_BPS as u128)
+            .expect("the product of two u64 values always fits in u128")
+            / 10_000) as u64;
         record.score = old_score - penalty;
         record.fraud_count += 1;
         record.last_update = env.ledger().sequence();

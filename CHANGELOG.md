@@ -8,6 +8,16 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`reputation` (issue #726): guard `record_fraud`'s penalty product against
+  overflow.** `record_fraud` now computes its basis-point penalty with
+  `u128::checked_mul` instead of a bare `*`, so it no longer relies on the
+  release profile's `overflow-checks = true` trapping the host call. Both
+  factors are `u64`, and `(2^64 - 1)^2 < 2^128`, so the product is exact for
+  every score; the failure arm is a stated precondition rather than a new
+  error variant, since `CreditError` is out of scope. New
+  `contracts/reputation/src/credit_score_fraud_overflow_test.rs` drives
+  `old_score = u64::MAX` through the public entry point and asserts the exact
+  returned score instead of a host abort.
 - **`state-channel` (issue #727): compute the hashlock reservation total with
   checked arithmetic.** `hashlock::add` now combines `already_reserved` and the
   new payment's `amount` through `accensa_common::math::add_amounts`, so an
