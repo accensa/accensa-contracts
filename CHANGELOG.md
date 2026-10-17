@@ -18,6 +18,15 @@ breaking changes bump the **minor** version, and they are called out as such.
   fits in `u64` for every input. New
   `contracts/reputation/src/credit_score_decay_overflow_test.rs` drives
   `u64::MAX`, the zero-remainder boundary and the saturated-interval case.
+- **`refund-vault` (issue #723): guard `recall_principal`'s sums against
+  overflow.** Both arithmetic sites in `contracts/refund-vault/src/strategy.rs`
+  now call `accensa_common::math::add_amounts` instead of a bare `+`: the
+  strategy-reported `principal_returned + yield_returned` balance cross-check
+  and the `HarvestedYield` accumulation. Because `[profile.release]` enables
+  `overflow-checks` with `panic = "abort"`, a raw `+` aborted the host call;
+  the checked helper surfaces the typed `Error::MathOverflow` (321) instead.
+  New `contracts/refund-vault/src/recall_principal_overflow_tests.rs` drives
+  both sums to `i128::MAX` and asserts the typed arm rather than a panic.
 - **`accensa-common` (issue #570): inline tests for the shared nonce bitmap.**
   `contracts/common/src/nonce.rs` gains an inline `#[cfg(test)]` suite pinning
   `NonceBitmap::is_revoked`'s LSB-first bit order across all 32 bytes, the
