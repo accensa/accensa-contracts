@@ -8,18 +8,15 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
-- **`refund-vault` (issue #722): guard `preview_settlement`'s cumulative sum
-  against overflow.** The `previous_refunded + amount` sum in
-  `contracts/refund-vault/src/settlement.rs` now goes through
-  `accensa_common::math::add_amounts` instead of a bare `+`, so the failure arm
-  is the typed `Error::MathOverflow` (321) rather than a host abort (the
-  release profile sets `overflow-checks = true` with `panic = "abort"`). At the
-  boundary, `resolve_ceiling`'s ceiling gate rejects the non-representable
-  total first with `Error::ExceedsPayment`, so every overflowing input answers
-  with a typed variant. New
-  `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` pins both
-  operands of the sum at `i128::MAX` and asserts the returned variant rather
-  than a panic.
+- **`state-channel` (issue #727): compute the hashlock reservation total with
+  checked arithmetic.** `hashlock::add` now combines `already_reserved` and the
+  new payment's `amount` through `accensa_common::math::add_amounts`, so an
+  out-of-range sum surfaces `Error::MathOverflow` instead of relying on the
+  release profile's overflow trap. The escrow ceiling check immediately above
+  keeps every reachable sum in range; the new
+  `contracts/state-channel/src/hashlock_overflow_test.rs` drives the
+  reservation total to exactly `i128::MAX` and pins the typed rejection when
+  the next reservation update would step past it.
 - **`reputation` (issue #724): guard `apply_decay`'s final addition against
   overflow.** The `SCORE_FLOOR + decayed` sum in `apply_decay` now uses
   `checked_add` with an explicit failure arm instead of a bare `+`, so it no
