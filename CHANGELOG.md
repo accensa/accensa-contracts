@@ -8,6 +8,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`upto-authorization` (issue #753): rustdoc for Error, DataKey, UptoAuthorization, initialize.**
+  Documented the 4 public items in `contracts/upto-authorization/src/lib.rs`.
 - **`cross-chain` / `governance`: panic paths now return typed errors (#669, #671, #672, #673).**
   `cross-chain::verify_vaa` no longer unwraps `vaa.signatures.get(i)` or the
   guardian lookup: signatures are iterated, and a guardian index past the end of
