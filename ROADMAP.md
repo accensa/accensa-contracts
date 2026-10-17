@@ -88,6 +88,7 @@
 
 - [x] `set_tier_ladder` uses a checked lookup for the selected tier's fee (#690)
   - `contracts/refund-vault/src/tiers.rs` — `set_tier_ladder` performs a checked `tiers.get(current_tier)` lookup with `Error::InvalidTierLadder` as a defensive fallback when the preserved volume points past the last rung; validated ladders retain their existing behaviour.
+
 ## Issue #750: Document 4 public items in nft_escrow
 
 - [x] Add `///` rustdoc to `deposit`, `claim`, `refund` and `get` (#750)
