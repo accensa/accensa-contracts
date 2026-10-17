@@ -4,9 +4,9 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Events as _},
     token::{StellarAssetClient, TokenClient},
-    Address, Bytes, BytesN, Env,
+    Address, Bytes, BytesN, Env, Event,
 };
 
 struct Setup {
@@ -142,4 +142,101 @@ fn unknown_channel_is_not_found() {
         s.client.try_splice_in(&42, &100),
         Err(Ok(Error::ChannelNotFound))
     );
+}
+
+// ── Event shape assertions ─────────────────────────────────────────────────
+//
+// The splice events are the only on-chain record that the channel's capacity
+// changed; each is compared in the same XDR form `hashlock_test.rs` uses.
+// `env.events().all()` reflects only the last top-level invocation, so the
+// event list is snapshotted immediately after the call under test and before
+// any read-back call.
+
+#[test]
+fn splice_in_event_new_amount_matches_capacity_read_back() {
+    let s = setup();
+    let channel_id = s.open(1_000);
+
+    s.client.splice_in(&channel_id, &500);
+
+    // Snapshot the event list before the read-back below: `events().all()`
+    // covers only the last top-level invocation (the splice-in).
+    let events = s.env.events().all().filter_by_contract(&s.contract);
+
+    // The asserted new_amount must equal the capacity read back from the
+    // channel after the call, not a copy of the literal used to build it.
+    let capacity = s.client.get_channel(&channel_id).amount;
+    assert_eq!(capacity, 1_500);
+
+    assert_eq!(events.events().len(), 1);
+    let expected = crate::splice::ChannelSplicedInEvent {
+        channel_id,
+        added: 500,
+        new_amount: capacity,
+    };
+    assert_eq!(&events.events()[0], &expected.to_xdr(&s.env, &s.contract));
+}
+
+#[test]
+fn splice_out_event_new_amount_matches_capacity_read_back() {
+    let s = setup();
+    let channel_id = s.open(1_000);
+
+    s.client.splice_out(&channel_id, &400);
+
+    let events = s.env.events().all().filter_by_contract(&s.contract);
+
+    // Cross-checked against storage: a stale capacity in the event fails here.
+    let capacity = s.client.get_channel(&channel_id).amount;
+    assert_eq!(capacity, 600);
+
+    assert_eq!(events.events().len(), 1);
+    let expected = crate::splice::ChannelSplicedOutEvent {
+        channel_id,
+        removed: 400,
+        new_amount: capacity,
+    };
+    assert_eq!(&events.events()[0], &expected.to_xdr(&s.env, &s.contract));
+}
+
+#[test]
+fn splice_out_cannot_touch_reserved_escrow_emits_no_event() {
+    let s = setup();
+    let channel_id = s.open(1_000);
+    let h = s.hash(b"lock");
+    s.client.add_htlc(&channel_id, &h, &300, &1_000, &None);
+
+    assert_eq!(
+        s.client.try_splice_out(&channel_id, &701),
+        Err(Ok(Error::InsufficientChannelBalance))
+    );
+
+    // The rejected splice published nothing: the last top-level invocation
+    // (the failed `try_splice_out`) emitted no event at all.
+    let events = s.env.events().all().filter_by_contract(&s.contract);
+    assert_eq!(events.events().len(), 0);
+}
+
+#[test]
+fn splice_rejects_non_positive_amounts_emits_no_event() {
+    let s = setup();
+    let channel_id = s.open(1_000);
+
+    assert_eq!(
+        s.client.try_splice_in(&channel_id, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        s.client.try_splice_in(&channel_id, &-5),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        s.client.try_splice_out(&channel_id, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    // None of the rejected calls left a splice event behind: the last
+    // top-level invocation (the failed `try_splice_out`) emitted nothing.
+    let events = s.env.events().all().filter_by_contract(&s.contract);
+    assert_eq!(events.events().len(), 0);
 }
