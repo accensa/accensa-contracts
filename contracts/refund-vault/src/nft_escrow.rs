@@ -147,6 +147,21 @@ fn release(
     Ok(token_id)
 }
 
+/// Escrow `token_id` of the NFT contract `contract` from `merchant` into the
+/// vault for `buyer`, then emit [`NftDepositedEvent`].
+///
+/// Pre-condition: the vault is initialized, unpaused and not re-entrant,
+/// `merchant` is the vault admin and has authorized this call, and that
+/// `(contract, token_id)` pair is not already escrowed. The NFT is pulled
+/// from `merchant` into the vault (the NFT contract requires `merchant`'s
+/// authorization, supplied by this authenticated invocation) and an
+/// [`NftEscrowRecord`] keyed by `(contract, token_id)` is stored.
+///
+/// Returns `Error::ReentrancyBlocked` if a vault operation is already in
+/// flight, `Error::Paused` while the vault is paused,
+/// `Error::NotInitialized` if the vault has no admin, `Error::Unauthorized`
+/// when `merchant` is not the admin, and `Error::NftAlreadyEscrowed` when
+/// that exact token is already held in escrow.
 pub(crate) fn deposit(
     env: &Env,
     merchant: &Address,
@@ -204,6 +219,21 @@ pub(crate) fn deposit(
     Ok(())
 }
 
+/// Reclaim the escrowed `token_id` of NFT contract `contract` back to
+/// `merchant` (cancellation / return), deleting the escrow record and
+/// emitting [`NftClaimedEvent`]; returns the exact released `token_id`.
+///
+/// Pre-condition: the vault is unpaused and not re-entrant, an
+/// [`NftEscrowRecord`] exists for `(contract, token_id)`, `merchant` is the
+/// party recorded on it, and `merchant` has authorized this call. The
+/// shared release path also reverts with `Error::SelfTransfer` if the
+/// recipient were the vault itself and `Error::NftNotOwned` if the vault no
+/// longer owns the token on the NFT contract.
+///
+/// Returns `Error::ReentrancyBlocked` on re-entrant entry, `Error::Paused`
+/// while the vault is paused, `Error::NftEscrowNotFound` without a record,
+/// and `Error::Unauthorized` when `merchant` is not the recorded escrow
+/// owner.
 pub(crate) fn claim(
     env: &Env,
     merchant: &Address,
@@ -234,6 +264,20 @@ pub(crate) fn claim(
     Ok(token_id)
 }
 
+/// Release the escrowed `token_id` of NFT contract `contract` to `buyer`,
+/// deleting the escrow record and emitting [`NftRefundedEvent`]; returns the
+/// exact refunded `token_id`.
+///
+/// Pre-condition: the vault is unpaused and not re-entrant, an
+/// [`NftEscrowRecord`] exists for `(contract, token_id)`, `buyer` is the
+/// party recorded on it, and `buyer` has authorized this call. The shared
+/// release path also reverts with `Error::SelfTransfer` if the recipient
+/// were the vault itself and `Error::NftNotOwned` if the vault no longer
+/// owns the token on the NFT contract.
+///
+/// Returns `Error::ReentrancyBlocked` on re-entrant entry, `Error::Paused`
+/// while the vault is paused, `Error::NftEscrowNotFound` without a record,
+/// and `Error::Unauthorized` when `buyer` is not the recorded buyer.
 pub(crate) fn refund(
     env: &Env,
     buyer: &Address,
@@ -264,6 +308,9 @@ pub(crate) fn refund(
     Ok(token_id)
 }
 
+/// Read the escrow record for `(contract, token_id)`: the recorded
+/// `merchant`/`buyer` pair while the NFT is held, or `None` when that exact
+/// token is not currently escrowed in the vault.
 pub(crate) fn get(env: &Env, contract: &Address, token_id: u128) -> Option<NftEscrowRecord> {
     get_record(env, contract, token_id)
 }
