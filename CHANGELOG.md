@@ -8,6 +8,16 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`reputation` (issue #724): guard `apply_decay`'s final addition against
+  overflow.** The `SCORE_FLOOR + decayed` sum in `apply_decay` now uses
+  `checked_add` with an explicit failure arm instead of a bare `+`, so it no
+  longer relies on the release profile's `overflow-checks = true` trapping
+  the host call. Because the helper returns a plain `u64`, the arm is a
+  stated precondition rather than a typed error: `decayed` is the remainder
+  of the headroom `score - SCORE_FLOOR`, so the sum is at most `score` and
+  fits in `u64` for every input. New
+  `contracts/reputation/src/credit_score_decay_overflow_test.rs` drives
+  `u64::MAX`, the zero-remainder boundary and the saturated-interval case.
 - **`accensa-common` (issue #570): inline tests for the shared nonce bitmap.**
   `contracts/common/src/nonce.rs` gains an inline `#[cfg(test)]` suite pinning
   `NonceBitmap::is_revoked`'s LSB-first bit order across all 32 bytes, the
