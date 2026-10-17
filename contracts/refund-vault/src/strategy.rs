@@ -27,7 +27,7 @@
 //! the vault's own token balance rather than the values the strategy returns,
 //! and every strategy call runs under the vault's reentrancy lock.
 
-use accensa_common::Error;
+use accensa_common::{math::add_amounts, Error};
 use soroban_sdk::{contractclient, contractevent, token, Address, Env};
 
 use crate::{increment_nonce, persist_yield_ttl, DataKey, YieldWithdrawnEvent};
@@ -231,7 +231,7 @@ pub(crate) fn recall_principal(
     if principal_returned <= 0
         || principal_returned > principal
         || yield_returned < 0
-        || received < principal_returned + yield_returned
+        || received < add_amounts(principal_returned, yield_returned)?
     {
         return Err(Error::InsufficientFloat);
     }
@@ -245,9 +245,10 @@ pub(crate) fn recall_principal(
         &DataKey::DeployedPrincipal,
         &(deployed - principal_returned),
     );
-    env.storage()
-        .persistent()
-        .set(&DataKey::HarvestedYield, &(harvested + yield_returned));
+    env.storage().persistent().set(
+        &DataKey::HarvestedYield,
+        &add_amounts(harvested, yield_returned)?,
+    );
     persist_yield_ttl(env, &DataKey::DeployedPrincipal);
     persist_yield_ttl(env, &DataKey::HarvestedYield);
 

@@ -2751,6 +2751,8 @@ mod fuzz_test;
 #[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
+mod recall_principal_overflow_tests;
+#[cfg(test)]
 mod reentrancy_tests;
 #[cfg(test)]
 mod settlement_test;

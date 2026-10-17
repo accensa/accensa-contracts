@@ -103,6 +103,22 @@
 - [x] Document `DataKey`, `ReceiptAnchor`, `initialize`, `get_batch`, `verify_receipt` and `get_shard_capacity` (#744)
   - `contracts/receipt-anchor/src/lib.rs` — doc comments only; `initialize` states its no-auth/once pre-condition and `Error::AlreadyInitialized` arm, `get_batch` and `verify_receipt` state the `BatchNotFound`/`ProofTooLong`/`ShardCallFailed` arms, and the getter is marked infallible
 
+## Issue #728: guard state-channel::add's reservation sum against overflow
+
+- [x] Compute the new HTLC reservation with `add_amounts` so an out-of-range sum returns `Error::MathOverflow` instead of trapping (#728)
+  - `contracts/state-channel/src/htlc.rs` — the reservation update uses the shared checked helper; the escrow ceiling above it remains the precondition that keeps every reachable sum in range
+
+## Issue #727: guard state-channel::hashlock::add's reservation sum against overflow
+
+- [x] Compute the new hashlock reservation with `add_amounts` so an out-of-range sum returns `Error::MathOverflow` instead of trapping (#727)
+  - `contracts/state-channel/src/hashlock.rs` — the reservation update uses the shared checked helper; the escrow ceiling above it remains the precondition that keeps every reachable sum in range
+
 ## Issue #724: guard `apply_decay`'s final addition against overflow
 
 - [x] `apply_decay` guards `SCORE_FLOOR + decayed` with `checked_add` and states the precondition that keeps the sum in range (#724)
+
+## Issue #723: guard `recall_principal`'s sums against overflow
+
+- [x] Route both `recall_principal` sums through `add_amounts` (#723)
+  - `contracts/refund-vault/src/strategy.rs` — typed `Error::MathOverflow` instead of a host abort
+  - `contracts/refund-vault/src/recall_principal_overflow_tests.rs` — boundary tests drive both sums to `i128::MAX`
