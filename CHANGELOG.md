@@ -8,29 +8,10 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
-- **`privacy` (issue #609): escrow lifecycle events pinned in XDR form.** New
-  `escrow_events` module in `contracts/privacy/src/test.rs` asserts the exact
-  XDR of `EscrowCreatedEvent` on `create_escrow` (and that its payload agrees
-  with `get_escrow`), `EscrowRejectedEvent` on a verification whose proof
-  fails the commitment, and `EscrowVerifiedEvent` on one the verifier accepts
-  — each as the only event of its invocation. The reject branch returns
-  `Ok(false)` rather than erroring, so that invocation succeeds and its events
-  are observable, which is what makes "exactly one event, and never the
-  verified type" falsifiable there; the all-zero commitment and the
-  amount-below-floor refusals are asserted as errors that publish nothing.
-  Test-only — no contract behavior change.
-- **`cross-chain` (issue #619): LayerZero delivery-guard keys pinned by
-  tests.** New `delivery_guard_keys` module in
-  `contracts/cross-chain/src/layerzero_test.rs` reads the three persistent
-  keys that guard inbound deliveries back through the crate's own getters.
-  `is_trusted_peer` is true only for the registered `(chain_id, sender)` pair;
-  `get_peer_nonce` is absent until a delivery is accepted and then holds the
-  highest accepted nonce, so a strictly higher nonce is taken even when it
-  skips packets that were never delivered while every nonce at or below the
-  mark stays refused; and `is_dispute_settled` keeps a settled dispute
-  settled while its accepted delivery remains the only event published, with
-  a fresh dispute free to claim the nonce the refused duplicate named.
-  Test-only — no contract behavior change.
+- **`treasury` (issue #648): burn only buyback tokens actually delivered.**
+  Buyback execution now measures the governance-token balance change around the
+  DEX swap, rejects delivery below the slippage floor or the router's reported
+  amount, and burns and reports only the amount received.
 - **`governance` (issue #670): the constructor iterates its members.**
   `Governance::__constructor` pairs each member with its deposit by zipping the
   two vectors instead of indexing them with `get(i).unwrap()`. The vectors are
