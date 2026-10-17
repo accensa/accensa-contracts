@@ -8,6 +8,12 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`common` (issue #772): the 5 public `AnchorEventPayload` fields carry
+  docs.** Each field of `AnchorEventPayload` in
+  `contracts/common/src/events.rs` now has a `///` line naming the unit or
+  domain of the value and, where another function writes it, the code path
+  that sets it. Field names, types, order and derives are unchanged, so the
+  struct's layout is unaffected — the comments are the only change.
 - **`governance` (issue #670): the constructor iterates its members.**
   `Governance::__constructor` pairs each member with its deposit by zipping the
   two vectors instead of indexing them with `get(i).unwrap()`. The vectors are
