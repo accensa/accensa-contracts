@@ -7,7 +7,9 @@ policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0
 breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
-
+### Removed
+- Issue #572: Removed the uncompiled, unreferenced source files `contracts/governance/src/liquid_staking_impl.rs`, `contracts/refund-vault/src/guard.rs`, and `contracts/refund-vault/src/test/test/refund_vectors.rs`. No compiled contract behavior changed.
+  
 - **`receipt-shard` (issue #679): `prune_batches` returns a typed error
   instead of trapping.** `prune_batches` now returns `Result<(u64, u64),
   Error>`; its three construction-time instance reads (`Router`, `EndBatchId`,
