@@ -8,6 +8,15 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`receipt-shard` (issue #679): `prune_batches` returns a typed error
+  instead of trapping.** `prune_batches` now returns `Result<(u64, u64),
+  Error>`; its three construction-time instance reads (`Router`, `EndBatchId`,
+  `PrunedUpTo`) answer `Error::NotInitialized` when the key is absent — before
+  the shard is constructed, or after the instance entry has aged out — instead
+  of aborting the host call through `.unwrap()`. The success return type is
+  unchanged, so existing callers and the router's `ShardInterface` trait keep
+  their wire shape. New `contracts/receipt-shard/tests/prune_before_init.rs`
+  pins the typed error on all three read sites before initialisation.
 - **`automation` (issue #557): remove stray scratch files from repository root.**
   Removed 10 automation scratch files (`fix.sh`, `fix_budget.sh`,
   `fix_common.sh`, `fix_lib.sh`, `patch.sed`, `patch_changelog.py`,
