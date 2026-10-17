@@ -63,12 +63,22 @@ pub struct BuybackConfig {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuybackConfiguredEvent {
+    /// Token the treasury spends; written by `set_buyback_config` and published
+    /// as an event topic.
     #[topic]
     pub fee_token: Address,
+    /// Token the treasury buys back and burns; written by `set_buyback_config`
+    /// and published as an event topic.
     #[topic]
     pub governance_token: Address,
+    /// Router the swap is sent to; written by `set_buyback_config` and carried
+    /// in the event data.
     pub router: Address,
+    /// Destination the bought governance tokens are sent to; written by
+    /// `set_buyback_config`.
     pub burn_address: Address,
+    /// Smallest swap `execute_buyback` will perform, in fee-token units;
+    /// written by `set_buyback_config`.
     pub min_amount_in: i128,
 }
 
