@@ -116,3 +116,8 @@
 ## Issue #724: guard `apply_decay`'s final addition against overflow
 
 - [x] `apply_decay` guards `SCORE_FLOOR + decayed` with `checked_add` and states the precondition that keeps the sum in range (#724)
+
+## Issue #779: rustdoc for `ShardCreatedEvent`'s 5 exported fields
+
+- [x] Document `shard_id`, `shard_index`, `shard_address`, `start_batch_id` and `end_batch_id` (#779)
+  - `contracts/receipt-anchor/src/lib.rs` — doc comments only; struct layout, field types and topic tuple unchanged

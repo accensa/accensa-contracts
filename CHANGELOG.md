@@ -8,6 +8,13 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`receipt-anchor` (issue #779): document `ShardCreatedEvent`'s exported
+  fields.** `contracts/receipt-anchor/src/lib.rs` now carries a `///` comment
+  on each of `shard_id`, `shard_index`, `shard_address`, `start_batch_id` and
+  `end_batch_id`, stating the value's domain and the code path that writes it
+  so an off-chain decoder can read the event without inferring either from the
+  field name. Doc comments only — struct layout, field types and the topic
+  tuple are unchanged.
 - **`state-channel` (issue #727): compute the hashlock reservation total with
   checked arithmetic.** `hashlock::add` now combines `already_reserved` and the
   new payment's `amount` through `accensa_common::math::add_amounts`, so an
