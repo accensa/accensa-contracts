@@ -113,7 +113,7 @@ jobs:
         # Compiles the contracts for the host and runs the `#[budget_cpu_lt(N)]`
         # macro tests. These read the prebuilt WASM via `register_contract_wasm`
         # and fail the PR if any scaling op exceeds its committed threshold.
-        run: cargo test -p receipt-anchor -p refund-vault --features budget-assert
+        run: cargo test -p receipt-anchor -p refund-vault -p state-channel -p upto-authorization --features budget-assert
 
       - id: vector-parity-local
         name: Vector parity, local half

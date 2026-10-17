@@ -1,5 +1,7 @@
 #![no_std]
 
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;
 #[cfg(test)]
 mod close_test;
 #[cfg(test)]

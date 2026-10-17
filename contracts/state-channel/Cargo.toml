@@ -12,9 +12,13 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+budget-assert = ["dep:budget_macros"]
+
 [dependencies]
 soroban-sdk = { workspace = true }
 accensa-common = { workspace = true }
+budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git", branch = "main", package = "budget-macros", optional = true }
 
 [dev-dependencies]
 ed25519-dalek = "3.0"
