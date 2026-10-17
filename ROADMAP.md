@@ -92,3 +92,13 @@
 ## Issue #679: receipt-shard::prune_batches traps on an uninitialised Router
 
 - [x] `prune_batches` answers `Error::NotInitialized` instead of aborting the host call when `Router`, `EndBatchId` or `PrunedUpTo` is absent (before construction or after the instance entry ages out) (#679)
+
+## Issue #745: rustdoc for reentrancy's 4 exported names
+
+- [x] Document `ReentrancyDataKey`, `ReentrancyGuard`, `acquire` and `release` (#745)
+  - `contracts/common/src/reentrancy.rs` — doc comments only, no signature, body or test changes
+
+## Issue #744: rustdoc for receipt-anchor/lib's 6 exported names
+
+- [x] Document `DataKey`, `ReceiptAnchor`, `initialize`, `get_batch`, `verify_receipt` and `get_shard_capacity` (#744)
+  - `contracts/receipt-anchor/src/lib.rs` — doc comments only; `initialize` states its no-auth/once pre-condition and `Error::AlreadyInitialized` arm, `get_batch` and `verify_receipt` state the `BatchNotFound`/`ProofTooLong`/`ShardCallFailed` arms, and the getter is marked infallible

@@ -27,6 +27,7 @@ contractmeta!(
 );
 
 #[contracttype]
+/// Router storage keys: admin/config and the live-shard set in instance storage, the `(shard_id, shard_index)` deploy map, and the per-merchant token bucket in persistent storage.
 pub enum DataKey {
     Admin,
     /// Per-logical-shard batch count. Each `shard_id` owns an independent
@@ -304,10 +305,12 @@ const MAX_RATE_REFILL_INTERVAL: u32 = 86_400;
 const SHARD_CAPACITY: u64 = 200;
 
 #[contract]
+/// The `ReceiptAnchor` router: holds admin, configuration and the `(shard_id, shard_index) -> Address` map, and forwards every batch read and write to the deployed `ReceiptShard`.
 pub struct ReceiptAnchor;
 
 #[contractimpl]
 impl ReceiptAnchor {
+    /// Binds this deployment to `merchant` as admin and pins the `ReceiptShard` wasm hash the router deploys shards with; needs no auth and runs once — returns `Error::AlreadyInitialized` when an admin is already set.
     pub fn initialize(
         env: Env,
         merchant: Address,
@@ -529,11 +532,13 @@ impl ReceiptAnchor {
         zk_verifier::verify_groth16(&env, &proof, &vk, &public_inputs)
     }
 
+    /// Reads `batch_id` from `shard_id`'s stream via the storage shard that owns it; read-only. Returns `Error::BatchNotFound` when `batch_id` is `0` or that storage shard was never deployed, `Error::ShardCallFailed` when the shard call returns an unexpected shape, and otherwise propagates the shard's own error.
     pub fn get_batch(env: Env, shard_id: u64, batch_id: u64) -> Result<BatchRecord, Error> {
         let shard_addr = Self::shard_for_batch(&env, shard_id, batch_id)?;
         Self::unwrap_shard_result(ShardClient::new(&env, &shard_addr).try_get_batch(&batch_id))
     }
 
+    /// Verifies `leaf` against the root anchored at `batch_id` in `shard_id`'s stream, delegating the Merkle check to that batch's storage shard; read-only. Returns `Ok(true)`/`Ok(false)` for a well-formed proof, `Error::BatchNotFound` when `batch_id` is `0` or its storage shard was never deployed, `Error::ProofTooLong` when the shard rejects an oversize proof, and `Error::ShardCallFailed` for an unexpected shard answer.
     pub fn verify_receipt(
         env: Env,
         shard_id: u64,
@@ -818,6 +823,7 @@ impl ReceiptAnchor {
             .map_or(0, |tree| tree.count)
     }
 
+    /// Returns `SHARD_CAPACITY` (200): the number of `BatchRecord`s each storage shard holds before the router deploys the next one; read-only and infallible.
     pub fn get_shard_capacity(_env: Env) -> u64 {
         SHARD_CAPACITY
     }
