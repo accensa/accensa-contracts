@@ -8,6 +8,15 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`receipt-shard` / `upto-authorization` (issues #781, #793): rustdoc for
+  the undocumented public fields of `BatchRecord` and `AuthorizationRecord`.**
+  Each of the 5 fields of `BatchRecord` in `contracts/receipt-shard/src/lib.rs`
+  (`root`, `count`, `period_start`, `period_end`, `anchored_ledger`) and each
+  of the 5 named fields of `AuthorizationRecord` in
+  `contracts/upto-authorization/src/types.rs` (`from`, `to`, `cap`, `expiry`,
+  `consumed`) now carries a `///` stating the unit or domain of the value and
+  the code paths that write and read it. Doc comments only — no field, type,
+  order or derive change, and no behavior change.
 - **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
   Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
 - **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
