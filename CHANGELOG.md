@@ -8,20 +8,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
-- **`accensa-common` (issue #571): BREAKING — remove two no-op modules from
-  the public API.** `accensa-common` exported two empty functions — one
-  "admin action audit", one "address blacklist check" — from its `audit` and
-  `blacklist` modules. Neither had a call site, a test or a documented
-  guarantee anywhere in the repository, so a reader of the dependency list
-  could reasonably conclude that admin actions are audited and addresses are
-  screened. Both modules and their `pub mod` lines are deleted.
-  **Breaking change (pre-1.0 minor bump):** any downstream consumer of
-  `accensa-common` (e.g. `accensa-app`) importing those two module paths will
-  fail to resolve them after this release; if either control is wanted, it
-  must land as a real implementation with storage keys, an error variant and
-  tests. Nothing in this repository's source referenced either symbol, and
-  the issue's `git grep` for `audit`, `blacklist` and the two function names
-  across `*.rs` files returns nothing on this branch.
+- **`common` (issue #745): rustdoc for the reentrancy module's 4 exported
+  names.** `contracts/common/src/reentrancy.rs` now documents
+  `ReentrancyDataKey`, `ReentrancyGuard`, `acquire` (pre-condition plus the
+  `Error::ReentrancyBlocked` arm) and `release`. Doc comments only — no
+  signature, body, ordering or test change.
 - **`receipt-shard` (issue #679): `prune_batches` returns a typed error
   instead of trapping.** `prune_batches` now returns `Result<(u64, u64),
   Error>`; its three construction-time instance reads (`Router`, `EndBatchId`,
