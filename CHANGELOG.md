@@ -8,6 +8,17 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`accensa-common` (issue #570): inline tests for the shared nonce bitmap.**
+  `contracts/common/src/nonce.rs` gains an inline `#[cfg(test)]` suite pinning
+  `NonceBitmap::is_revoked`'s LSB-first bit order across all 32 bytes, the
+  256-slot aliasing produced by `nonce % 256` (nonce 0 and nonce 256 address
+  the same bit; every answer depends only on `nonce % 256`), and that reads
+  at the bitmap's edges — including the `u64` extremes that alias onto bit
+  255 — never panic and default to not revoked. The suite cross-checks the
+  bit layout against `state-channel`'s `NonceWindow` read formula
+  (`contracts/state-channel/src/nonce.rs`), the agreement both types'
+  documentation promises. Test-only — no contract behavior change; the type
+  stays exported with no production caller.
 - **`receipt-shard` (issue #679): `prune_batches` returns a typed error
   instead of trapping.** `prune_batches` now returns `Result<(u64, u64),
   Error>`; its three construction-time instance reads (`Router`, `EndBatchId`,
