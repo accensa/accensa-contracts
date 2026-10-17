@@ -8,6 +8,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`multisig-account` (issue #413): daily spending limits for sub-threshold
+  signers.** Governance can configure a per-token daily allowance for routine
+  transfers authorized by fewer than the full threshold. Spending is tracked
+  per signer and token in 24-hour ledger-time windows; other calls and spends
+  beyond the remaining allowance still require the full threshold.
 - **`governance` (issue #670): the constructor iterates its members.**
   `Governance::__constructor` pairs each member with its deposit by zipping the
   two vectors instead of indexing them with `get(i).unwrap()`. The vectors are
