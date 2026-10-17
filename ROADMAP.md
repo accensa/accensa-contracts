@@ -102,3 +102,7 @@
 
 - [x] Document `DataKey`, `ReceiptAnchor`, `initialize`, `get_batch`, `verify_receipt` and `get_shard_capacity` (#744)
   - `contracts/receipt-anchor/src/lib.rs` — doc comments only; `initialize` states its no-auth/once pre-condition and `Error::AlreadyInitialized` arm, `get_batch` and `verify_receipt` state the `BatchNotFound`/`ProofTooLong`/`ShardCallFailed` arms, and the getter is marked infallible
+
+## Issue #724: guard `apply_decay`'s final addition against overflow
+
+- [x] `apply_decay` guards `SCORE_FLOOR + decayed` with `checked_add` and states the precondition that keeps the sum in range (#724)

@@ -34,6 +34,8 @@ mod badges;
 mod badges_test;
 mod credit_score;
 #[cfg(test)]
+mod credit_score_decay_overflow_test;
+#[cfg(test)]
 mod credit_score_test;
 mod sbt;
 #[cfg(test)]
