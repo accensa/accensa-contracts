@@ -51,7 +51,7 @@ Enforced invariants, each covered by a test:
 - **Float-bounded** — a refund can never exceed vault balance (`InsufficientFloat`).
   *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_exceeding_float_fails`, `test_withdraw_exceeding_float_fails`
 - **Merchant-only** — every state-changing call requires merchant/admin auth (`Unauthorized`), with the explicit exception of `initialize` (which initializes the contract instance and does not require prior auth, see #145).
-  *Mapped Tests:* `contracts/refund-vault/src/test.rs` -> `test_refund_requires_merchant_auth`, `test_deposit_from_non_merchant_fails`, `test_pause_requires_merchant_auth`, `test_unpause_requires_merchant_auth`, `test_transfer_admin_requires_auth`, `test_cancel_admin_transfer_requires_auth`, `test_accept_admin_requires_pending_auth`; `contracts/receipt-anchor/src/test.rs` -> `test_anchor_batch_requires_merchant_auth`, `test_prune_batches_requires_admin_auth`
+  *Mapped Tests:* `contracts/refund-vault/src/test.rs` -> `test_refund_requires_merchant_auth`, `test_deposit_from_non_merchant_fails`, `test_pause_requires_merchant_auth`, `test_unpause_requires_merchant_auth`, `test_transfer_admin_requires_auth`, `test_cancel_admin_transfer_requires_auth`, `test_accept_admin_requires_pending_auth`; `contracts/receipt-anchor/src/test.rs` -> `test_anchor_batch_requires_merchant_auth`, `test_set_anchor_rate_limit_requires_admin_auth`
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
   *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_when_paused_fails`, `test_deposit_when_paused_fails`, `test_withdraw_when_paused_fails`
 This design is only economical on Stellar:
