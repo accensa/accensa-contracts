@@ -20,7 +20,13 @@ pub fn quadratic_weight(env: &Env, member: &Address) -> u64 {
         .persistent()
         .get(&DataKey::MemberDeposit(member.clone()))
         .unwrap_or(0u64);
-    isqrt(deposit)
+    if deposit == 0 {
+        return 0;
+    }
+    // Escrowed, time-weighted voting power (issue #438) is added to the input
+    // of the formula, not to the formula. Without a lock it is zero, so a
+    // member's weight is exactly what it was.
+    isqrt(deposit.saturating_add(crate::vetoken::voting_power(env, member)))
 }
 
 /// Accumulate quadratic weight into the proposal tally.
