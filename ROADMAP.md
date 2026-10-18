@@ -85,10 +85,10 @@
   - `contracts/refund-vault/src/settlement.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` — boundary test pins both operands at `i128::MAX` and asserts the returned error variant
 
-## Issue #739: rustdoc for refund-vault/lib's 8 public items
+## Issue #720: check `harvest_yield`'s running total against overflow
 
-- [x] Document `RefundParam`, `DataKey`, `RefundRecord`, `YieldInfo`, `DepositEvent`, `WithdrawEvent`, `AdminTransferInitiatedEvent` and `AdminTransferAcceptedEvent` (#739)
-  - `contracts/refund-vault/src/lib.rs` — doc comments only, no signature, body or ordering change
-
+- [x] Route the `harvested + yield_amount` sum in `harvest_yield` through `add_amounts` (#720)
+  - `contracts/refund-vault/src/lib.rs` — typed `Error::MathOverflow` instead of a host abort
+  - `contracts/refund-vault/src/harvest_yield_overflow_tests.rs` — boundary test pins the stored total at `i128::MAX` and asserts the returned error variant
 
 
