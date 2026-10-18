@@ -85,4 +85,10 @@
   - `contracts/refund-vault/src/settlement.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` — boundary test pins both operands at `i128::MAX` and asserts the returned error variant
 
+## Issue #740: rustdoc for `common/events`' 8 module symbols
+
+- [x] Document `vault`, `channel`, `receipt`, `bridge`, `gov`, `treasury`, `multisig` and `auth` (#740)
+  - `contracts/common/src/events.rs` — doc comments only, no signature, body or ordering change
+
+
 
