@@ -1,8 +1,8 @@
 #![no_std]
 
 use accensa_common::{
-    storage::extend_instance_ttl, Error, PolicyContext, RefundPolicyClient, TimePolicyParams,
-    VaultInit, VdfPolicyParams,
+    math::add_amounts, storage::extend_instance_ttl, Error, PolicyContext, RefundPolicyClient,
+    TimePolicyParams, VaultInit, VdfPolicyParams,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contractmeta, contracttype, token, xdr::ToXdr, Address,
@@ -2497,9 +2497,10 @@ impl RefundVault {
             .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
+        let total_harvested = add_amounts(harvested, yield_amount)?;
         env.storage()
             .persistent()
-            .set(&DataKey::HarvestedYield, &(harvested + yield_amount));
+            .set(&DataKey::HarvestedYield, &total_harvested);
         persist_yield_ttl(&env, &DataKey::HarvestedYield);
 
         let nonce = increment_nonce(&env);
@@ -2749,6 +2750,9 @@ mod dust_tests;
 mod flash_loan_tests;
 #[cfg(test)]
 mod fuzz_test;
+/// Boundary test for `harvest_yield`'s checked running total (issue #720).
+#[cfg(test)]
+mod harvest_yield_overflow_tests;
 #[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
