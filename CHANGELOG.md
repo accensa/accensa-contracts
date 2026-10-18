@@ -8,6 +8,26 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`state-channel` (issue #480): support isolated sub-channel commitments.**
+  Introduced `contracts/state-channel/src/subchannel.rs` with `open_subchannel`,
+  `update_subchannel`, `settle_subchannel`, `active_subchannels`, `reserved`,
+  and `get_subchannel`. Validates parent channel capacity and balance bounds,
+  enforces sequence progression, preserves uncommitted headroom, and prevents
+  double-settlement.
+- **`treasury` (issue #479): automated threshold-based revenue sweeping.**
+  Added `contracts/treasury/src/sweep.rs` implementing `sweep_revenue`,
+  `set_sweep_config`, `get_sweep_config`, and threshold-based calculations to
+  automatically deploy excess revenue into whitelisted yield strategies on a
+  7-day schedule.
+- **`refund-vault` (issue #478): Permit2-style gasless deposit approvals.**
+  Added `contracts/refund-vault/src/permit.rs` implementing `deposit_with_permit`
+  with domain-separated Ed25519 signature verification, monotonic per-user nonces,
+  deadline checking, and gasless deposit transfers via relayer.
+- **`refund-vault` / `receipt-anchor` (issue #550): reconcile README function tables and missing authorization tests.**
+  Added `test_refund_requires_merchant_auth` and `test_deposit_from_non_merchant_fails`
+  in `contracts/refund-vault/src/test.rs` and corrected the README test mapping
+  for `set_anchor_rate_limit`.
+
 - **`reputation` (issue #621): credit key and event-payload parity tests.** Test-only
   addition to `contracts/reputation/src/credit_score_test.rs` pinning the storage and
   event surface of the credit scorer: `CreditDataKey::CompletionEscrow(u64)` replay
