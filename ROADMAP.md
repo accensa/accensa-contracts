@@ -85,4 +85,20 @@
   - `contracts/refund-vault/src/settlement.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` — boundary test pins both operands at `i128::MAX` and asserts the returned error variant
 
+## Issue #652: test: Pin the oracle admin getter and the round staleness bound
+
+- [x] Pin `get_admin` unset/bound states, the typed `AlreadyInitialized` double-initialize guard, and the inclusive staleness boundary in `contracts/oracle/src/staleness_test.rs` (#652)
+
+## Issue #653: test: Cover the cross-chain config getters' uninitialized arms
+
+- [x] Cover all four config getters unset/set/rebound and both `require_admin` verdicts without mocked auth in `contracts/cross-chain/src/config_readers_test.rs` (#653)
+
+## Issue #654: test: Cover the factory's already-tracked address branch on deploy
+
+- [x] Drive the already-tracked address collision branch and pin registry/salt invariants in `contracts/refund-vault-factory/tests/tracked_address.rs` (#654)
+
+## Issue #656: test: Assert treasury schedule entries keep their TTL across claims
+
+- [x] Assert schedule TTL at registration, re-bump after decay on a successful claim, and no shortening on a rejected claim in `contracts/treasury/tests/schedule_ttl.rs` (#656)
+
 

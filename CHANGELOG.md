@@ -8,6 +8,40 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`oracle` (issue #652): pin the admin getter and the round staleness bound.** New
+  `staleness_test` module in `contracts/oracle/src/staleness_test.rs`, registered
+  with a single `mod staleness_test;` line, asserting `get_admin` returns `None`
+  before `initialize` and `Some(admin)` after, a second `initialize` fails with
+  the typed `AlreadyInitialized` error while leaving the original admin bound,
+  and a round at exactly `max_staleness_ledgers` old is served while one ledger
+  past the bound is refused with `StalePrice` through both public readers. No
+  contract behaviour change.
+- **`cross-chain` (issue #653): cover the cross-chain config getters' uninitialized arms.** New
+  `config_readers_test` module in `contracts/cross-chain/src/config_readers_test.rs`,
+  registered with a single `mod config_readers_test;` line, asserting
+  `get_axelar_gateway`, `get_token`, `get_destination_chain_id` and
+  `is_trusted_peer` are unset before `initialize`, read back the exact written
+  values after it, and follow `set_axelar_gateway` / `set_trusted_peer` rebinds;
+  both `require_admin` verdicts (`NotInitialized` before initialize and
+  `Unauthorized` for a non-admin caller) are driven through public setters with
+  no mocked authorization via a direct-invoker probe contract. No contract
+  behaviour change.
+- **`refund-vault-factory` (issue #654): cover the already-tracked address branch on deploy.** New
+  `contracts/refund-vault-factory/tests/tracked_address.rs` proving the first
+  `deploy_vault` allocates a salt and registers the derived address, a second
+  request deriving an address already in the registry is rejected with the
+  documented `Error::SaltCollision` without double-registering or advancing the
+  counter, `get_vaults` never holds a duplicate, and two merchants' salt draws
+  stay independent with one counter advance per allocation. No contract code
+  change.
+- **`treasury` (issue #656): assert schedule entries keep their TTL across claims.** New
+  `contracts/treasury/tests/schedule_ttl.rs` reading `DataKey::Schedule(..)`'s
+  persistent TTL with `as_contract` + `get_ttl`, asserting `add_schedule`
+  leaves the entry at or above `DEFAULT_TTL_BUMP`, a successful `claim_vested`
+  re-extends an entry decayed below `DEFAULT_TTL_LOW_WATER` back to at least
+  `DEFAULT_TTL_BUMP`, and a rejected `NothingToClaim` claim leaves the TTL no
+  shorter. Policy constants come from `accensa_common::storage`; no contract
+  code change.
 - **`ci` (issue #584): align Tier B budget-report comment with live `--check` enforcement.**
   The `.github/workflows/ci.yml` Tier B step comment and the `budget.toml`
   provenance header now accurately describe that `cargo budget-report --check`
