@@ -26,7 +26,7 @@
 //! left, and the three amounts always sum back to `amount + merchant_retained`
 //! exactly — no tokens are created or lost by the split.
 
-use accensa_common::Error;
+use accensa_common::{math::add_amounts, Error};
 use soroban_sdk::{contractimpl, contracttype, BytesN, Env};
 
 use crate::{refund_fee, DataKey, RefundRecord, RefundVault, RefundVaultArgs, RefundVaultClient};
@@ -136,7 +136,10 @@ impl RefundVault {
         // active rung's rate, so the preview matches what `refund` will charge.
         let fee_bps: u32 = crate::tiers::effective_fee_bps(&env);
         let (fee, recipient_amount) = split_amount(amount, fee_bps);
-        let cumulative_refunded = previous_refunded + amount;
+        // Checked: with `[profile.release]` setting `overflow-checks = true`
+        // and `panic = "abort"`, a bare `+` here would abort the host call
+        // (issue #722). `add_amounts` maps to `Error::MathOverflow` instead.
+        let cumulative_refunded = add_amounts(previous_refunded, amount)?;
 
         Ok(RefundSettlement {
             recipient_amount,

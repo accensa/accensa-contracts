@@ -21,6 +21,7 @@ contractmeta!(key = "commit", val = env!("GIT_SHA"));
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+/// Errors returned by the upto-authorization contract operations.
 pub enum Error {
     AlreadyInitialized = 1,
     NotInitialized = 2,
@@ -44,6 +45,7 @@ pub enum Error {
 }
 
 #[contracttype]
+/// Storage keys for upto-authorization contract state.
 pub enum DataKey {
     Admin,
     Token,
@@ -103,10 +105,12 @@ const TTL_EXTEND: u32 = 518_400;
 const TTL_THRESHOLD: u32 = 100;
 
 #[contract]
+/// Smart contract managing pre-authorized payment caps.
 pub struct UptoAuthorization;
 
 #[contractimpl]
 impl UptoAuthorization {
+    /// Initializes admin and token; returns [`Error::AlreadyInitialized`] if already set.
     pub fn initialize(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);

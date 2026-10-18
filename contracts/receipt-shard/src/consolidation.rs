@@ -82,7 +82,7 @@ impl ReceiptShard {
             migrated += 1;
         }
 
-        if migrated > 0 && !Self::has_live_records(&env) {
+        if migrated > 0 && Self::has_live_records(&env) == Ok(false) {
             Self::decommission_internal(&env);
         }
 
@@ -142,7 +142,10 @@ impl ReceiptShard {
     /// Marks a drained shard inactive. No batch records may remain.
     pub fn decommission(env: Env) {
         Self::require_active_and_router(&env);
-        assert!(!Self::has_live_records(&env), "shard is not drained");
+        assert!(
+            Self::has_live_records(&env) == Ok(false),
+            "shard is not drained"
+        );
         Self::decommission_internal(&env);
     }
 
@@ -159,17 +162,25 @@ impl ReceiptShard {
         router.require_auth();
     }
 
-    fn has_live_records(env: &Env) -> bool {
+    pub(crate) fn has_live_records(env: &Env) -> Result<bool, Error> {
         let start: u64 = env
             .storage()
             .instance()
             .get(&DataKey::StartBatchId)
-            .unwrap();
-        let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
-        (start..end).any(|batch_id| env.storage().persistent().has(&DataKey::Batch(batch_id)))
+            .ok_or(Error::NotInitialized)?;
+        let end: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
+        Ok((start..end).any(|batch_id| env.storage().persistent().has(&DataKey::Batch(batch_id))))
     }
 
     fn decommission_internal(env: &Env) {
         env.storage().instance().set(&DataKey::Active, &false);
     }
 }
+
+#[path = "has_live_records_test.rs"]
+#[cfg(test)]
+mod has_live_records_test;
