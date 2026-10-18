@@ -2612,3 +2612,52 @@ fn test_process_batch_consumes_one_user_nonce_but_empty_does_not() {
         Err(Ok(Error::StaleState))
     );
 }
+
+// ── Config Getters Tests (#593) ─────────────────────────────────────────────
+
+mod config_getters_tests {
+    use super::*;
+
+    #[test]
+    fn test_initialized_config_getters() {
+        let (_env, client, merchant, token) = setup(100);
+
+        // All four getters return their initialized values
+        assert_eq!(client.get_admin(), merchant);
+        assert_eq!(client.try_get_admin(), Ok(Ok(merchant)));
+
+        assert_eq!(client.get_token(), token);
+        assert_eq!(client.try_get_token(), Ok(Ok(token)));
+
+        assert_eq!(client.get_refund_window(), 100);
+
+        assert!(!client.is_paused());
+        assert_eq!(client.try_is_paused(), Ok(Ok(false)));
+    }
+
+    #[test]
+    fn test_pause_unpause_flips_is_paused() {
+        let (_env, client, _merchant, _token) = setup(100);
+
+        assert!(!client.is_paused());
+
+        client.pause();
+        assert!(client.is_paused());
+        assert_eq!(client.try_is_paused(), Ok(Ok(true)));
+
+        client.unpause();
+        assert!(!client.is_paused());
+        assert_eq!(client.try_is_paused(), Ok(Ok(false)));
+    }
+
+    #[test]
+    fn test_uninitialized_is_paused_outcome() {
+        let (env, client, _merchant, _token) = setup(100);
+        env.as_contract(&client.address, || {
+            env.storage().instance().remove(&DataKey::Admin);
+        });
+
+        // As documented in README.md:196, missing admin => NotInitialized
+        assert_eq!(client.try_is_paused(), Err(Ok(Error::NotInitialized)));
+    }
+}

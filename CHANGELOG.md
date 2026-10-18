@@ -8,6 +8,9 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`multisig-account` / `refund-vault` (issues #592, #593): pin verify_ed25519 trap semantics and refund-vault config getters.**
+  Added unit test coverage for `verify_ed25519` in `contracts/multisig-account/src/test.rs`, asserting that valid signatures return normally, malleated non-canonical `s` scalar signatures return typed `Error::NonCanonicalSignature`, and invalid signatures trap the host VM (`Err(Err(_))`). Extended `contracts/refund-vault/src/test.rs` to exercise unexercised config getters (`get_admin`, `get_token`, `get_refund_window`, and `is_paused`), verifying configured values, pause/unpause boolean transitions, and `Error::NotInitialized` when called on an uninitialized instance. Test-only — no contract behavior changes.
+
 - **`refund-vault` (issue #685): report a missing payment token from
   `deploy_to_yield` instead of aborting.** The `DataKey::Token` read in
   `contracts/refund-vault/src/lib.rs` was an `unwrap()`, so a deployment that
