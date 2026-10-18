@@ -7,6 +7,14 @@ policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0
 breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
+
+- **`governance` / `multisig-account` (issues #747, #748): document the optimistic-track and pause-admin entry points.**
+  Added `///` doc comments to the public items the rustdoc issues named: `submit`,
+  `veto`, `execute` and `get` in `contracts/governance/src/optimistic.rs`, and
+  `is_paused`, `get_guardian`, `pause` and `unpause` in
+  `contracts/multisig-account/src/admin.rs`. Doc comments only — no signature,
+  body or test changes.
+
 - **`reputation` (issue #691): return a typed error when burning a missing credential.** Updated `sbt::burn` to return `SbtError::SbtNotFound` when the owner has no credential instead of aborting, propagated the error through `Reputation::revoke`, and added a regression test confirming that a failed burn does not create a revocation tombstone.
   
 - **`automation` (issue #557): remove stray scratch files from repository root.**
@@ -105,6 +113,16 @@ breaking changes bump the **minor** version, and they are called out as such.
   `CreditDataKey::Credit(Address)` entry, and the `CreditUpdatedEvent` payload is
   asserted in full by XDR comparison on both paths, staying in agreement with the
   getters and `get_fee_bps`. No contract behaviour change.
+- **`refund-vault` (issue #720): guard `harvest_yield`'s running total against
+  overflow.** The `harvested + yield_amount` sum in
+  `contracts/refund-vault/src/lib.rs` now goes through
+  `accensa_common::math::add_amounts` instead of a bare `+`, so a
+  non-representable total returns the typed `Error::MathOverflow` (321) rather
+  than aborting the host call (the release profile sets `overflow-checks = true`
+  with `panic = "abort"`). New
+  `contracts/refund-vault/src/harvest_yield_overflow_tests.rs` pins the stored
+  total at `i128::MAX`, harvests one more unit and asserts the returned variant
+  rather than a panic.
 - **`refund-vault` (issue #722): guard `preview_settlement`'s cumulative sum
   against overflow.** The `previous_refunded + amount` sum in
   `contracts/refund-vault/src/settlement.rs` now goes through
