@@ -8,26 +8,14 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
-- **`state-channel` (issue #480): support isolated sub-channel commitments.**
-  Introduced `contracts/state-channel/src/subchannel.rs` with `open_subchannel`,
-  `update_subchannel`, `settle_subchannel`, `active_subchannels`, `reserved`,
-  and `get_subchannel`. Validates parent channel capacity and balance bounds,
-  enforces sequence progression, preserves uncommitted headroom, and prevents
-  double-settlement.
-- **`treasury` (issue #479): automated threshold-based revenue sweeping.**
-  Added `contracts/treasury/src/sweep.rs` implementing `sweep_revenue`,
-  `set_sweep_config`, `get_sweep_config`, and threshold-based calculations to
-  automatically deploy excess revenue into whitelisted yield strategies on a
-  7-day schedule.
-- **`refund-vault` (issue #478): Permit2-style gasless deposit approvals.**
-  Added `contracts/refund-vault/src/permit.rs` implementing `deposit_with_permit`
-  with domain-separated Ed25519 signature verification, monotonic per-user nonces,
-  deadline checking, and gasless deposit transfers via relayer.
-- **`refund-vault` / `receipt-anchor` (issue #550): reconcile README function tables and missing authorization tests.**
-  Added `test_refund_requires_merchant_auth` and `test_deposit_from_non_merchant_fails`
-  in `contracts/refund-vault/src/test.rs` and corrected the README test mapping
-  for `set_anchor_rate_limit`.
-
+- **`reputation` (issue #621): credit key and event-payload parity tests.** Test-only
+  addition to `contracts/reputation/src/credit_score_test.rs` pinning the storage and
+  event surface of the credit scorer: `CreditDataKey::CompletionEscrow(u64)` replay
+  makes a duplicate escrow id a no-op on the score and the stored record, both
+  `record_completion` and `record_fraud` update the single shared
+  `CreditDataKey::Credit(Address)` entry, and the `CreditUpdatedEvent` payload is
+  asserted in full by XDR comparison on both paths, staying in agreement with the
+  getters and `get_fee_bps`. No contract behaviour change.
 - **`refund-vault` (issue #722): guard `preview_settlement`'s cumulative sum
   against overflow.** The `previous_refunded + amount` sum in
   `contracts/refund-vault/src/settlement.rs` now goes through
@@ -40,6 +28,27 @@ breaking changes bump the **minor** version, and they are called out as such.
   `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` pins both
   operands of the sum at `i128::MAX` and asserts the returned variant rather
   than a panic.
+- **`receipt-shard` (issue #551): replace panic and assert sites in `consolidate`
+  with typed Error variants.** `ReceiptShard::consolidate` now returns
+  `Result<u32, Error>` instead of panicking on user-reachable conditions: a
+  destination matching the source returns `Error::DestinationMismatch` (104), a
+  missing batch returns `Error::BatchNotFound` (100), and a cross-contract
+  round-trip mismatch returns `Error::RoundTripMismatch` (105) while leaving
+  source storage untouched.
+- **`chore` (issue #558): remove unreferenced `contracts/upgrade-proxy`.**
+  Deleted the stranded `contracts/upgrade-proxy/` directory which contained only
+  an unreferenced test stub without Cargo.toml, src/, or workspace membership.
+  In-place upgrade paths on Soroban use `env.deployer().update_current_contract_wasm`
+  as documented in ADR-003.
+- **`ci` (issue #555): run deploy dry-run smoke test and bounded differential fuzz harness.**
+  Added CI steps to run `tests/test_deploy.sh` in dry-run mode and execute
+  `tests/differential/bolero_test.rs` bounded invariant campaign. Added
+  `tests/README.md` with instructions for reproducing both tests locally.
+- **`docs` (issue #559): reconcile DEPLOYMENTS.md and docs/ARCHITECTURE.md with manifest versions.**
+  Refreshed version banner to indicate `main` is at `0.3.0` while testnet addresses
+  run `0.1.0`. Added explicit per-address deployed version tags, verification
+  commands via on-chain WASM bytecode inspection, a notice on stale deployments,
+  and aligned CLI examples.
 - **`treasury` (issue #649): return typed InsufficientBalance error on unfunded yield float.**
   `claim_yield` reads the contract's yield token balance before mutating user `pending` or `claimed` and returns `Error::InsufficientBalance` when the balance cannot cover the claim, leaving accrued yield intact.
 - **`insurance` (issue #608): assert deposit, withdraw, borrow and repay lifecycle events.**

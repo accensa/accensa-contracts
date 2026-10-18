@@ -258,3 +258,14 @@ jobs:
           fi
           cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
           "$DENY_BIN" --metadata-path "$RUNNER_TEMP/cargo-metadata.json" check
+
+      - name: Deploy smoke test (dry-run)
+        # Issue #555: runs deploy.sh argument parsing, validation, and safety checks in dry-run.
+        run: bash tests/test_deploy.sh
+
+      - name: Differential fuzz harness
+        # Issue #555: runs bounded campaign with documented iteration count for invariant testing.
+        run: |
+          rustc --test tests/differential/bolero_test.rs -o target/bolero_test
+          ./target/bolero_test --nocapture
+
