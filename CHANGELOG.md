@@ -8,6 +8,35 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`refund-vault` (issue #685): report a missing payment token from
+  `deploy_to_yield` instead of aborting.** The `DataKey::Token` read in
+  `contracts/refund-vault/src/lib.rs` was an `unwrap()`, so a deployment that
+  reached it aborted with an untyped `WasmRuntimeError` while the pause, amount,
+  admin and strategy arms in the same function return `Error`. It now reads
+  `ok_or(Error::NotInitialized)?`, matching how the other entry points resolve
+  the same key. New
+  `contracts/refund-vault/src/deploy_to_yield_token_tests.rs` approves and
+  activates a strategy, removes the stored token and asserts the returned
+  variant.
+- **`refund-vault` (issue #686): report a missing refund window from
+  `extend_refund_ttl` instead of aborting.** The `DataKey::RefundWindow` read
+  that sizes the TTL extension was an `unwrap()`; it now returns
+  `Error::NotInitialized`, so a call that finds a refund record but no window
+  answers with a typed variant the caller can match, like the `RefundNotFound`
+  arm beside it. New
+  `contracts/refund-vault/src/extend_refund_ttl_window_tests.rs` stores a v2
+  refund record, removes the window and asserts the returned variant.
+- **`refund-vault` (issue #687): walk the fee ladder in `tier_for_volume`
+  without indexing.** The active-rung scan read each rung through
+  `ladder.get(i).unwrap()`, whose safety rested on a manual argument about the
+  loop bound. It now iterates the ladder with an enumerated index, so no line
+  can trap at host-call time. Behaviour is unchanged for every input that
+  passed before; no signature or public API changed.
+- **`refund-vault` (issue #688): resolve `next_threshold` from the bound
+  `Option` instead of unwrapping.** The next-rung lookup
+  (`ladder.get(next).unwrap()`) is now a `match` on `get`, whose `None` arm is
+  exactly the documented top-rung case returning `i128::MAX`. No new error
+  variant is reachable and no behaviour changes for previously valid input.
 - **`governance` / `multisig-account` (issues #747, #748): document the optimistic-track and pause-admin entry points.**
   Added `///` doc comments to the public items the rustdoc issues named: `submit`,
   `veto`, `execute` and `get` in `contracts/governance/src/optimistic.rs`, and
