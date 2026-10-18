@@ -1,5 +1,9 @@
 # Roadmap
 
+## Issue #709: refund-vault integration test coverage
+
+- [x] Cover NFT transfers, emergency yield exit, and yield distribution (#709)
+
 ## Issue #443: stACC liquid staking derivative minting
 
 - [x] Implement stACC liquid staking derivative minting (#443)
