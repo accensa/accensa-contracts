@@ -113,6 +113,16 @@ breaking changes bump the **minor** version, and they are called out as such.
   `CreditDataKey::Credit(Address)` entry, and the `CreditUpdatedEvent` payload is
   asserted in full by XDR comparison on both paths, staying in agreement with the
   getters and `get_fee_bps`. No contract behaviour change.
+- **`refund-vault` (issue #720): guard `harvest_yield`'s running total against
+  overflow.** The `harvested + yield_amount` sum in
+  `contracts/refund-vault/src/lib.rs` now goes through
+  `accensa_common::math::add_amounts` instead of a bare `+`, so a
+  non-representable total returns the typed `Error::MathOverflow` (321) rather
+  than aborting the host call (the release profile sets `overflow-checks = true`
+  with `panic = "abort"`). New
+  `contracts/refund-vault/src/harvest_yield_overflow_tests.rs` pins the stored
+  total at `i128::MAX`, harvests one more unit and asserts the returned variant
+  rather than a panic.
 - **`refund-vault` (issue #722): guard `preview_settlement`'s cumulative sum
   against overflow.** The `previous_refunded + amount` sum in
   `contracts/refund-vault/src/settlement.rs` now goes through
