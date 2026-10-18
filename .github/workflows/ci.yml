@@ -202,11 +202,11 @@ jobs:
           cargo install --git https://github.com/Tollcraft/soroban-budget-assert.git \
             --tag "$SOROBAN_BUDGET_ASSERT_REF" --locked cargo-budget-report
       - name: Run cargo budget-report (Tier B)
-        # Requires a funded testnet identity; only runs in the repo's own runs
-        # where the secret is set. `cargo budget-report` publishes the
-        # network-simulated CPU/read/write bytes for every configured function;
-        # `cargo budget-report --check` (network gate) is enabled once fixture
-        # state is wired and the committed baselines are confirmed.
+        # Requires a funded testnet identity; only runs in post-merge runs
+        # where STELLAR_TESTNET_SECRET is set. Enabled in PR #244, this step runs
+        # `cargo budget-report --check` to enforce the committed `[functions.*]`
+        # baselines in budget.toml (anchor_batch_*, verify_receipt_*, prune_batches_100,
+        # refund, deposit) with a 15% tolerance ceiling against testnet simulation.
         if: ${{ github.event_name != 'pull_request' && env.STELLAR_TESTNET_SECRET != '' }}
         run: |
           echo "$STELLAR_TESTNET_SECRET" | stellar keys add alice --network testnet --secret-key-stdin

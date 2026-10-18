@@ -27,7 +27,27 @@ breaking changes bump the **minor** version, and they are called out as such.
   Added `test_refund_requires_merchant_auth` and `test_deposit_from_non_merchant_fails`
   in `contracts/refund-vault/src/test.rs` and corrected the README test mapping
   for `set_anchor_rate_limit`.
-
+- **`ci` (issue #584): align Tier B budget-report comment with live `--check` enforcement.**
+  The `.github/workflows/ci.yml` Tier B step comment and the `budget.toml`
+  provenance header now accurately describe that `cargo budget-report --check`
+  runs on post-merge builds with `STELLAR_TESTNET_SECRET` to enforce committed
+  `[functions.*]` baselines within a 15% tolerance ceiling.
+- **`multisig-account` (issue #585): test execute_batch auth, ordering, and atomic rollback.**
+  New `execute_batch_tests` module in `contracts/multisig-account/src/test.rs`
+  proves that proposal execution runs calls in order with 1:1 result mapping,
+  direct external calls without multisig authorization fail `require_auth`,
+  and mid-batch traps cleanly roll back preceding state changes.
+- **`governance` (issue #586): client-driven tests for optimistic voting wrappers.**
+  Extended `contracts/governance/src/test.rs` with `GovernanceClient`-driven
+  tests covering `optimistic_submit`, `veto_optimistic`, `execute_optimistic`,
+  and `get_optimistic_proposal` across pass and deny paths, and verified ID
+  counter independence between standard and optimistic proposals.
+- **`state-channel` (issue #587): test verify_zk_commitment phase gates, amount bounds, and hash mismatch error.**
+  New `verify_zk_commitment_tests` module in `contracts/state-channel/src/test.rs`
+  tests that valid commitments return `Ok` on open channels, closed channels
+  return `ChannelNotOpen`, commitment hash mismatches return `InvalidSignature`
+  (pinned and documented), and values exceeding balance or negative values
+  return `InvalidAmount`.
 - **`reputation` (issue #621): credit key and event-payload parity tests.** Test-only
   addition to `contracts/reputation/src/credit_score_test.rs` pinning the storage and
   event surface of the credit scorer: `CreditDataKey::CompletionEscrow(u64)` replay
