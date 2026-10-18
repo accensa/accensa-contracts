@@ -85,4 +85,10 @@
   - `contracts/refund-vault/src/settlement.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` — boundary test pins both operands at `i128::MAX` and asserts the returned error variant
 
+## Issue #739: rustdoc for refund-vault/lib's 8 public items
+
+- [x] Document `RefundParam`, `DataKey`, `RefundRecord`, `YieldInfo`, `DepositEvent`, `WithdrawEvent`, `AdminTransferInitiatedEvent` and `AdminTransferAcceptedEvent` (#739)
+  - `contracts/refund-vault/src/lib.rs` — doc comments only, no signature, body or ordering change
+
+
 
