@@ -7,6 +7,69 @@ policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0
 breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`reputation` (issue #691): return a typed error when burning a missing credential.** Updated `sbt::burn` to return `SbtError::SbtNotFound` when the owner has no credential instead of aborting, propagated the error through `Reputation::revoke`, and added a regression test confirming that a failed burn does not create a revocation tombstone.
+  
+- **`automation` (issue #557): remove stray scratch files from repository root.**
+  Removed 10 automation scratch files (`fix.sh`, `fix_budget.sh`,
+  `fix_common.sh`, `fix_lib.sh`, `patch.sed`, `patch_changelog.py`,
+  `pr_body.md`, `pr_body.txt`, `pr_description.md`, `pr_document.md`) from
+  the repository root and added `.gitignore` patterns to prevent recommittal.
+- **`upto-authorization` / `governance` (issues #564, #565): pin the
+  domain-separator context and enforce the absolute quorum floor.**
+  `domain.rs` gains inline tests proving the authorization digest differs
+  across network ids, contract addresses and protocol versions, and is
+  reproducible for identical inputs. `current_quorum_bps` now raises a
+  `start_bps` below `QUORUM_FLOOR_BPS` to the floor, so the documented
+  absolute floor holds for every constructor-valid threshold.
+- **`governance` (issue #438): time-weighted vote escrow (veToken).**
+  New `vetoken` module. A member locks governance tokens with `create_lock`
+  for between 30 days and 4 years (`518_400` to `25_228_800` ledgers) and gets
+  voting power `amount * remaining_ledgers / MAX_LOCK_LEDGERS`, which decays
+  linearly to zero at the unlock ledger. `withdraw_lock` pays the tokens back
+  only at or after the unlock ledger. The power is added to the input of
+  `voting::quadratic_weight` (`isqrt(deposit + voting_power)`), so a member
+  without a lock has exactly the weight they had before. The escrowed token is
+  set once with `set_ve_token`, gated like `set_treasury_token`. Escrow errors
+  are a separate `VeError` enum, so the governance `Error` spec does not grow.
+- **`stream-vault` (issue #692): report a missing token with a typed error.**
+  `StreamVault::token_client` now returns `Result<token::Client, Error>` with
+  `Error::NotInitialized` when the constructor-written `Token` key is absent,
+  instead of unwinding on a vault whose state was reset, and the disbursement,
+  claim and settlement paths unwrap through `token_client` only after that
+  check. `token_client_before_initialization_returns_not_initialized` pins
+  the typed result.
+  `contracts/refund-vault/src/coupons.rs` gains an inline suite pinning the
+  5 000 bp discount cap (accepted at the boundary, `Error::InvalidRatio` above
+  it), the duplicate-mint guard, and the redeemed-once rule with `get_coupon`
+  observing `redeemed: true` between calls. The new
+  `contracts/receipt-anchor/src/incremental_api_test.rs` drives
+  `insert_receipt_leaf`, `get_incremental_leaf_count`, `get_incremental_root`
+  and `get_min_anchor_interval` through the client: sequential zero-based
+  indices, root parity with the batch root accepted by `anchor_batch`,
+  `Error::RootNotFound` before the first insert, and the interval
+  setter/getter round-trip. Test-only — no contract behavior change.
+- **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
+  Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
+- **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
+  for the exported surface missing `///` comments.**
+  `contracts/stream-vault/src/lib.rs` now documents `DataKey`, `StreamVault`,
+  `get_merchant` and `get_token`; `contracts/multisig-account/src/weights.rs`
+  documents `store_signer_list`, `store_signer_weight` and
+  `clear_signer_weight`. Doc comments only — no signature, body or behavior
+  change.
+- **`refund-vault-factory` / `oracle` (issues #562, #563): test the fee hardcap
+  boundary and the oracle read surface.**
+  `factory_tests.rs` proves `create_vault` rejects 501 bp with
+  `Error::FeeExceedsHardcap` without advancing the salt counter, tracking a
+  vault or changing TVL, and accepts the inclusive 500 bp boundary with the fee
+  stored on the new vault. `oracle/src/test.rs` round-trips stored rounds
+  through `get_round_data` and `latest_round_data`, asserts the typed `NoData`
+  error for an unknown round id and an empty feed, and checks `get_admin`
+  returns the constructor address. Test-only — no contract behavior change.
+- **`refund-vault` (issue #689): `on_settled` walks the fee ladder without indexing.**
+  The promoting rung's fee is read by iterating the ladder, so an out-of-range rung can no longer trap the claim path. Behaviour for every valid ladder is unchanged.
+- **`refund-vault` (issue #690): `set_tier_ladder` uses a checked lookup.**
+  `set_tier_ladder` reads the selected rung's fee with `tiers.get(current_tier)` followed by a typed `Error::InvalidTierLadder` fallback (instead of unwrapping), so a missing rung resolves to the crate's error and validated ladders retain their existing behaviour.
 
 - **`governance` (issue #552): test instance storage TTL eviction returns typed errors.**
   Added tests in `contracts/governance/src/test.rs` asserting that `propose` and
