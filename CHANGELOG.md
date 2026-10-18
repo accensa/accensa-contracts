@@ -7,6 +7,14 @@ policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0
 breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
+
+- **`governance` / `multisig-account` (issues #747, #748): document the optimistic-track and pause-admin entry points.**
+  Added `///` doc comments to the public items the rustdoc issues named: `submit`,
+  `veto`, `execute` and `get` in `contracts/governance/src/optimistic.rs`, and
+  `is_paused`, `get_guardian`, `pause` and `unpause` in
+  `contracts/multisig-account/src/admin.rs`. Doc comments only — no signature,
+  body or test changes.
+
 - **`reputation` (issue #691): return a typed error when burning a missing credential.** Updated `sbt::burn` to return `SbtError::SbtNotFound` when the owner has no credential instead of aborting, propagated the error through `Reputation::revoke`, and added a regression test confirming that a failed burn does not create a revocation tombstone.
   
 - **`automation` (issue #557): remove stray scratch files from repository root.**

@@ -63,6 +63,9 @@ const ALLOWED_WHILE_PAUSED: [&str; 4] = [
     "rotate_signers_and_threshold",
 ];
 
+/// Whether the emergency circuit breaker is currently engaged.
+///
+/// Reads the `Paused` instance-storage flag, defaulting to `false` when unset.
 pub fn is_paused(env: &Env) -> bool {
     env.storage()
         .instance()
@@ -79,6 +82,9 @@ pub fn require_not_paused(env: &Env) -> Result<(), Error> {
     Ok(())
 }
 
+/// The designated security guardian, or `None` when no guardian is set.
+///
+/// Reads the `PauseGuardian` instance-storage key maintained by `set_guardian`.
 pub fn get_guardian(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::PauseGuardian)
 }
@@ -101,6 +107,11 @@ pub fn set_guardian(env: &Env, guardian: Option<Address>) {
     .publish(env);
 }
 
+/// Engage the circuit breaker: store `Paused = true` and emit [`PausedEvent`].
+///
+/// Pre-condition: `caller` is the account itself (threshold signers) or the
+/// guardian, and authorizes the call — enforced by `require_pause_authority`,
+/// whose sole error arm is `Error::Unauthorized`.
 pub fn pause(env: &Env, caller: Address) -> Result<(), Error> {
     require_pause_authority(env, &caller)?;
     env.storage().instance().set(&DataKey::Paused, &true);
@@ -113,6 +124,11 @@ pub fn pause(env: &Env, caller: Address) -> Result<(), Error> {
     Ok(())
 }
 
+/// Lift the circuit breaker: store `Paused = false` and emit [`UnpausedEvent`].
+///
+/// Pre-condition and error arms are identical to `pause`: `caller` must be the
+/// account itself or the guardian and must authorize, else `Error::Unauthorized`
+/// from `require_pause_authority`.
 pub fn unpause(env: &Env, caller: Address) -> Result<(), Error> {
     require_pause_authority(env, &caller)?;
     env.storage().instance().set(&DataKey::Paused, &false);
