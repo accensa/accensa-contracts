@@ -20,6 +20,8 @@ pub mod wormhole;
 #[cfg(test)]
 mod axelar_test;
 #[cfg(test)]
+mod config_readers_test;
+#[cfg(test)]
 mod layerzero_test;
 #[cfg(test)]
 mod test;

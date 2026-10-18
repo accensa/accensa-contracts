@@ -10,6 +10,8 @@
 pub mod chainlink;
 
 #[cfg(test)]
+mod staleness_test;
+#[cfg(test)]
 mod test;
 
 use chainlink::{latest_round, RoundData};
