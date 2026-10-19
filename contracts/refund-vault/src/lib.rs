@@ -389,6 +389,7 @@ pub struct YieldDeployedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when principal is withdrawn from a yield strategy.
 pub struct YieldWithdrawnEvent {
     #[topic]
     pub strategy: Address,
@@ -400,6 +401,7 @@ pub struct YieldWithdrawnEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when yield is harvested from a strategy.
 pub struct YieldHarvestedEvent {
     pub amount: i128,
     /// Monotonic nonce at the time of this operation (issue #136).
@@ -408,6 +410,7 @@ pub struct YieldHarvestedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when a new refund policy is proposed.
 pub struct PolicyProposedEvent {
     #[topic]
     pub window: u32,
@@ -418,6 +421,7 @@ pub struct PolicyProposedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when a proposed refund policy is executed.
 pub struct PolicyExecutedEvent {
     #[topic]
     pub window: u32,
@@ -973,6 +977,7 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
 const MAX_REFUND_BATCH_SIZE: u32 = 100;
 
 #[contract]
+/// Refund vault contract for holding settlement funds and processing refunds.
 pub struct RefundVault;
 
 const INITIAL_STORAGE_VERSION: u32 = 1;
@@ -1071,6 +1076,15 @@ impl RefundVault {
         current_user_nonce(&env, &caller)
     }
 
+    /// Deposit a positive amount from the vault admin, optionally applying a coupon.
+    ///
+    /// # Errors
+    /// - `Paused`: the vault is paused.
+    /// - `InvalidAmount`: `amount` is not positive.
+    /// - `NotInitialized`: the admin or settlement token is not configured.
+    /// - `Unauthorized`: `from` is not the vault admin.
+    /// - `CouponNotFound`: the supplied coupon ID does not exist.
+    /// - Errors returned by the reentrancy guard or while applying the coupon.
     pub fn deposit(
         env: Env,
         from: Address,
@@ -1166,6 +1180,13 @@ impl RefundVault {
         coupons::get_coupon(&env, coupon_id)
     }
 
+    /// Replace the settlement token when the vault has no token balance.
+    ///
+    /// Requires authorization from the configured merchant.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault admin is not configured.
+    /// - `FloatNotEmpty`: the current settlement token balance is nonzero.
     pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
@@ -1413,6 +1434,17 @@ impl RefundVault {
         Ok(results)
     }
 
+    /// Withdraw a positive amount to `to`, recalling strategy funds if needed.
+    ///
+    /// Requires authorization from the configured merchant and an unpaused vault.
+    ///
+    /// # Errors
+    /// - `Paused`: the vault is paused.
+    /// - `InvalidAmount`: `amount` is not positive.
+    /// - `SelfTransfer`: `to` is the vault contract itself.
+    /// - `NotInitialized`: the merchant or settlement token is not configured.
+    /// - `InsufficientFloat`: available and recalled funds do not cover `amount`.
+    /// - Errors returned by the reentrancy guard or while ensuring liquidity.
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 

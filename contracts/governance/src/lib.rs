@@ -253,13 +253,21 @@ pub struct RingSignature {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposal {
+    /// Address of the member who submitted the proposal.
     pub proposer: Address,
+    /// Address of the contract targeted by the proposed call.
     pub target: Address,
+    /// Function symbol to invoke on the target contract.
     pub function: Symbol,
+    /// Values passed as arguments to the proposed function.
     pub args: Vec<Val>,
+    /// Accumulated voting weight in favor of the proposal.
     pub yes_weight: u64,
+    /// Accumulated voting weight against the proposal.
     pub no_weight: u64,
+    /// Ledger number by which voting on the proposal ends.
     pub deadline_ledger: u32,
+    /// Whether the proposed call has been executed.
     pub executed: bool,
 }
 
