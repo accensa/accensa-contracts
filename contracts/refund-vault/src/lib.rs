@@ -2341,7 +2341,11 @@ impl RefundVault {
             return Err(Error::StrategyNotApproved);
         }
 
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_addr);
         let token_balance = token_client.balance(&env.current_contract_address());
 
@@ -2657,7 +2661,7 @@ impl RefundVault {
             .storage()
             .instance()
             .get(&DataKey::RefundWindow)
-            .unwrap();
+            .ok_or(Error::NotInitialized)?;
 
         let extend_to = refund_record_ttl_extend_to(&env, window, record.paid_at_ledger);
         // Threshold == extend_to: a caller invoking this well before expiry
@@ -2743,8 +2747,15 @@ impl RefundVault {
     }
 }
 
+/// Typed failure for the missing `DataKey::Token` in `deploy_to_yield` (issue #685).
+#[cfg(test)]
+mod deploy_to_yield_token_tests;
 #[cfg(test)]
 mod dust_tests;
+/// Typed failure for the missing `DataKey::RefundWindow` in `extend_refund_ttl`
+/// (issue #686).
+#[cfg(test)]
+mod extend_refund_ttl_window_tests;
 #[cfg(test)]
 mod flash_loan_tests;
 #[cfg(test)]
