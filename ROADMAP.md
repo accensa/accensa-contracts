@@ -1,5 +1,9 @@
 # Roadmap
 
+## Issue #709: refund-vault integration test coverage
+
+- [x] Cover NFT transfers, emergency yield exit, and yield distribution (#709)
+
 ## Issue #443: stACC liquid staking derivative minting
 
 - [x] Implement stACC liquid staking derivative minting (#443)
@@ -91,4 +95,26 @@
   - `contracts/refund-vault/src/lib.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/harvest_yield_overflow_tests.rs` — boundary test pins the stored total at `i128::MAX` and asserts the returned error variant
 
+
+## Issue #685: report a missing payment token from `deploy_to_yield`
+
+- [x] Return `Error::NotInitialized` when `DataKey::Token` is unset in `deploy_to_yield` (#685)
+  - `contracts/refund-vault/src/lib.rs` — typed error instead of a host abort
+  - `contracts/refund-vault/src/deploy_to_yield_token_tests.rs` — test removes the stored token and asserts the returned error variant
+
+## Issue #686: report a missing refund window from `extend_refund_ttl`
+
+- [x] Return `Error::NotInitialized` when `DataKey::RefundWindow` is unset in `extend_refund_ttl` (#686)
+  - `contracts/refund-vault/src/lib.rs` — typed error instead of a host abort
+  - `contracts/refund-vault/src/extend_refund_ttl_window_tests.rs` — test stores a refund record, removes the window and asserts the returned error variant
+
+## Issue #687: walk the fee ladder in `tier_for_volume` without indexing
+
+- [x] Iterate the ladder in `tier_for_volume` instead of `ladder.get(i).unwrap()` (#687)
+  - `contracts/refund-vault/src/tiers.rs` — enumerated iteration, no trap path, unchanged behaviour
+
+## Issue #688: resolve `next_threshold` from the bound `Option`
+
+- [x] Match on `ladder.get(next)` in `next_threshold` instead of unwrapping (#688)
+  - `contracts/refund-vault/src/tiers.rs` — the `None` arm is the documented top-rung `i128::MAX`, unchanged behaviour
 
