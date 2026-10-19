@@ -181,3 +181,9 @@
 
 - [x] Add `///` rustdoc to `MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open` and `get` (#751)
   - `contracts/state-channel/src/multi_asset.rs` — doc comments only; role, pre-conditions and each `Error` arm documented, signatures and bodies unchanged
+
+## Issue #674: error arm for absent state in governance::propose_with_simulation
+
+- [x] `propose_with_simulation` returns `Error::InvalidVotingPeriod` on missing state (#674)
+  - `contracts/governance/src/simulation.rs` — typed error instead of unwrap on missing `VotingPeriod`
+  - `contracts/governance/tests/simulation_before_init.rs` — before-init test asserts the returned variant

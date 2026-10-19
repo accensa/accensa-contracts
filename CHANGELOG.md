@@ -8,6 +8,12 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- fix(governance): `propose_with_simulation` now returns the typed
+  `Error::InvalidVotingPeriod` instead of aborting when the constructor-written
+  `DataKey::VotingPeriod` is absent from instance storage, matching the
+  `propose` and `execute` paths that read the same key; new
+  `contracts/governance/tests/simulation_before_init.rs` removes the key and
+  asserts the returned variant (issue #674).
 - **Documentation (#750, #751):** Documented the 4 public items of refund-vault `nft_escrow` (`deposit`, `claim`, `refund`, `get`) and the 4 of state-channel `multi_asset` (`MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open`, `get`) with `///` rustdoc, covering role, pre-conditions and each `Error` arm for off-chain integrators; comments only, no code change.
 - **`stream-vault` (issue #607): assert all five stream-vault lifecycle event shapes.**
   Walk a stream through create, partial claim, pause, resume, and cancel transitions, asserting exact XDR shapes for `StreamCreatedEvent`, `StreamClaimedEvent`, `StreamPausedEvent`, `StreamResumedEvent`, and `StreamCancelledEvent`. Test-only — no contract behavior change.
