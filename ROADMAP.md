@@ -171,3 +171,18 @@
 
 - [x] Document `payment_id`, `from`, `to`, `cap` and `expiry` (#792)
   - `contracts/upto-authorization/src/lib.rs` — doc comments only, field/type/order/derives unchanged
+
+## Issue #666: Update ARCHITECTURE.md beyond the two-contract framing
+
+- [x] Broaden `docs/ARCHITECTURE.md`'s scope statement and add the full workspace contract inventory (#666)
+  - `docs/ARCHITECTURE.md` — new intro scope, `Contract Inventory` table derived from `Cargo.toml` members, and the `Cross-Contract Relationship` opener; walkthrough unchanged
+
+## Issue #667: Back RELEASING's reproducible-build claim with a pinned toolchain
+
+- [x] Scope `docs/RELEASING.md`'s reproducibility claim to source-to-commit provenance and document the toolchain (#667)
+  - `docs/RELEASING.md` — step 3 now states what is not byte-reproducible without a pinned compiler and how to record `rustc`/`cargo` versions
+
+## Issue #668: Delete the stray duplicate Unreleased section at CHANGELOG's end
+
+- [x] Remove the duplicate trailing `## [Unreleased]` heading and stub from `CHANGELOG.md` (#668)
+  - `CHANGELOG.md` — only the top `## [Unreleased]` remains; the link-reference block is the final section
