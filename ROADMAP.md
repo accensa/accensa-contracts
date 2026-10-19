@@ -156,3 +156,8 @@
 
 - [x] Point the supported-versions table at the 0.3.x release line (#661)
   - `SECURITY.md` — supported and unsupported version rows; the 0.1.0 testnet note is unchanged
+
+## Issue #787: rustdoc for `ChannelOpenedEvent`'s 5 public fields
+
+- [x] Document the struct's 5 public fields (#787)
+  - `contracts/state-channel/src/lib.rs` — doc comments only, no signature, body, order or derive changes
