@@ -12,8 +12,8 @@
 extern crate std;
 
 use crate::strategies::{
-    split_by_weights, AllocationConfig, AllocationsUpdatedEvent, MAX_STRATEGIES,
-    PortfolioRebalancedEvent, StrategyAllocation, StrategyRecalledEvent, StrategyWhitelistedEvent,
+    split_by_weights, AllocationConfig, AllocationsUpdatedEvent, PortfolioRebalancedEvent,
+    StrategyAllocation, StrategyRecalledEvent, StrategyWhitelistedEvent, MAX_STRATEGIES,
     TOTAL_WEIGHT_BPS,
 };
 use crate::{Error, Treasury, TreasuryClient};
@@ -1114,8 +1114,7 @@ fn the_yield_lifecycle_publishes_each_event_shape() {
     assert_eq!(deployed, 20_000_000);
     let (principal, yield_amount) = ctx.client.recall_strategy(&ctx.aave, &deployed);
     assert_eq!(
-        principal,
-        deployed,
+        principal, deployed,
         "the recalled amount is the deployed principal"
     );
     assert_eq!(yield_amount, 0);
@@ -1157,8 +1156,7 @@ fn a_recall_that_returns_yield_reports_it_in_the_event() {
     assert_eq!(deployed, 50_000_000);
     let (principal, yield_amount) = ctx.client.recall_strategy(&ctx.aave, &deployed);
     assert_eq!(
-        principal,
-        deployed,
+        principal, deployed,
         "the recalled amount is the deployed principal"
     );
     assert_eq!(yield_amount, 5_000_000);

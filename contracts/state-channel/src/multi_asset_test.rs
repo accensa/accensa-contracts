@@ -528,9 +528,13 @@ fn single_asset_and_multi_asset_channels_use_distinct_storage_keys() {
     let s = setup();
 
     // Same counterparty and amount: only the `DataKey` variant differs.
-    let single = s
-        .client
-        .open_channel(&s.sender, &s.receiver, &s.pubkey(), &DEPOSIT_USDC, &CHALLENGE);
+    let single = s.client.open_channel(
+        &s.sender,
+        &s.receiver,
+        &s.pubkey(),
+        &DEPOSIT_USDC,
+        &CHALLENGE,
+    );
     let multi = s.open();
     assert_eq!(multi, single + 1);
 
@@ -538,7 +542,10 @@ fn single_asset_and_multi_asset_channels_use_distinct_storage_keys() {
     // `src/` test): `DataKey::MultiAssetChannel` must not resolve the record
     // written under `DataKey::Channel`, and vice versa.
     let single_via_multi_key: Option<MultiAssetChannel> = s.env.as_contract(&s.contract, || {
-        s.env.storage().persistent().get(&DataKey::MultiAssetChannel(single))
+        s.env
+            .storage()
+            .persistent()
+            .get(&DataKey::MultiAssetChannel(single))
     });
     assert!(single_via_multi_key.is_none());
     let multi_via_single_key: Option<Channel> = s.env.as_contract(&s.contract, || {
@@ -557,7 +564,10 @@ fn single_asset_and_multi_asset_channels_use_distinct_storage_keys() {
     assert_eq!(single_record.receiver, s.receiver);
 
     let multi_record: Option<MultiAssetChannel> = s.env.as_contract(&s.contract, || {
-        s.env.storage().persistent().get(&DataKey::MultiAssetChannel(multi))
+        s.env
+            .storage()
+            .persistent()
+            .get(&DataKey::MultiAssetChannel(multi))
     });
     let multi_record =
         multi_record.expect("the multi-asset record lives under DataKey::MultiAssetChannel");
