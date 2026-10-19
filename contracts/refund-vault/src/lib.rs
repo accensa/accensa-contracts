@@ -26,10 +26,18 @@ contractmeta!(
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundParam {
+    /// Unique reference identifying the payment; refunds are recorded under
+    /// this key. Mirrors the `payment_ref` argument of [`RefundVault::refund`].
     pub payment_ref: BytesN<32>,
+    /// Address that receives the refund.
     pub recipient: Address,
+    /// Amount to refund in this call (before any configured fee is deducted).
     pub amount: i128,
+    /// Ledger at which the original payment occurred (window is measured from
+    /// here, never from a partial). Supplied fresh on every call.
     pub paid_at_ledger: u32,
+    /// The original payment amount — the hard ceiling on cumulative refunds —
+    /// supplied fresh on every call.
     pub payment_amount: i128,
     /// Wesolowski VDF proof, required when the policy carries a VDF delay
     /// (issue #138). The 256 bytes are the 128-byte big-endian output
@@ -250,10 +258,24 @@ pub struct RefundClaim {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YieldInfo {
+    /// Principal currently deployed to the active yield strategy. Maintained
+    /// by the strategy module's deploy and recall paths and read by the
+    /// per-deployment bounds checks.
     pub deployed_principal: i128,
+    /// Cumulative yield withdrawn from the strategy and left in the vault,
+    /// accumulated by [`RefundVault::harvest_yield`].
     pub harvested_yield: i128,
+    /// Address of the active yield strategy contract, set by
+    /// [`RefundVault::set_yield_strategy`]; `None` while no strategy is
+    /// configured.
     pub strategy: Option<Address>,
+    /// Minimum fraction of total vault value that must stay liquid, in basis
+    /// points (2000 = 20%). Set by [`RefundVault::set_reserve_ratio`] and
+    /// enforced by the deploy path.
     pub reserve_ratio: u32,
+    /// Maximum fraction of total vault value that may be deployed to yield,
+    /// in basis points (8000 = 80%). Set by
+    /// [`RefundVault::set_max_deploy_ratio`] and enforced by the deploy path.
     pub max_deploy_ratio: u32,
 }
 
@@ -492,11 +514,19 @@ pub struct CommitRevealedEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CouponAppliedEvent {
     #[topic]
+    /// Id of the coupon NFT applied, as passed to [`RefundVault::deposit`].
     pub coupon_id: u64,
     #[topic]
+    /// Depositor who applied the coupon; must own `coupon_id`.
     pub holder: Address,
+    /// Deposit amount before the discount, as passed to
+    /// [`RefundVault::deposit`].
     pub original_amount: i128,
+    /// Amount actually transferred after the discount is subtracted;
+    /// computed by `coupons::apply_coupon`.
     pub effective_amount: i128,
+    /// Coupon discount in basis points (100 = 1%), copied from the coupon
+    /// record.
     pub discount_bps: u32,
 }
 
@@ -2803,6 +2833,8 @@ mod preview_settlement_overflow_tests;
 mod recall_principal_overflow_tests;
 #[cfg(test)]
 mod reentrancy_tests;
+#[cfg(test)]
+mod settlement_ceiling_test;
 #[cfg(test)]
 mod settlement_test;
 /// Yield-bearing escrow strategy hook tests (issue #415).

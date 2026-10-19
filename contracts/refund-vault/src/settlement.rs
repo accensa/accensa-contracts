@@ -60,8 +60,9 @@ pub struct RefundSettlement {
 ///
 /// # Errors
 ///
-/// [`Error::ExceedsPayment`] when the record ceiling is non-positive or the new
-/// cumulative total would pass it (including `i128` overflow).
+/// [`Error::MathOverflow`] when the cumulative sum itself overflows `i128`
+/// (issue #721), and [`Error::ExceedsPayment`] when the record ceiling is
+/// non-positive or the new cumulative total would pass it.
 pub(crate) fn resolve_ceiling(
     env: &Env,
     payment_ref: &BytesN<32>,
@@ -77,11 +78,16 @@ pub(crate) fn resolve_ceiling(
         None => (0i128, payment_amount),
     };
 
-    if previous_refunded.checked_add(amount).is_none()
-        || record_ceiling <= 0
-        || previous_refunded + amount > record_ceiling
-    {
-        return Err(Error::ExceedsPayment);
+    match add_amounts(previous_refunded, amount) {
+        Ok(cumulative) => {
+            // A non-positive ceiling can admit nothing: the cumulative total
+            // is a refund amount, so it is always strictly positive.
+            if cumulative > record_ceiling || record_ceiling <= 0 {
+                return Err(Error::ExceedsPayment);
+            }
+        }
+        // The overflow arm is the typed failure, not a host abort (issue #721).
+        Err(_) => return Err(Error::MathOverflow),
     }
 
     Ok((previous_refunded, record_ceiling))

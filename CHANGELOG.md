@@ -8,11 +8,35 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`refund-vault` (issue #620): per-strategy approval key semantics pinned by
+  tests.** New `per_strategy_approval_key` module in
+  `contracts/refund-vault/src/strategy_tests.rs` approves two strategies,
+  deploys to each in turn, and shows that revoking one leaves the other
+  approved, active and deployable; that an address which was never approved is
+  rejected with `StrategyNotApproved` at both registration and deployment; and
+  that re-approving is idempotent (one revoke clears it). Test-only — no
+  contract behavior change.
 - **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
-- **`state-channel` (issue #636): dispute, counter-evidence, finalization, and claim event-shape tests.** Added `contracts/state-channel/src/dispute_test.rs` coverage pinning exact XDR event payloads and dispute-window finalization behavior, including late counter-proof extension gating.
+- **`refund-vault` / `state-channel` (issues #128, #460):** Add commit-reveal, mock-yield and channel-splicing test suites. New `contracts/refund-vault/src/commit_reveal_tests.rs` pins the commit-reveal front-running mitigation (delayed reveal, single-use commitment, hash-mismatch rejection, merchant-only access); new `contracts/refund-vault/src/yield_tests.rs` adds a mock yield strategy harness covering strategy set/deposit/withdraw/harvest; new `contracts/state-channel/src/splice_test.rs` covers splice-in/splice-out capacity changes, reserved-escrow guards, non-positive amounts and unknown-channel errors. Test-only — no contract behavior change.
 
-- **Contract payload field documentation (#763, #764, #765):** Documented the public fields of governance `Proposal`, receipt-anchor `AnchorPayload`, and `RefundEventPayload`.
+- fix(refund-vault): route `resolve_ceiling`'s cumulative sum through the checked
+  `accensa_common::math::add_amounts` helper, so an `i128` overflow in the
+  partial-refund ceiling computation surfaces as the typed error
+  `MathOverflow` instead of aborting the host call; boundary test pins the
+  behaviour at `i128::MAX` (issue #721)
+- fix(receipt-shard): `get_shard_diagnostics` now returns
+  `Err(Error::NotInitialized)` instead of trapping when the TTL-evictable
+  `StartBatchId`/`EndBatchId` instance keys are missing, so the read-only
+  monitoring entry point degrades gracefully for indexers and light clients;
+  error-path and populated/drained health tests added (issue #615)
+- fix(ci): the wasm budget gate (`scripts/check_wasm_budget.sh`) hard-fails on
+  missing artifacts, missing or non-numeric budget entries, and a missing or
+  broken `jq`, and checks the union of its contract list and every
+  `.wasm-budget.json` key so nothing is silently dropped from the gate
+  (issue #623)
+- docs(state-channel): add `///` doc comments to the five exported fields of
+  `MultiAssetChannelOpenedEvent`- **Contract payload field documentation (#763, #764, #765):** Documented the public fields of governance `Proposal`, receipt-anchor `AnchorPayload`, and `RefundEventPayload`.
 - **`refund-vault` (issue #685): report a missing payment token from
   `deploy_to_yield` instead of aborting.** The `DataKey::Token` read in
   `contracts/refund-vault/src/lib.rs` was an `unwrap()`, so a deployment that
@@ -1159,6 +1183,11 @@ proof)` for randomness-verification flows, and its cost is pinned by a
   has not authorised, and `withdraw` stays merchant-only. The existing
   `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
   deliberate.
+
+- **`refund-vault` (issue #708): add coupon and liquidity test coverage.**
+  Added tests for `apply_coupon`, `get_coupon`, and `ensure_liquidity`, including
+  their observable success behavior and applicable error paths. Test-only; no
+  contract behavior change.
 
 ### Fixed
 
