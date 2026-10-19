@@ -8,6 +8,12 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`cross-chain` (issue #643): cover non-admin auth rejection for admin setters.**
+  Extended `contracts/cross-chain/src/test.rs` with negative-path tests
+  asserting that `set_guardian_set`, `set_axelar_gateway`, `set_trusted_peer`
+  and `set_layerzero_endpoint` reject non-admin callers before any storage
+  write, plus admin happy-path tests pinning the expected stored values.
+  Test-only — no contract behavior change.
 - **`governance` (issue #552): test instance storage TTL eviction returns typed errors.**
   Added tests in `contracts/governance/src/test.rs` asserting that `propose` and
   `execute` operations return typed errors `InvalidVotingPeriod` and `InvalidMembers`
