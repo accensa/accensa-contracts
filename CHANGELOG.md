@@ -8,6 +8,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- **`refund-vault` (issue #708): add coupon and liquidity test coverage.**
+  Added tests for `apply_coupon`, `get_coupon`, and `ensure_liquidity`, including
+  their observable success behavior and applicable error paths. Test-only; no
+  contract behavior change.
+
 - **`governance` / `multisig-account` (issues #747, #748): document the optimistic-track and pause-admin entry points.**
   Added `///` doc comments to the public items the rustdoc issues named: `submit`,
   `veto`, `execute` and `get` in `contracts/governance/src/optimistic.rs`, and
