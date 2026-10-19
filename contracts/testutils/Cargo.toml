@@ -1,5 +1,6 @@
 [package]
 name = "testutils"
+description = "Test-support crate with resource-budget measurement helpers for the Accensa workspace"
 version = "0.1.0"
 edition = "2021"
 publish = false

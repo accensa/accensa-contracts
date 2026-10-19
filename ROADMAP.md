@@ -177,6 +177,22 @@
 - [x] Add `///` rustdoc to `deposit`, `claim`, `refund` and `get` (#750)
   - `contracts/refund-vault/src/nft_escrow.rs` — doc comments only; role, pre-conditions and each `Error` arm documented, signatures and bodies unchanged
 
+## Issue #729: package description for accensa-common
+
+- [x] Add `description` to the `[package]` table of `contracts/common/Cargo.toml` (#729)
+
+## Issue #730: package description for multisig-account
+
+- [x] Add `description` to the `[package]` table of `contracts/multisig-account/Cargo.toml` (#730)
+
+## Issue #731: package description for receipt-shard
+
+- [x] Add `description` to the `[package]` table of `contracts/receipt-shard/Cargo.toml` (#731)
+
+## Issue #732: package description for testutils
+
+- [x] Add `description` to the `[package]` table of `contracts/testutils/Cargo.toml` (#732)
+
 ## Issue #751: Document 4 public items in multi_asset
 
 - [x] Add `///` rustdoc to `MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open` and `get` (#751)
