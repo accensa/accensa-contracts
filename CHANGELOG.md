@@ -7,6 +7,11 @@ policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0
 breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`refund-vault` (issue #708): add coupon and liquidity test coverage.**
+  Added tests for `apply_coupon`, `get_coupon`, and `ensure_liquidity`, including
+  their observable success behavior and applicable error paths. Test-only; no
+  contract behavior change.
+
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 
 - **Contract payload field documentation (#763, #764, #765):** Documented the public fields of governance `Proposal`, receipt-anchor `AnchorPayload`, and `RefundEventPayload`.
