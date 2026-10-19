@@ -25,8 +25,10 @@ use soroban_sdk::{
     BytesN, Env,
 };
 
+use crate::coupons::{self, CouponRecord};
 use crate::test_helpers::vault_init;
-use crate::{Error, RefundVault, RefundVaultClient};
+use crate::yield_tests::setup_with_strategy;
+use crate::{DataKey, Error, RefundVault, RefundVaultClient};
 
 const FLOAT: i128 = 1_000_000;
 
@@ -326,4 +328,145 @@ fn test_i128_extreme_refund() {
         client.try_refund(&payment_ref2, &buyer, &1, &0, &1, &None, &1),
         Err(Ok(Error::InsufficientFloat))
     );
+}
+
+#[test]
+fn test_apply_coupon_returns_discount_and_marks_coupon_redeemed() {
+    let VaultWithToken {
+        env, client: vault, ..
+    } = setup_with_token(0);
+
+    env.as_contract(&vault.address, || {
+        let owner = Address::generate(&env);
+        assert_eq!(coupons::mint_coupon(&env, 21, owner.clone(), 1_000), Ok(()));
+
+        assert_eq!(coupons::apply_coupon(&env, &owner, 21, 10_000), Ok(9_000));
+        assert_eq!(
+            coupons::get_coupon(&env, 21),
+            Some(CouponRecord {
+                owner,
+                discount_bps: 1_000,
+                redeemed: true,
+            })
+        );
+    });
+}
+
+#[test]
+fn test_apply_coupon_rejects_missing_wrong_owner_redeemed_and_overflow_cases() {
+    let VaultWithToken {
+        env, client: vault, ..
+    } = setup_with_token(0);
+
+    env.as_contract(&vault.address, || {
+        let owner = Address::generate(&env);
+        let other = Address::generate(&env);
+
+        assert_eq!(
+            coupons::apply_coupon(&env, &owner, 22, 100),
+            Err(Error::CouponNotFound)
+        );
+
+        coupons::mint_coupon(&env, 22, owner.clone(), 1_000).unwrap();
+        assert_eq!(
+            coupons::apply_coupon(&env, &other, 22, 100),
+            Err(Error::Unauthorized)
+        );
+        assert_eq!(
+            coupons::get_coupon(&env, 22),
+            Some(CouponRecord {
+                owner: owner.clone(),
+                discount_bps: 1_000,
+                redeemed: false,
+            })
+        );
+
+        assert_eq!(coupons::apply_coupon(&env, &owner, 22, 100), Ok(90));
+        assert_eq!(
+            coupons::apply_coupon(&env, &owner, 22, 100),
+            Err(Error::CouponAlreadyRedeemed)
+        );
+
+        coupons::mint_coupon(&env, 23, owner.clone(), 5_000).unwrap();
+        assert_eq!(
+            coupons::apply_coupon(&env, &owner, 23, i128::MAX),
+            Err(Error::MathOverflow)
+        );
+        assert_eq!(
+            coupons::get_coupon(&env, 23),
+            Some(CouponRecord {
+                owner,
+                discount_bps: 5_000,
+                redeemed: false,
+            })
+        );
+    });
+}
+
+#[test]
+fn test_get_coupon_returns_exact_record_and_none_for_missing_id() {
+    let VaultWithToken {
+        env, client: vault, ..
+    } = setup_with_token(0);
+
+    env.as_contract(&vault.address, || {
+        assert_eq!(coupons::get_coupon(&env, 24), None);
+
+        let owner = Address::generate(&env);
+        coupons::mint_coupon(&env, 24, owner.clone(), 2_500).unwrap();
+        assert_eq!(
+            coupons::get_coupon(&env, 24),
+            Some(CouponRecord {
+                owner,
+                discount_bps: 2_500,
+                redeemed: false,
+            })
+        );
+    });
+}
+
+#[test]
+fn test_ensure_liquidity_recalls_only_the_shortfall_from_strategy() {
+    let (env, vault, merchant, _, _, token_client) = setup_with_strategy(0, 10_000);
+    vault.deposit(&merchant, &1_000_000, &None);
+    vault.deploy_to_yield(&600_000);
+
+    let balance = token_client.balance(&vault.address);
+    assert_eq!(balance, 400_000);
+    let after = env.as_contract(&vault.address, || {
+        crate::strategy::ensure_liquidity(&env, &token_client, balance, 700_000)
+    });
+
+    assert_eq!(after, Ok(700_000));
+    assert_eq!(token_client.balance(&vault.address), 700_000);
+    assert_eq!(vault.get_yield_info().deployed_principal, 300_000);
+}
+
+#[test]
+fn test_ensure_liquidity_returns_insufficient_float_for_short_paid_recall() {
+    let VaultWithToken {
+        env,
+        client,
+        token_client,
+        ..
+    } = setup_with_token(0);
+    let strategy = env.register(crate::strategy_tests::ShortchangingStrategy, ());
+
+    let result = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::YieldStrategy, &strategy);
+        env.storage()
+            .persistent()
+            .set(&DataKey::DeployedPrincipal, &100i128);
+
+        crate::strategy::ensure_liquidity(
+            &env,
+            &token_client,
+            token_client.balance(&client.address),
+            100,
+        )
+    });
+
+    assert_eq!(result, Err(Error::InsufficientFloat));
 }

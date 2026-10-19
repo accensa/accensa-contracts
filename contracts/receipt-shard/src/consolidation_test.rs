@@ -131,3 +131,62 @@ fn consolidation_emits_source_and_destination_ids() {
         ]
     );
 }
+
+#[test]
+fn consolidation_rejects_same_source_and_destination() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    source.anchor_batch(&1, &root, &1, &0, &1);
+
+    let res = source.try_consolidate(&source.address, &1, &1, &soroban_sdk::vec![&env, 1u64]);
+    assert_eq!(res, Err(Ok(crate::Error::DestinationMismatch)));
+    // Batch remains in storage
+    assert_eq!(source.get_batch(&1).root, root);
+}
+
+#[test]
+fn consolidation_rejects_missing_batch_with_typed_error() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 201u64));
+
+    let res = source.try_consolidate(&target_id, &1, &2, &soroban_sdk::vec![&env, 99u64]);
+    assert_eq!(res, Err(Ok(crate::Error::BatchNotFound)));
+}
+
+#[soroban_sdk::contract]
+struct MismatchedTarget;
+
+#[soroban_sdk::contractimpl]
+impl MismatchedTarget {
+    pub fn insert_migrated_batch(
+        _env: Env,
+        _source: Address,
+        _batch_id: u64,
+        mut record: BatchRecord,
+    ) -> Result<BatchRecord, crate::Error> {
+        // Return a mutated record to simulate round-trip mismatch
+        record.count += 1;
+        Ok(record)
+    }
+}
+
+#[test]
+fn consolidation_round_trip_mismatch_returns_error_and_leaves_storage_unchanged() {
+    let env = Env::default();
+    let (source, _router) = setup(&env);
+    let mock_target_id = env.register(MismatchedTarget, ());
+
+    let root = BytesN::from_array(&env, &[3u8; 32]);
+    source.anchor_batch(&1, &root, &5, &10, &20);
+
+    let res = source.try_consolidate(&mock_target_id, &1, &2, &soroban_sdk::vec![&env, 1u64]);
+    assert_eq!(res, Err(Ok(crate::Error::RoundTripMismatch)));
+
+    // Verify storage in source shard is unchanged
+    let stored_batch = source.get_batch(&1);
+    assert_eq!(stored_batch.root, root);
+    assert_eq!(stored_batch.count, 5);
+    assert!(source.is_active());
+}

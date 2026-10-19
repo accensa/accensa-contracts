@@ -579,3 +579,237 @@ fn user_distribution_defaults_for_non_staker() {
     assert!(ctx.client.get_user_distribution(&ctx.carol).is_none());
     assert_eq!(ctx.client.pending_yield(&ctx.carol), 0);
 }
+
+// ── Event assertion tests (issue #604) ─────────────────────────────────────
+
+mod event_assertions {
+    use super::*;
+    use crate::distribution::{
+        StakedEvent, UnstakedEvent, YieldClaimedEvent, YieldDistributedEvent, PRECISION,
+    };
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::Event;
+
+    #[test]
+    fn staked_event_assert_exact_shape() {
+        let ctx = dist_setup();
+
+        ctx.client.stake(&ctx.alice, &250_000);
+
+        let events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(events.events().len(), 1);
+        let expected = StakedEvent {
+            user: ctx.alice.clone(),
+            amount: 250_000,
+            total_staked: 250_000,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected.to_xdr(&ctx.env, &ctx.treasury)
+        );
+
+        // Subsequent stake updates total_staked in the event
+        ctx.client.stake(&ctx.alice, &150_000);
+        let events2 = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(events2.events().len(), 1);
+        let expected2 = StakedEvent {
+            user: ctx.alice.clone(),
+            amount: 150_000,
+            total_staked: 400_000,
+        };
+        assert_eq!(
+            &events2.events()[0],
+            &expected2.to_xdr(&ctx.env, &ctx.treasury)
+        );
+    }
+
+    #[test]
+    fn unstaked_event_assert_exact_shape() {
+        let ctx = dist_setup();
+
+        ctx.client.stake(&ctx.alice, &500_000);
+        ctx.client.unstake(&ctx.alice, &200_000);
+
+        let events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(events.events().len(), 1);
+        let expected = UnstakedEvent {
+            user: ctx.alice.clone(),
+            amount: 200_000,
+            total_staked: 300_000,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected.to_xdr(&ctx.env, &ctx.treasury)
+        );
+    }
+
+    #[test]
+    fn yield_distributed_event_assert_exact_shape_with_unequal_stakers() {
+        let ctx = dist_setup();
+
+        // Two stakers with unequal stakes (3:1 ratio)
+        ctx.client.stake(&ctx.alice, &300_000);
+        ctx.client.stake(&ctx.bob, &100_000);
+
+        let total_staked = 400_000;
+        let dist_amount = 2_000;
+
+        // accumulator increase = (2_000 * 10^9) / 400_000 = 5_000_000
+        let expected_acc = (dist_amount * PRECISION) / total_staked;
+        assert_eq!(expected_acc, 5_000_000);
+
+        let new_acc = ctx.client.distribute_yield(&dist_amount);
+        assert_eq!(new_acc, expected_acc);
+
+        let events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(events.events().len(), 1);
+        let expected_event = YieldDistributedEvent {
+            token: ctx.yield_token.clone(),
+            amount: dist_amount,
+            accumulator: expected_acc,
+            total_staked,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_event.to_xdr(&ctx.env, &ctx.treasury)
+        );
+    }
+
+    #[test]
+    fn yield_claimed_event_assert_exact_shape_partial_and_zeroing() {
+        let ctx = dist_setup();
+
+        // Alice stakes 300_000 (75%), Bob stakes 100_000 (25%)
+        ctx.client.stake(&ctx.alice, &300_000);
+        ctx.client.stake(&ctx.bob, &100_000);
+
+        // First distribution: 2_000 yield
+        ctx.client.distribute_yield(&2_000);
+
+        // Bob has 500 pending out of 2_000 total distributed (partial claim of pool)
+        assert_eq!(ctx.client.pending_yield(&ctx.bob), 500);
+        let claimed_bob_1 = ctx.client.claim_yield(&ctx.bob);
+        assert_eq!(claimed_bob_1, 500);
+
+        // Events must be captured immediately after the invocation
+        let events_bob_1 = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(events_bob_1.events().len(), 1);
+        let expected_bob_1 = YieldClaimedEvent {
+            user: ctx.bob.clone(),
+            amount: 500,
+            total_claimed: 500,
+        };
+        assert_eq!(
+            &events_bob_1.events()[0],
+            &expected_bob_1.to_xdr(&ctx.env, &ctx.treasury)
+        );
+
+        // Bob's pending is now zeroed
+        assert_eq!(ctx.client.pending_yield(&ctx.bob), 0);
+
+        // Second distribution: 4_000 yield
+        ctx.client.distribute_yield(&4_000);
+
+        // Bob earned 25% of 4_000 = 1_000
+        assert_eq!(ctx.client.pending_yield(&ctx.bob), 1_000);
+        let claimed_bob_2 = ctx.client.claim_yield(&ctx.bob);
+        assert_eq!(claimed_bob_2, 1_000);
+
+        let events_bob_2 = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(events_bob_2.events().len(), 1);
+        let expected_bob_2 = YieldClaimedEvent {
+            user: ctx.bob.clone(),
+            amount: 1_000,
+            total_claimed: 1_500,
+        };
+        assert_eq!(
+            &events_bob_2.events()[0],
+            &expected_bob_2.to_xdr(&ctx.env, &ctx.treasury)
+        );
+
+        // Bob's pending is zeroed again; total_claimed accumulated to 1_500
+        assert_eq!(ctx.client.pending_yield(&ctx.bob), 0);
+
+        // Alice claims her entire accrued yield (75% of 2_000 + 75% of 4_000 = 1_500 + 3_000 = 4_500)
+        assert_eq!(ctx.client.pending_yield(&ctx.alice), 4_500);
+        let claimed_alice = ctx.client.claim_yield(&ctx.alice);
+        assert_eq!(claimed_alice, 4_500);
+
+        let events_alice = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(events_alice.events().len(), 1);
+        let expected_alice = YieldClaimedEvent {
+            user: ctx.alice.clone(),
+            amount: 4_500,
+            total_claimed: 4_500,
+        };
+        assert_eq!(
+            &events_alice.events()[0],
+            &expected_alice.to_xdr(&ctx.env, &ctx.treasury)
+        );
+
+        assert_eq!(ctx.client.pending_yield(&ctx.alice), 0);
+    }
+
+    #[test]
+    fn staking_distribution_lifecycle_asserts_all_four_events() {
+        let ctx = dist_setup();
+
+        // 1. Stake event
+        ctx.client.stake(&ctx.alice, &100_000);
+        let stake_events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(stake_events.events().len(), 1);
+        assert_eq!(
+            &stake_events.events()[0],
+            &StakedEvent {
+                user: ctx.alice.clone(),
+                amount: 100_000,
+                total_staked: 100_000,
+            }
+            .to_xdr(&ctx.env, &ctx.treasury)
+        );
+
+        // 2. Yield distributed event
+        ctx.client.distribute_yield(&1_000);
+        let dist_events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(dist_events.events().len(), 1);
+        let expected_acc = (1_000 * PRECISION) / 100_000;
+        assert_eq!(
+            &dist_events.events()[0],
+            &YieldDistributedEvent {
+                token: ctx.yield_token.clone(),
+                amount: 1_000,
+                accumulator: expected_acc,
+                total_staked: 100_000,
+            }
+            .to_xdr(&ctx.env, &ctx.treasury)
+        );
+
+        // 3. Claim yield event
+        ctx.client.claim_yield(&ctx.alice);
+        let claim_events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(claim_events.events().len(), 1);
+        assert_eq!(
+            &claim_events.events()[0],
+            &YieldClaimedEvent {
+                user: ctx.alice.clone(),
+                amount: 1_000,
+                total_claimed: 1_000,
+            }
+            .to_xdr(&ctx.env, &ctx.treasury)
+        );
+
+        // 4. Unstake event
+        ctx.client.unstake(&ctx.alice, &100_000);
+        let unstake_events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+        assert_eq!(unstake_events.events().len(), 1);
+        assert_eq!(
+            &unstake_events.events()[0],
+            &UnstakedEvent {
+                user: ctx.alice.clone(),
+                amount: 100_000,
+                total_staked: 0,
+            }
+            .to_xdr(&ctx.env, &ctx.treasury)
+        );
+    }
+}

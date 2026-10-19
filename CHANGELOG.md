@@ -3,11 +3,292 @@
 All notable changes to `ReceiptAnchor` and `RefundVault` are recorded here.
 
 The two contracts are versioned together and share a tag. Versioning follows the
-policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0,
-breaking changes bump the **minor** version, and they are called out as such.
+policy in [`docs/RELEASING.md`](docs/RELEASING.md), including its pre-1.0
+exception: while the project is below `1.0.0`, breaking changes bump the
+**minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`refund-vault` (issue #620): per-strategy approval key semantics pinned by
+  tests.** New `per_strategy_approval_key` module in
+  `contracts/refund-vault/src/strategy_tests.rs` approves two strategies,
+  deploys to each in turn, and shows that revoking one leaves the other
+  approved, active and deployable; that an address which was never approved is
+  rejected with `StrategyNotApproved` at both registration and deployment; and
+  that re-approving is idempotent (one revoke clears it). Test-only — no
+  contract behavior change.
+- **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
+- **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 
+- fix(refund-vault): route `resolve_ceiling`'s cumulative sum through the checked
+  `accensa_common::math::add_amounts` helper, so an `i128` overflow in the
+  partial-refund ceiling computation surfaces as the typed error
+  `MathOverflow` instead of aborting the host call; boundary test pins the
+  behaviour at `i128::MAX` (issue #721)
+- fix(receipt-shard): `get_shard_diagnostics` now returns
+  `Err(Error::NotInitialized)` instead of trapping when the TTL-evictable
+  `StartBatchId`/`EndBatchId` instance keys are missing, so the read-only
+  monitoring entry point degrades gracefully for indexers and light clients;
+  error-path and populated/drained health tests added (issue #615)
+- fix(ci): the wasm budget gate (`scripts/check_wasm_budget.sh`) hard-fails on
+  missing artifacts, missing or non-numeric budget entries, and a missing or
+  broken `jq`, and checks the union of its contract list and every
+  `.wasm-budget.json` key so nothing is silently dropped from the gate
+  (issue #623)
+- docs(state-channel): add `///` doc comments to the five exported fields of
+  `MultiAssetChannelOpenedEvent`- **Contract payload field documentation (#763, #764, #765):** Documented the public fields of governance `Proposal`, receipt-anchor `AnchorPayload`, and `RefundEventPayload`.
+- **`refund-vault` (issue #685): report a missing payment token from
+  `deploy_to_yield` instead of aborting.** The `DataKey::Token` read in
+  `contracts/refund-vault/src/lib.rs` was an `unwrap()`, so a deployment that
+  reached it aborted with an untyped `WasmRuntimeError` while the pause, amount,
+  admin and strategy arms in the same function return `Error`. It now reads
+  `ok_or(Error::NotInitialized)?`, matching how the other entry points resolve
+  the same key. New
+  `contracts/refund-vault/src/deploy_to_yield_token_tests.rs` approves and
+  activates a strategy, removes the stored token and asserts the returned
+  variant.
+- **`refund-vault` (issue #686): report a missing refund window from
+  `extend_refund_ttl` instead of aborting.** The `DataKey::RefundWindow` read
+  that sizes the TTL extension was an `unwrap()`; it now returns
+  `Error::NotInitialized`, so a call that finds a refund record but no window
+  answers with a typed variant the caller can match, like the `RefundNotFound`
+  arm beside it. New
+  `contracts/refund-vault/src/extend_refund_ttl_window_tests.rs` stores a v2
+  refund record, removes the window and asserts the returned variant.
+- **`refund-vault` (issue #687): walk the fee ladder in `tier_for_volume`
+  without indexing.** The active-rung scan read each rung through
+  `ladder.get(i).unwrap()`, whose safety rested on a manual argument about the
+  loop bound. It now iterates the ladder with an enumerated index, so no line
+  can trap at host-call time. Behaviour is unchanged for every input that
+  passed before; no signature or public API changed.
+- **`refund-vault` (issue #688): resolve `next_threshold` from the bound
+  `Option` instead of unwrapping.** The next-rung lookup
+  (`ladder.get(next).unwrap()`) is now a `match` on `get`, whose `None` arm is
+  exactly the documented top-rung case returning `i128::MAX`. No new error
+  variant is reachable and no behaviour changes for previously valid input.
+- **`governance` / `multisig-account` (issues #747, #748): document the optimistic-track and pause-admin entry points.**
+  Added `///` doc comments to the public items the rustdoc issues named: `submit`,
+  `veto`, `execute` and `get` in `contracts/governance/src/optimistic.rs`, and
+  `is_paused`, `get_guardian`, `pause` and `unpause` in
+  `contracts/multisig-account/src/admin.rs`. Doc comments only — no signature,
+  body or test changes.
+
+- **`reputation` (issue #691): return a typed error when burning a missing credential.** Updated `sbt::burn` to return `SbtError::SbtNotFound` when the owner has no credential instead of aborting, propagated the error through `Reputation::revoke`, and added a regression test confirming that a failed burn does not create a revocation tombstone.
+  
+- **`automation` (issue #557): remove stray scratch files from repository root.**
+  Removed 10 automation scratch files (`fix.sh`, `fix_budget.sh`,
+  `fix_common.sh`, `fix_lib.sh`, `patch.sed`, `patch_changelog.py`,
+  `pr_body.md`, `pr_body.txt`, `pr_description.md`, `pr_document.md`) from
+  the repository root and added `.gitignore` patterns to prevent recommittal.
+- **`upto-authorization` / `governance` (issues #564, #565): pin the
+  domain-separator context and enforce the absolute quorum floor.**
+  `domain.rs` gains inline tests proving the authorization digest differs
+  across network ids, contract addresses and protocol versions, and is
+  reproducible for identical inputs. `current_quorum_bps` now raises a
+  `start_bps` below `QUORUM_FLOOR_BPS` to the floor, so the documented
+  absolute floor holds for every constructor-valid threshold.
+- **`governance` (issue #438): time-weighted vote escrow (veToken).**
+  New `vetoken` module. A member locks governance tokens with `create_lock`
+  for between 30 days and 4 years (`518_400` to `25_228_800` ledgers) and gets
+  voting power `amount * remaining_ledgers / MAX_LOCK_LEDGERS`, which decays
+  linearly to zero at the unlock ledger. `withdraw_lock` pays the tokens back
+  only at or after the unlock ledger. The power is added to the input of
+  `voting::quadratic_weight` (`isqrt(deposit + voting_power)`), so a member
+  without a lock has exactly the weight they had before. The escrowed token is
+  set once with `set_ve_token`, gated like `set_treasury_token`. Escrow errors
+  are a separate `VeError` enum, so the governance `Error` spec does not grow.
+- **`stream-vault` (issue #692): report a missing token with a typed error.**
+  `StreamVault::token_client` now returns `Result<token::Client, Error>` with
+  `Error::NotInitialized` when the constructor-written `Token` key is absent,
+  instead of unwinding on a vault whose state was reset, and the disbursement,
+  claim and settlement paths unwrap through `token_client` only after that
+  check. `token_client_before_initialization_returns_not_initialized` pins
+  the typed result.
+  `contracts/refund-vault/src/coupons.rs` gains an inline suite pinning the
+  5 000 bp discount cap (accepted at the boundary, `Error::InvalidRatio` above
+  it), the duplicate-mint guard, and the redeemed-once rule with `get_coupon`
+  observing `redeemed: true` between calls. The new
+  `contracts/receipt-anchor/src/incremental_api_test.rs` drives
+  `insert_receipt_leaf`, `get_incremental_leaf_count`, `get_incremental_root`
+  and `get_min_anchor_interval` through the client: sequential zero-based
+  indices, root parity with the batch root accepted by `anchor_batch`,
+  `Error::RootNotFound` before the first insert, and the interval
+  setter/getter round-trip. Test-only — no contract behavior change.
+- **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
+  Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
+- **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
+  for the exported surface missing `///` comments.**
+  `contracts/stream-vault/src/lib.rs` now documents `DataKey`, `StreamVault`,
+  `get_merchant` and `get_token`; `contracts/multisig-account/src/weights.rs`
+  documents `store_signer_list`, `store_signer_weight` and
+  `clear_signer_weight`. Doc comments only — no signature, body or behavior
+  change.
+- **`refund-vault-factory` / `oracle` (issues #562, #563): test the fee hardcap
+  boundary and the oracle read surface.**
+  `factory_tests.rs` proves `create_vault` rejects 501 bp with
+  `Error::FeeExceedsHardcap` without advancing the salt counter, tracking a
+  vault or changing TVL, and accepts the inclusive 500 bp boundary with the fee
+  stored on the new vault. `oracle/src/test.rs` round-trips stored rounds
+  through `get_round_data` and `latest_round_data`, asserts the typed `NoData`
+  error for an unknown round id and an empty feed, and checks `get_admin`
+  returns the constructor address. Test-only — no contract behavior change.
+- **`refund-vault` (issue #689): `on_settled` walks the fee ladder without indexing.**
+  The promoting rung's fee is read by iterating the ladder, so an out-of-range rung can no longer trap the claim path. Behaviour for every valid ladder is unchanged.
+- **`refund-vault` (issue #690): `set_tier_ladder` uses a checked lookup.**
+  `set_tier_ladder` reads the selected rung's fee with `tiers.get(current_tier)` followed by a typed `Error::InvalidTierLadder` fallback (instead of unwrapping), so a missing rung resolves to the crate's error and validated ladders retain their existing behaviour.
+
+- **`governance` (issue #552): test instance storage TTL eviction returns typed errors.**
+  Added tests in `contracts/governance/src/test.rs` asserting that `propose` and
+  `execute` operations return typed errors `InvalidVotingPeriod` and `InvalidMembers`
+  rather than panicking when instance storage TTL expires or mandatory config keys
+  are missing from instance storage.
+- **`ci` (issue #584): align Tier B budget-report comment with live `--check` enforcement.**
+  The `.github/workflows/ci.yml` Tier B step comment and the `budget.toml`
+  provenance header now accurately describe that `cargo budget-report --check`
+  runs on post-merge builds with `STELLAR_TESTNET_SECRET` to enforce committed
+  `[functions.*]` baselines within a 15% tolerance ceiling.
+- **`multisig-account` (issue #585): test execute_batch auth, ordering, and atomic rollback.**
+  New `execute_batch_tests` module in `contracts/multisig-account/src/test.rs`
+  proves that proposal execution runs calls in order with 1:1 result mapping,
+  direct external calls without multisig authorization fail `require_auth`,
+  and mid-batch traps cleanly roll back preceding state changes.
+- **`governance` (issue #586): client-driven tests for optimistic voting wrappers.**
+  Extended `contracts/governance/src/test.rs` with `GovernanceClient`-driven
+  tests covering `optimistic_submit`, `veto_optimistic`, `execute_optimistic`,
+  and `get_optimistic_proposal` across pass and deny paths, and verified ID
+  counter independence between standard and optimistic proposals.
+- **`state-channel` (issue #587): test verify_zk_commitment phase gates, amount bounds, and hash mismatch error.**
+  New `verify_zk_commitment_tests` module in `contracts/state-channel/src/test.rs`
+  tests that valid commitments return `Ok` on open channels, closed channels
+  return `ChannelNotOpen`, commitment hash mismatches return `InvalidSignature`
+  (pinned and documented), and values exceeding balance or negative values
+  return `InvalidAmount`.
+- **`reputation` (issue #621): credit key and event-payload parity tests.** Test-only
+  addition to `contracts/reputation/src/credit_score_test.rs` pinning the storage and
+  event surface of the credit scorer: `CreditDataKey::CompletionEscrow(u64)` replay
+  makes a duplicate escrow id a no-op on the score and the stored record, both
+  `record_completion` and `record_fraud` update the single shared
+  `CreditDataKey::Credit(Address)` entry, and the `CreditUpdatedEvent` payload is
+  asserted in full by XDR comparison on both paths, staying in agreement with the
+  getters and `get_fee_bps`. No contract behaviour change.
+- **`refund-vault` (issue #720): guard `harvest_yield`'s running total against
+  overflow.** The `harvested + yield_amount` sum in
+  `contracts/refund-vault/src/lib.rs` now goes through
+  `accensa_common::math::add_amounts` instead of a bare `+`, so a
+  non-representable total returns the typed `Error::MathOverflow` (321) rather
+  than aborting the host call (the release profile sets `overflow-checks = true`
+  with `panic = "abort"`). New
+  `contracts/refund-vault/src/harvest_yield_overflow_tests.rs` pins the stored
+  total at `i128::MAX`, harvests one more unit and asserts the returned variant
+  rather than a panic.
+- **`refund-vault` (issue #722): guard `preview_settlement`'s cumulative sum
+  against overflow.** The `previous_refunded + amount` sum in
+  `contracts/refund-vault/src/settlement.rs` now goes through
+  `accensa_common::math::add_amounts` instead of a bare `+`, so the failure arm
+  is the typed `Error::MathOverflow` (321) rather than a host abort (the
+  release profile sets `overflow-checks = true` with `panic = "abort"`). At the
+  boundary, `resolve_ceiling`'s ceiling gate rejects the non-representable
+  total first with `Error::ExceedsPayment`, so every overflowing input answers
+  with a typed variant. New
+  `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` pins both
+  operands of the sum at `i128::MAX` and asserts the returned variant rather
+  than a panic.
+- **`receipt-shard` (issue #551): replace panic and assert sites in `consolidate`
+  with typed Error variants.** `ReceiptShard::consolidate` now returns
+  `Result<u32, Error>` instead of panicking on user-reachable conditions: a
+  destination matching the source returns `Error::DestinationMismatch` (104), a
+  missing batch returns `Error::BatchNotFound` (100), and a cross-contract
+  round-trip mismatch returns `Error::RoundTripMismatch` (105) while leaving
+  source storage untouched.
+- **`chore` (issue #558): remove unreferenced `contracts/upgrade-proxy`.**
+  Deleted the stranded `contracts/upgrade-proxy/` directory which contained only
+  an unreferenced test stub without Cargo.toml, src/, or workspace membership.
+  In-place upgrade paths on Soroban use `env.deployer().update_current_contract_wasm`
+  as documented in ADR-003.
+- **`ci` (issue #555): run deploy dry-run smoke test and bounded differential fuzz harness.**
+  Added CI steps to run `tests/test_deploy.sh` in dry-run mode and execute
+  `tests/differential/bolero_test.rs` bounded invariant campaign. Added
+  `tests/README.md` with instructions for reproducing both tests locally.
+- **`docs` (issue #559): reconcile DEPLOYMENTS.md and docs/ARCHITECTURE.md with manifest versions.**
+  Refreshed version banner to indicate `main` is at `0.3.0` while testnet addresses
+  run `0.1.0`. Added explicit per-address deployed version tags, verification
+  commands via on-chain WASM bytecode inspection, a notice on stale deployments,
+  and aligned CLI examples.
+- **`treasury` (issue #649): return typed InsufficientBalance error on unfunded yield float.**
+  `claim_yield` reads the contract's yield token balance before mutating user `pending` or `claimed` and returns `Error::InsufficientBalance` when the balance cannot cover the claim, leaving accrued yield intact.
+- **`insurance` (issue #608): assert deposit, withdraw, borrow and repay lifecycle events.**
+  Extended `contracts/insurance/src/test.rs` with `lifecycle_events` asserting exact event XDR, cross-checking storage values, and asserting zero balance on emptied positions.
+- **`receipt-shard` (issue #678): return typed error on missing state in has_live_records.**
+  `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` when `StartBatchId` or `EndBatchId` is absent from instance storage instead of trapping.
+- **`privacy` (issue #439): dual-key stealth-address registry for vault deposits.**
+  New `stealth` module on BN254 G1 (the SDK's `bn254` host functions). A
+  recipient publishes a spend key `S` and a view key `V` with
+  `register_stealth_keys`; a buyer derives, off chain, an ephemeral key `R = r*G`
+  and a one-time stealth key `P = S + H(r*V)*G` and calls `stealth_deposit`,
+  which takes the tokens into custody and emits `R` and `P` for the recipient to
+  scan (`P' = S + H(v*R)*G`). `stealth_claim` pays the deposit out against a
+  Schnorr proof of knowledge of `p = s + H(v*R)`, bound to the deposit and to the
+  receiving account, so a proof cannot be replayed or redirected. Errors are a
+  module-local `StealthError`. The derivation helpers
+  (`derive_stealth_address`, `scan_stealth_address`, `stealth_private_key`) are
+  library functions for off-chain code.
+- **`cross-chain` / `governance`: panic paths now return typed errors (#669, #671, #672, #673).**
+  `cross-chain::verify_vaa` no longer unwraps `vaa.signatures.get(i)` or the
+  guardian lookup: signatures are iterated, and a guardian index past the end of
+  the guardian set resolves to `Error::InvalidSignature` before any signature
+  work. `governance::propose` returns `Error::InvalidVotingPeriod` when the
+  voting period is missing from instance storage, and `governance::execute`
+  returns `Error::InvalidMembers`, `Error::InvalidThreshold` and
+  `Error::InvalidVotingPeriod` for a missing total weight, threshold and voting
+  period. `governance::vote_anonymous` iterates its ring instead of indexing it.
+  No new `Error` variants, and no change for any input that was valid before.
+- **`privacy` (issue #609): escrow lifecycle events pinned in XDR form.** New
+  `escrow_events` module in `contracts/privacy/src/test.rs` asserts the exact
+  XDR of `EscrowCreatedEvent` on `create_escrow` (and that its payload agrees
+  with `get_escrow`), `EscrowRejectedEvent` on a verification whose proof
+  fails the commitment, and `EscrowVerifiedEvent` on one the verifier accepts
+  — each as the only event of its invocation. The reject branch returns
+  `Ok(false)` rather than erroring, so that invocation succeeds and its events
+  are observable, which is what makes "exactly one event, and never the
+  verified type" falsifiable there; the all-zero commitment and the
+  amount-below-floor refusals are asserted as errors that publish nothing.
+  Test-only — no contract behavior change.
+- **`cross-chain` (issue #619): LayerZero delivery-guard keys pinned by
+  tests.** New `delivery_guard_keys` module in
+  `contracts/cross-chain/src/layerzero_test.rs` reads the three persistent
+  keys that guard inbound deliveries back through the crate's own getters.
+  `is_trusted_peer` is true only for the registered `(chain_id, sender)` pair;
+  `get_peer_nonce` is absent until a delivery is accepted and then holds the
+  highest accepted nonce, so a strictly higher nonce is taken even when it
+  skips packets that were never delivered while every nonce at or below the
+  mark stays refused; and `is_dispute_settled` keeps a settled dispute
+  settled while its accepted delivery remains the only event published, with
+  a fresh dispute free to claim the nonce the refused duplicate named.
+  Test-only — no contract behavior change.
+- **`governance` (issue #670): the constructor iterates its members.**
+  `Governance::__constructor` pairs each member with its deposit by zipping the
+  two vectors instead of indexing them with `get(i).unwrap()`. The vectors are
+  already checked to have equal length, so behaviour for every valid input is
+  unchanged and the constructor has no panic path left.
+- **`governance` (issue #447): 48-hour timelock for approved proposals.**
+  New `timelock` module. Once `enable_timelock` has been called (gated like
+  `set_treasury_token`, and permanent), an approved proposal has to be queued
+  with `queue_transaction` and can only execute `34_560` ledgers (48 hours)
+  later, through `execute_queued_transaction` or a plain `execute`; earlier
+  attempts fail with `Error::TimelockNotExpired`, and an unqueued one with
+  `Error::TimelockRequired`. The queue entry stores the SHA-256 of
+  `(target, function, args)` and the unlock ledger, and queueing extends the
+  proposal's TTL so it outlives the delay. The timelock is off by default, so
+  existing deployments behave as before. Adds `Error::TimelockRequired` (32),
+  `TimelockNotExpired` (33) and `AlreadyQueued` (34).
+- **`state-channel` (issue #622): hashlock reserve bookkeeping pinned by
+  tests.** New tests in `contracts/state-channel/src/hashlock_test.rs`
+  assert, after every add/resolve/refund transition, that `HashlockReserved`
+  equals the sum of the still-pending payments' amounts; that
+  `HashlockPaymentCount` allocates distinct sequential ids that a resolve
+  neither rewinds nor reuses; and that a reveal and a timed-out HTLC refund
+  each release exactly their own amount, with a double reveal rejected and
+  the reserve left at the pending sum. Test-only — no contract behavior
+  change.
 - security(multisig): implement 14-day TTL expiration for pending signatures and approvals (#449)
 - **`nft` (issue #453): Discount coupon NFTs for merchant stores.** New coupon
   module (`contracts/refund-vault/src/coupons.rs`) implements single-use discount
@@ -17,6 +298,15 @@ breaking changes bump the **minor** version, and they are called out as such.
   accepts an optional `coupon_id` parameter; when provided, the discount is applied
   atomically before the token transfer. Added error codes `CouponNotFound` and
   `CouponAlreadyRedeemed` to the common Error enum.
+- docs: rustdoc for `receipt-shard`'s 4 exported names (#749) and for the 5
+  public fields of `BuybackConfiguredEvent` (#790). Doc comments only — no
+  signature, struct layout or behaviour change.
+- docs: rustdoc for the 13 action symbols in `common/events` (#758, #760), the
+  8 exported getters and admin setters of `refund-vault` (#759), and the 6
+  public fields of `FallbackDisputeRequestedEvent` (#769). Each entry states the
+  pre-condition and the `Error` arm the body returns, and no unit is claimed
+  for a value the code does not fix. Doc comments only — no signature, struct
+  layout, ordering or behaviour change.
 
 ### Added
 - **`privacy` (issue #440): Groth16 verification for concealed escrow amounts.**
@@ -502,6 +792,19 @@ deposit)` escrows a buyer's deposit and streams it linearly to the
 
 ### Changed
 
+- **`common`: `keys` module docs now mark the namespace partition as reserved
+  (issue #626).** The module docs implied the partition was enforced
+  workspace-wide, but no contract imports `keys::` — every contract still
+  defines its own flat `DataKey` — so on-chain storage written today is not
+  routed through these namespaces. The docs now state there is no production
+  consumer, that adopting these key types in a deployed contract needs a
+  storage-compatibility plan (persisted ledger keys encode their namespace by
+  variant position), and scope the compile-time collision guarantee to this
+  module's own key enums. New unit tests pin `discriminant()` folding for
+  every namespace pair (boundary values of the 32-bit local window included)
+  and the uniqueness of each namespace's local discriminants. Documentation
+  and tests only — no public-item or behavior change.
+
 - **`receipt-anchor`: extracted `push_shard_root` and `check_no_duplicate_root`
   helpers from `anchor_batch_internal` (issue #292).** The ring-buffer update
   and per-shard duplicate-root guard are now private methods, shortening the
@@ -519,6 +822,12 @@ deposit)` escrows a buyer's deposit and streams it linearly to the
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+- **`receipt-shard` (issue #642): typed errors from the config getters.**
+  `get_router` and `get_range` now return `Result<_, Error>` and answer
+  `NotInitialized` (2) when the instance config is absent — before construction
+  or after instance TTL eviction — instead of aborting the host call with a
+  generic error; a successful read extends the instance TTL the same way the
+  write paths do.
 - **`treasury`: the yield distribution module is now part of the build (issue
   #523).** #523 landed `distribution.rs` and `distribution_test.rs` without the
   `pub mod distribution;` / `#[cfg(test)] mod distribution_test;` declarations
@@ -873,6 +1182,11 @@ proof)` for randomness-verification flows, and its cost is pinned by a
   has not authorised, and `withdraw` stays merchant-only. The existing
   `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
   deliberate.
+
+- **`refund-vault` (issue #708): add coupon and liquidity test coverage.**
+  Added tests for `apply_coupon`, `get_coupon`, and `ensure_liquidity`, including
+  their observable success behavior and applicable error paths. Test-only; no
+  contract behavior change.
 
 ### Fixed
 

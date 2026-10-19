@@ -21,6 +21,7 @@ contractmeta!(
 );
 contractmeta!(key = "commit", val = env!("GIT_SHA"));
 
+/// Storage keys for this shard's instance state and its per-batch records.
 #[contracttype]
 pub enum DataKey {
     Router,
@@ -66,6 +67,9 @@ const TTL_THRESHOLD: u32 = 100;
 /// MAX_BATCH_SIZE = 1000 (router constant), that is 10.
 const MAX_PROOF_LEN: u32 = 10;
 
+/// A storage shard: holds the batch records for one `[start_batch_id,
+/// end_batch_id)` slice of a router's batch stream. Every state-changing
+/// entry point authenticates the `router` address recorded at construction.
 #[contract]
 pub struct ReceiptShard;
 
@@ -101,21 +105,35 @@ impl ReceiptShard {
         count: u32,
         period_start: u64,
         period_end: u64,
-    ) {
-        assert!(Self::is_active(env.clone()), "shard is inactive");
-        let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
+    ) -> Result<(), Error> {
+        let active: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Active)
+            .ok_or(Error::NotInitialized)?;
+        if !active {
+            return Err(Error::Unauthorized);
+        }
+        let router: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Router)
+            .ok_or(Error::NotInitialized)?;
         router.require_auth();
 
         let start: u64 = env
             .storage()
             .instance()
             .get(&DataKey::StartBatchId)
-            .unwrap();
-        let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
-        assert!(
-            batch_id >= start && batch_id < end,
-            "batch_id out of shard range"
-        );
+            .ok_or(Error::NotInitialized)?;
+        let end: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
+        if batch_id < start || batch_id >= end {
+            return Err(Error::BatchNotFound);
+        }
 
         let record = BatchRecord {
             root,
@@ -138,8 +156,13 @@ impl ReceiptShard {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Batch(batch_id), TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
     }
 
+    /// Reads this shard's record for `batch_id`. Read-only and
+    /// unauthenticated. Returns `Error::BatchNotFound` when the shard holds no
+    /// record for that id — because it was never anchored, or because
+    /// `prune_batches` already deleted it.
     pub fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error> {
         env.storage()
             .persistent()
@@ -183,6 +206,10 @@ impl ReceiptShard {
         computed_hash
     }
 
+    /// Extends the TTL of the batch record at `batch_id` so an unpruned record
+    /// stays live. Publicly callable, no auth and no caller precondition except
+    /// that the shard is still active (an inactive shard panics). Returns
+    /// `Error::BatchNotFound` when the shard holds no record for that id.
     pub fn extend_batch_ttl(env: Env, batch_id: u64) -> Result<(), Error> {
         assert!(Self::is_active(env.clone()), "shard is inactive");
         if !env.storage().persistent().has(&DataKey::Batch(batch_id)) {
@@ -201,6 +228,12 @@ impl ReceiptShard {
     /// cursor and how many batches were pruned, so the router can decide
     /// whether to keep going within this shard or move to the next one.
     ///
+    /// Returns `Error::NotInitialized` when the instance carries none of the
+    /// construction-time state this function reads — `Router`, `EndBatchId`
+    /// or `PrunedUpTo` — the state a caller observes before the shard is
+    /// constructed, or after the instance entry has aged out. A missing key
+    /// is reported as that typed error instead of aborting the host call.
+    ///
     /// Router-gated: pruning order is a router-level invariant (a contiguous
     /// global prefix), so only the router may advance this shard's cursor.
     pub fn prune_batches(
@@ -208,15 +241,27 @@ impl ReceiptShard {
         before_ledger: u32,
         max_batches: u32,
         high_water_batch_id: u64,
-    ) -> (u64, u64) {
+    ) -> Result<(u64, u64), Error> {
         assert!(Self::is_active(env.clone()), "shard is inactive");
-        let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
+        let router: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Router)
+            .ok_or(Error::NotInitialized)?;
         router.require_auth();
 
-        let end_batch_id: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
+        let end_batch_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
         let ceiling = high_water_batch_id.min(end_batch_id);
 
-        let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
+        let mut cursor: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PrunedUpTo)
+            .ok_or(Error::NotInitialized)?;
         let mut pruned: u64 = 0;
         // Counters are settled once after the loop rather than per deletion.
         // `pruned` also counts already-absent ids, which never held a record,
@@ -254,27 +299,44 @@ impl ReceiptShard {
                 .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         }
 
-        (cursor, pruned)
-    }    pub fn get_router(env: Env) -> Result<Address, Error> {
-        let router = env
+        Ok((cursor, pruned))
+    }
+
+    /// Returns the router address recorded at construction, or
+    /// `NotInitialized` when the instance has no router (never constructed,
+    /// or instance storage evicted after the durability window). A successful
+    /// read extends the instance TTL, matching the write paths.
+    pub fn get_router(env: Env) -> Result<Address, Error> {
+        let router: Address = env
             .storage()
             .instance()
             .get(&DataKey::Router)
             .ok_or(Error::NotInitialized)?;
-        env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(router)
     }
 
     /// Returns `(start_batch_id, end_batch_id)`, the shard's assigned
-    /// half-open range.
+    /// half-open range, or `NotInitialized` when the instance has no range
+    /// (never constructed, or instance storage evicted after the durability
+    /// window). A successful read extends the instance TTL, matching the
+    /// write paths.
     pub fn get_range(env: Env) -> Result<(u64, u64), Error> {
-        let start = env
+        let start: u64 = env
             .storage()
             .instance()
             .get(&DataKey::StartBatchId)
             .ok_or(Error::NotInitialized)?;
-        let end = env.storage().instance().get(&DataKey::EndBatchId).ok_or(Error::NotInitialized)?;
-        env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        let end: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok((start, end))
     }
 }
@@ -285,6 +347,8 @@ mod consolidation_test;
 pub mod diagnostics;
 #[cfg(test)]
 mod diagnostics_test;
+#[cfg(test)]
+mod getter_test;
 pub mod pruning;
 #[cfg(test)]
 mod pruning_test;

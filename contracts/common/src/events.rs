@@ -52,42 +52,68 @@ pub mod modules {
 pub mod actions {
     use soroban_sdk::{symbol_short, Symbol};
 
+    /// Action topic for a deposit: the `deposit` short symbol, third element of
+    /// the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn deposit() -> Symbol {
         symbol_short!("deposit")
     }
+    /// Action topic for a withdraw: the `withdraw` short symbol, third element
+    /// of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn withdraw() -> Symbol {
         symbol_short!("withdraw")
     }
+    /// Action topic for a refund: the `refund` short symbol, published as the
+    /// third topic of every `RefundEventPayload` by `emit_refund`.
     pub fn refund() -> Symbol {
         symbol_short!("refund")
     }
+    /// Action topic for a transfer: the `transfer` short symbol, published as
+    /// the third topic of every `TransferEventPayload` by `emit_transfer`.
     pub fn transfer() -> Symbol {
         symbol_short!("transfer")
     }
+    /// Action topic for an open transition: the `open` short symbol, third
+    /// element of the `[Protocol, Module, Action]` tuple.
     pub fn open() -> Symbol {
         symbol_short!("open")
     }
+    /// Action topic for a close transition: the `close` short symbol, third
+    /// element of the `[Protocol, Module, Action]` tuple.
     pub fn close() -> Symbol {
         symbol_short!("close")
     }
+    /// Action topic for a dispute raised against a state: the `dispute` short
+    /// symbol, third element of the `[Protocol, Module, Action]` tuple.
     pub fn dispute() -> Symbol {
         symbol_short!("dispute")
     }
+    /// Action topic for a claim: the `claim` short symbol, third element of the
+    /// `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn claim() -> Symbol {
         symbol_short!("claim")
     }
+    /// Action topic for a settle: the `settle` short symbol, published as the
+    /// third topic of every `ChannelStatePayload` by `emit_channel_state`.
     pub fn settle() -> Symbol {
         symbol_short!("settle")
     }
+    /// Action topic for an anchor: the `anchor` short symbol, third element of
+    /// the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn anchor() -> Symbol {
         symbol_short!("anchor")
     }
+    /// Action topic for a prune: the `prune` short symbol, third element of the
+    /// `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn prune() -> Symbol {
         symbol_short!("prune")
     }
+    /// Action topic for a pause: the `pause` short symbol, third element of the
+    /// `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn pause() -> Symbol {
         symbol_short!("pause")
     }
+    /// Action topic for an unpause: the `unpause` short symbol, third element
+    /// of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn unpause() -> Symbol {
         symbol_short!("unpause")
     }
@@ -97,13 +123,21 @@ pub mod actions {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GranularEventPayload {
+    /// Account that initiated the operation, when provided by the emitter.
     pub sender: Option<Address>,
+    /// Account receiving the operation's value, when provided by the emitter.
     pub receiver: Option<Address>,
+    /// Address of the affected asset contract, when provided by the emitter.
     pub asset: Option<Address>,
+    /// Amount associated with the event, in the emitting operation's units.
     pub amount: i128,
+    /// Fee associated with the event, in the emitting operation's units.
     pub fee: i128,
+    /// Timestamp associated with the event, in seconds.
     pub timestamp: u64,
+    /// Sequence value associated with the event, as supplied by the emitter.
     pub sequence: u64,
+    /// Optional opaque event metadata supplied by the emitter.
     pub metadata: Option<Bytes>,
 }
 
@@ -123,12 +157,19 @@ pub struct TransferEventPayload {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundEventPayload {
+    /// Merchant address supplied to `emit_refund`.
     pub merchant: Address,
+    /// Address receiving the refund, supplied to `emit_refund`.
     pub recipient: Address,
+    /// Address of the refunded asset, supplied to `emit_refund`.
     pub asset: Address,
+    /// Amount supplied to `emit_refund`, in the caller's units.
     pub amount: i128,
+    /// Fee supplied to `emit_refund`, in the caller's units.
     pub fee: i128,
+    /// 32-byte reference for the payment being refunded.
     pub payment_ref: BytesN<32>,
+    /// Ledger timestamp captured by `emit_refund` when it creates the payload.
     pub timestamp: u64,
 }
 
@@ -136,13 +177,21 @@ pub struct RefundEventPayload {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelStatePayload {
+    /// Identifier of the channel whose state is being emitted.
     pub channel_id: u64,
+    /// Address of the channel sender supplied to `emit_channel_state`.
     pub sender: Address,
+    /// Address of the channel receiver supplied to `emit_channel_state`.
     pub receiver: Address,
+    /// Channel asset address, or `None` when no asset is specified.
     pub asset: Option<Address>,
+    /// Channel balance supplied to `emit_channel_state`, in the asset's units.
     pub balance: i128,
+    /// Channel nonce supplied to `emit_channel_state`.
     pub nonce: u64,
+    /// Channel fee supplied to `emit_channel_state`, in the asset's units.
     pub fee: i128,
+    /// Ledger timestamp in seconds, set by `emit_channel_state`.
     pub timestamp: u64,
 }
 

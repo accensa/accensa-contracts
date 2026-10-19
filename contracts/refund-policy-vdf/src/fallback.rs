@@ -66,11 +66,23 @@ enum FallbackDataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FallbackDisputeRequestedEvent {
     #[topic]
+    /// Id assigned by `request_dispute`: the instance `Count` plus one, so the
+    /// first escalation is 1.
     pub dispute_id: u32,
+    /// The oracle named by the escalation caller — the only address whose
+    /// `require_auth` lets `settle_dispute` through.
     pub oracle: Address,
+    /// The 32-byte payment reference the dispute is about, copied unchanged
+    /// from the caller.
     pub payment_ref: BytesN<32>,
+    /// The merchant that escalated, and whose auth `request_dispute` requires
+    /// before recording anything.
     pub merchant: Address,
+    /// The refund recipient named by the escalation caller.
     pub recipient: Address,
+    /// The disputed amount as passed in by the caller; this crate only checks
+    /// it is greater than zero (`Error::InvalidAmount` otherwise) and never
+    /// rescales it.
     pub amount: i128,
 }
 

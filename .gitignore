@@ -9,6 +9,20 @@ __pycache__/
 
 # Local scratch and data files
 issues.json
+all_issues.json
 *.scratch
 *.tmp
 *.temp
+patch.sed
+patch_changelog.py
+pr_body.md
+pr_body.txt
+pr_description.md
+pr_document.md
+fix.sh
+fix_common.sh
+fix_lib.sh
+fix_budget.sh
+fix_vault.sh
+fix_vault.py
+

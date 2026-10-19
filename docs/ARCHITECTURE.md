@@ -146,6 +146,7 @@ Both contracts are deployed on Stellar testnet (v0.1.0). Key details:
 | Max batch size | 1,000 receipts |
 | Storage TTL | ~30 days (~518,400 ledgers) |
 
-> **Note:** The testnet contracts run v0.1.0 while `main` is at v0.2.0. The
-> v0.2.0 functions (`prune_batches`, `pause`, `unpause`, etc.) are not available
-> at the deployed addresses. See [DEPLOYMENTS.md](../DEPLOYMENTS.md) for details.
+> **Note:** The testnet contracts run v0.1.0 while `main` is at v0.3.0. The
+> `main` functions (`prune_batches`, `pause`, `unpause`, yield paths, etc.) are
+> not available at the deployed addresses. See [DEPLOYMENTS.md](../DEPLOYMENTS.md)
+> for details.

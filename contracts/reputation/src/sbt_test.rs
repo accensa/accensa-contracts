@@ -9,8 +9,8 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     events::Event as _,
-    testutils::{Address as _, EnvTestConfig, Events as _},
-    String as SdkString,
+    testutils::{Address as _, EnvTestConfig, Events as _, MockAuth, MockAuthInvoke},
+    IntoVal, String as SdkString,
 };
 
 /// Assert the last invocation emitted exactly `events` (nothing else), in
@@ -341,6 +341,91 @@ fn slash_requires_governance_auth() {
     s.env.set_auths(&[]);
     s.client
         .slash(&s.merchant, &SdkString::from_str(&s.env, "fraud"));
+}
+
+/// An environment with no blanket auth mocking: `initialize` is unauthenticated,
+/// so the contract can be set up while every later call must present real auth.
+fn setup_without_mocked_auth() -> Setup {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let contract_id = env.register(Reputation, ());
+    let client = ReputationClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    Setup {
+        env,
+        client,
+        admin,
+        merchant,
+    }
+}
+
+/// Authorise exactly one `issue(merchant, class)` call by the bound authority.
+fn mock_issue_auth(s: &Setup, merchant: &Address, class: u32) {
+    s.env.mock_auths(&[MockAuth {
+        address: &s.admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "issue",
+            args: (merchant.clone(), class).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    }]);
+}
+
+// ── Unauthorized SBT authority (issue #657) ──────────────────────────────
+
+#[test]
+fn issue_without_sbt_authority_auth_is_rejected() {
+    let s = setup_without_mocked_auth();
+
+    assert!(matches!(s.client.try_issue(&s.merchant, &1), Err(Err(_))));
+
+    // Nothing was minted and the counter did not move.
+    assert_eq!(s.client.total_sbt(), 0);
+    assert_eq!(s.client.get_sbt(&s.merchant), None);
+    assert!(!sbt_present(&s.env, &s.client.address, &s.merchant));
+}
+
+#[test]
+fn revoke_without_sbt_authority_auth_is_rejected() {
+    let s = setup_without_mocked_auth();
+    mock_issue_auth(&s, &s.merchant, 1);
+    assert_eq!(s.client.issue(&s.merchant, &1), 0);
+
+    // Drop the authority's authorization again before the call under test.
+    s.env.mock_auths(&[]);
+    assert!(matches!(s.client.try_revoke(&s.merchant), Err(Err(_))));
+
+    // The credential is still present and was not burned.
+    assert_eq!(s.client.total_sbt(), 1);
+    assert_eq!(s.client.get_sbt(&s.merchant).unwrap().token_id, 0);
+    assert!(sbt_present(&s.env, &s.client.address, &s.merchant));
+}
+
+#[test]
+fn slash_without_sbt_authority_auth_is_rejected() {
+    let s = setup_without_mocked_auth();
+    mock_issue_auth(&s, &s.merchant, 1);
+    assert_eq!(s.client.issue(&s.merchant, &1), 0);
+
+    s.env.mock_auths(&[]);
+    let reason = SdkString::from_str(&s.env, "fraud");
+    assert!(matches!(
+        s.client.try_slash(&s.merchant, &reason),
+        Err(Err(_))
+    ));
+
+    // The credential was not flagged and nothing was written.
+    let sbt = s.client.get_sbt(&s.merchant).unwrap();
+    assert!(!sbt.slashed);
+    assert_eq!(sbt.slashed_at, None);
+    assert_eq!(sbt.reason, None);
+    assert_eq!(s.client.total_sbt(), 1);
 }
 
 // ── NotInitialized ───────────────────────────────────────────────────────
