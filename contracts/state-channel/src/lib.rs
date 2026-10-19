@@ -138,10 +138,21 @@ pub enum DataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelOpenedEvent {
     #[topic]
+    /// Channel id assigned by `open_channel` (the incremented
+    /// `DataKey::ChannelCount`, first channel `1`).
     pub channel_id: u64,
+    /// Address that escrowed `amount` for the channel in `open_channel`;
+    /// state updates verify against the `sender_pubkey` supplied there.
     pub sender: Address,
+    /// Address recorded by `open_channel`; `claim` pays the channel balance
+    /// to it, and it may dispute a close during the challenge period.
     pub receiver: Address,
+    /// Escrowed token amount locked in by `open_channel`, in the settlement
+    /// token's smallest unit.
     pub amount: i128,
+    /// Dispute window in ledgers stored on the channel by `open_channel`: the
+    /// caller's value after `effective_challenge_period` maps `0` to the
+    /// default and caps larger values at `MAX_CHALLENGE_PERIOD`.
     pub challenge_period: u32,
 }
 

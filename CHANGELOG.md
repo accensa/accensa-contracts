@@ -3,11 +3,80 @@
 All notable changes to `ReceiptAnchor` and `RefundVault` are recorded here.
 
 The two contracts are versioned together and share a tag. Versioning follows the
-policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0,
-breaking changes bump the **minor** version, and they are called out as such.
+policy in [`docs/RELEASING.md`](docs/RELEASING.md), including its pre-1.0
+exception: while the project is below `1.0.0`, breaking changes bump the
+**minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **Documentation (#750, #751):** Documented the 4 public items of refund-vault `nft_escrow` (`deposit`, `claim`, `refund`, `get`) and the 4 of state-channel `multi_asset` (`MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open`, `get`) with `///` rustdoc, covering role, pre-conditions and each `Error` arm for off-chain integrators; comments only, no code change.
+- **`stream-vault` (issue #607): assert all five stream-vault lifecycle event shapes.**
+  Walk a stream through create, partial claim, pause, resume, and cancel transitions, asserting exact XDR shapes for `StreamCreatedEvent`, `StreamClaimedEvent`, `StreamPausedEvent`, `StreamResumedEvent`, and `StreamCancelledEvent`. Test-only — no contract behavior change.
+- **`refund-vault` (issue #638): flash-loan event shape pinned by tests.**
+  `FlashLoanEvent` is asserted by exact topic tuple
+  (`("flash_loan_event", receiver)`) and payload on a repaid loan, with its
+  recorded fee and principal cross-checked against the token balances moved by
+  the same invocation; both revert paths are shown to publish no flash-loan
+  event. Test-only — no contract behavior change.
+- **`refund-vault` (issue #620): per-strategy approval key semantics pinned by
+  tests.** New `per_strategy_approval_key` module in
+  `contracts/refund-vault/src/strategy_tests.rs` approves two strategies,
+  deploys to each in turn, and shows that revoking one leaves the other
+  approved, active and deployable; that an address which was never approved is
+  rejected with `StrategyNotApproved` at both registration and deployment; and
+  that re-approving is idempotent (one revoke clears it). Test-only — no
+  contract behavior change.
+- **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
+- **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
+- **Documentation (#788, #792):** Documented the five public fields of state-channel `MultiAssetChannel` (`sender`, `receiver`, `phase`, `opened_at`, `challenge_period`) and the five of upto-authorization `AuthorizeEvent` (`payment_id`, `from`, `to`, `cap`, `expiry`) for off-chain decoders; comments only, no code change.
+- **`refund-vault` / `state-channel` (issues #128, #460):** Add commit-reveal, mock-yield and channel-splicing test suites. New `contracts/refund-vault/src/commit_reveal_tests.rs` pins the commit-reveal front-running mitigation (delayed reveal, single-use commitment, hash-mismatch rejection, merchant-only access); new `contracts/refund-vault/src/yield_tests.rs` adds a mock yield strategy harness covering strategy set/deposit/withdraw/harvest; new `contracts/state-channel/src/splice_test.rs` covers splice-in/splice-out capacity changes, reserved-escrow guards, non-positive amounts and unknown-channel errors. Test-only — no contract behavior change.
+- **Documentation (#787):** Documented the five public fields of state-channel `ChannelOpenedEvent` (`channel_id`, `sender`, `receiver`, `amount`, `challenge_period`) for off-chain decoders; comments only, no code change.
 
+- fix(refund-vault): route `resolve_ceiling`'s cumulative sum through the checked
+  `accensa_common::math::add_amounts` helper, so an `i128` overflow in the
+  partial-refund ceiling computation surfaces as the typed error
+  `MathOverflow` instead of aborting the host call; boundary test pins the
+  behaviour at `i128::MAX` (issue #721)
+- fix(receipt-shard): `get_shard_diagnostics` now returns
+  `Err(Error::NotInitialized)` instead of trapping when the TTL-evictable
+  `StartBatchId`/`EndBatchId` instance keys are missing, so the read-only
+  monitoring entry point degrades gracefully for indexers and light clients;
+  error-path and populated/drained health tests added (issue #615)
+- fix(ci): the wasm budget gate (`scripts/check_wasm_budget.sh`) hard-fails on
+  missing artifacts, missing or non-numeric budget entries, and a missing or
+  broken `jq`, and checks the union of its contract list and every
+  `.wasm-budget.json` key so nothing is silently dropped from the gate
+  (issue #623)
+- docs(state-channel): add `///` doc comments to the five exported fields of
+  `MultiAssetChannelOpenedEvent`- **Contract payload field documentation (#763, #764, #765):** Documented the public fields of governance `Proposal`, receipt-anchor `AnchorPayload`, and `RefundEventPayload`.
+- **`refund-vault` (issue #685): report a missing payment token from
+  `deploy_to_yield` instead of aborting.** The `DataKey::Token` read in
+  `contracts/refund-vault/src/lib.rs` was an `unwrap()`, so a deployment that
+  reached it aborted with an untyped `WasmRuntimeError` while the pause, amount,
+  admin and strategy arms in the same function return `Error`. It now reads
+  `ok_or(Error::NotInitialized)?`, matching how the other entry points resolve
+  the same key. New
+  `contracts/refund-vault/src/deploy_to_yield_token_tests.rs` approves and
+  activates a strategy, removes the stored token and asserts the returned
+  variant.
+- **`refund-vault` (issue #686): report a missing refund window from
+  `extend_refund_ttl` instead of aborting.** The `DataKey::RefundWindow` read
+  that sizes the TTL extension was an `unwrap()`; it now returns
+  `Error::NotInitialized`, so a call that finds a refund record but no window
+  answers with a typed variant the caller can match, like the `RefundNotFound`
+  arm beside it. New
+  `contracts/refund-vault/src/extend_refund_ttl_window_tests.rs` stores a v2
+  refund record, removes the window and asserts the returned variant.
+- **`refund-vault` (issue #687): walk the fee ladder in `tier_for_volume`
+  without indexing.** The active-rung scan read each rung through
+  `ladder.get(i).unwrap()`, whose safety rested on a manual argument about the
+  loop bound. It now iterates the ladder with an enumerated index, so no line
+  can trap at host-call time. Behaviour is unchanged for every input that
+  passed before; no signature or public API changed.
+- **`refund-vault` (issue #688): resolve `next_threshold` from the bound
+  `Option` instead of unwrapping.** The next-rung lookup
+  (`ladder.get(next).unwrap()`) is now a `match` on `get`, whose `None` arm is
+  exactly the documented top-rung case returning `i128::MAX`. No new error
+  variant is reachable and no behaviour changes for previously valid input.
 - **`governance` / `multisig-account` (issues #747, #748): document the optimistic-track and pause-admin entry points.**
   Added `///` doc comments to the public items the rustdoc issues named: `submit`,
   `veto`, `execute` and `get` in `contracts/governance/src/optimistic.rs`, and
@@ -1125,6 +1194,11 @@ proof)` for randomness-verification flows, and its cost is pinned by a
   has not authorised, and `withdraw` stays merchant-only. The existing
   `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
   deliberate.
+
+- **`refund-vault` (issue #708): add coupon and liquidity test coverage.**
+  Added tests for `apply_coupon`, `get_coupon`, and `ensure_liquidity`, including
+  their observable success behavior and applicable error paths. Test-only; no
+  contract behavior change.
 
 ### Fixed
 
