@@ -1,3 +1,8 @@
+## Issue #643: non-admin auth rejection for cross-chain admin setters
+
+- [x] Cover non-admin auth rejection for cross-chain admin setters (#643)
+  - `contracts/cross-chain/src/test.rs` — negative-path and admin happy-path tests for `set_guardian_set`, `set_axelar_gateway`, `set_trusted_peer` and `set_layerzero_endpoint`
+
 # Roadmap
 
 ## Issue #443: stACC liquid staking derivative minting
