@@ -1159,6 +1159,11 @@ proof)` for randomness-verification flows, and its cost is pinned by a
   `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
   deliberate.
 
+- **`refund-vault` (issue #708): add coupon and liquidity test coverage.**
+  Added tests for `apply_coupon`, `get_coupon`, and `ensure_liquidity`, including
+  their observable success behavior and applicable error paths. Test-only; no
+  contract behavior change.
+
 ### Fixed
 
 - **`main` was failing CI** (left red by the advanced-wasm-memory merge):
