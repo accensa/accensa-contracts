@@ -34,6 +34,8 @@ mod badges;
 mod badges_test;
 mod credit_score;
 #[cfg(test)]
+mod credit_score_decay_overflow_test;
+#[cfg(test)]
 mod credit_score_test;
 mod sbt;
 #[cfg(test)]
@@ -509,7 +511,7 @@ impl Reputation {
         if sbt::get_sbt_impl(&env, &merchant).is_none() {
             return Err(SbtError::SbtNotFound);
         }
-        let credential = sbt::burn(&env, &merchant);
+        let credential = sbt::burn(&env, &merchant)?;
 
         SbtRevokedEvent {
             token_id: credential.token_id,

@@ -11,7 +11,7 @@ Please verify that your changes adhere to contract stability requirements:
 - [ ] **Error Variants:** Does this PR add or renumber contract error codes? *(Client-visible breaking change)*
 - [ ] **Changelog:** Has a corresponding entry been added to `CHANGELOG.md`?
 - [ ] **Deployments:** Has any impact on deployed contracts or `DEPLOYMENTS.md` been documented?
-- [ ] **Verification:** Has this change been tested locally (`cargo test`) and/or exercised on Soroban testnet?
+- [ ] **Verification:** Has this change been tested locally (`cargo test --workspace`) and/or exercised on Soroban testnet?
 
 ## Related Issues
 

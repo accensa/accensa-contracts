@@ -1,6 +1,6 @@
 # Support
 
-`accensa-contracts` holds the on-chain half of Accensa: `ReceiptAnchor` (Merkle batch anchoring) and `RefundVault` (policy-bounded refunds), built on `soroban-sdk` 27.0.4 and deployed on Stellar testnet.
+`accensa-contracts` holds the on-chain half of Accensa: `ReceiptAnchor` (Merkle batch anchoring) and `RefundVault` (policy-bounded refunds), built on `soroban-sdk` 27.0.6 (defined in `Cargo.lock` as the single source of truth) and deployed on Stellar testnet.
 
 This page is the single source of truth for how to reach the Accensa maintainers. Issues, PR templates, and documentation link here rather than embedding chat invites directly, so that if an invite link ever rotates only this file needs to change.
 

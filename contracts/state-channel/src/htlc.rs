@@ -246,7 +246,15 @@ pub(crate) fn add(
         parent_htlc_id,
     };
     store(env, &htlc);
-    set_reserved(env, channel_id, already_reserved + amount);
+    // The escrow check above already guarantees `balance + already_reserved +
+    // amount <= channel.amount`, so with a non-negative `balance` this sum is
+    // in range. `add_amounts` makes that explicit: if the precondition is ever
+    // violated the call returns `Error::MathOverflow` instead of trapping.
+    set_reserved(
+        env,
+        channel_id,
+        accensa_common::math::add_amounts(already_reserved, amount)?,
+    );
 
     HtlcAddedEvent {
         channel_id,

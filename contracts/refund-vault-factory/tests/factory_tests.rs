@@ -474,6 +474,73 @@ fn deployed_vault_refuses_when_time_policy_unconfigured() {
     );
 }
 
+// ── Fee hardcap (issue #562) ─────────────────────────────────────────────
+
+#[test]
+fn fee_bps_at_the_hardcap_is_accepted() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+
+    let mut init = vault_init(&env, &merchant, &token, 100);
+    init.fee_bps = 500;
+    let vault = factory.create_vault(&init, &None);
+
+    assert!(
+        factory.get_vaults().contains(&vault),
+        "a vault priced exactly at the 500 bp cap must be tracked"
+    );
+    assert_eq!(
+        RefundVaultClient::new(&env, &vault).get_fee_bps(),
+        500,
+        "the inclusive boundary value must reach the vault"
+    );
+}
+
+#[test]
+fn fee_bps_above_the_hardcap_is_rejected_without_mutating_factory_state() {
+    let Ctx {
+        env,
+        factory,
+        merchant,
+        ..
+    } = setup();
+    let token = token_for(&env, &merchant);
+
+    // Establish non-zero baseline state so "unchanged" is meaningful.
+    factory.deploy_vault(&vault_init(&env, &merchant, &token, 100));
+    let counter_before = factory.get_next_salt();
+    let vaults_before = factory.get_vaults();
+    let tvl_before = factory.get_tvl(&token);
+
+    let mut init = vault_init(&env, &merchant, &token, 100);
+    init.fee_bps = 501;
+    assert_eq!(
+        factory.try_create_vault(&init, &None),
+        Err(Ok(Error::FeeExceedsHardcap))
+    );
+
+    assert_eq!(
+        factory.get_next_salt(),
+        counter_before,
+        "a rejected deployment must not advance the salt counter"
+    );
+    assert_eq!(
+        factory.get_vaults(),
+        vaults_before,
+        "a rejected deployment must not be tracked"
+    );
+    assert_eq!(
+        factory.get_tvl(&token),
+        tvl_before,
+        "a rejected deployment must not change protocol TVL"
+    );
+}
+
 // ── Protocol TVL (issue #464) ────────────────────────────────────────────
 
 #[test]

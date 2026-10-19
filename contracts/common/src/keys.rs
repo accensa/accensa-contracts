@@ -1,14 +1,31 @@
 //! Type-safe storage-key namespace partitioning (issue #430).
 //!
-//! Every contract in this workspace writes to the Soroban ledger, and every
-//! module inside a contract shares one namespace. Before this module, a key
-//! could be as loose as a bare `symbol_short!("vaults")`, and two independent
-//! submodules could silently pick the *same* raw key — a collision that only
-//! surfaces after an upgrade, when a read meant for one module decodes state
-//! written by another.
+//! # Adoption status: reserved — no contract uses this partition yet
 //!
-//! This module makes that class of bug a compile error rather than a runtime
-//! surprise:
+//! This module is declared exactly once in the workspace (`pub mod keys;` in
+//! `contracts/common/src/lib.rs`) and no contract imports it: every contract
+//! still defines its own flat `DataKey` enum for its own storage. The
+//! namespace partition described below is therefore a property of *the key
+//! types this module defines*, not an enforced workspace-wide policy —
+//! on-chain storage written today is not routed through these namespaces, and
+//! the compile-time assertion cannot see keys a contract declares itself.
+//!
+//! The module is kept as a reserved building block for future contracts. A
+//! production consumer must be a deliberate migration: persisted ledger keys
+//! encode their namespace by variant position, so adopting these types in a
+//! deployed contract requires a storage-compatibility plan for live instances
+//! (see the doc comments on [`KeyNamespace`] and the per-module key enums).
+//!
+//! # What the module guarantees for its own keys
+//!
+//! Every contract in this workspace writes to the Soroban ledger, and every
+//! module inside a contract shares one namespace. A key can be as loose as a
+//! bare `symbol_short!("vaults")`, and two independent submodules could
+//! silently pick the *same* raw key — a collision that only surfaces after an
+//! upgrade, when a read meant for one module decodes state written by another.
+//!
+//! For the key enums defined in this module, that class of bug becomes a
+//! compile error rather than a runtime surprise:
 //!
 //! - [`KeyNamespace`] is the coarse partition (`Vault`, `Admin`, `Auth`, ...).
 //!   Each namespace owns a disjoint 32-bit block of the key space.
@@ -21,7 +38,9 @@
 //!   namespace's integer keys — even across contract upgrades.
 //! - The uniqueness of every discriminant is asserted at **compile time** by
 //!   [`discriminants_are_distinct`], so adding two colliding keys fails
-//!   `cargo check`, not a production read.
+//!   `cargo check`, not a production read. The `tests` module below pins the
+//!   same properties at runtime: for every namespace pair, and for the local
+//!   discriminants within each namespace.
 //!
 //! Contracts that need a dynamically-valued key (an `Address` or a
 //! `BytesN<32>`) keep a namespaced key as the *prefix* and append the value
@@ -31,7 +50,7 @@
 use soroban_sdk::contracttype;
 
 /// How far the namespace tag is shifted when folding into a `u64`. The low 32
-/// bits hold the a namespace-local discriminant; everything above is the
+/// bits hold a namespace-local discriminant; everything above is the
 /// namespace itself. 32 bits gives every namespace ~4 billion local keys,
 /// far more than any contract here will ever write.
 pub const NAMESPACE_SHIFT: u32 = 32;
@@ -250,6 +269,30 @@ const _: () = assert!(discriminants_are_distinct());
 mod tests {
     use super::*;
 
+    /// Every namespace this module defines, in discriminant order. Kept in
+    /// sync with [`KeyNamespace`] (which may only be appended to).
+    const ALL_NAMESPACES: [KeyNamespace; 5] = [
+        KeyNamespace::Vault,
+        KeyNamespace::Admin,
+        KeyNamespace::Auth,
+        KeyNamespace::Oracle,
+        KeyNamespace::Yield,
+    ];
+
+    /// Expected [`ALL_DATA_KEYS`] entries per namespace. Pins coverage so a
+    /// forgotten append is caught here, not by a silent gap in the
+    /// compile-time check.
+    const EXPECTED_PER_NAMESPACE: [(KeyNamespace, usize); 5] = [
+        (KeyNamespace::Vault, 13),
+        (KeyNamespace::Admin, 2),
+        (KeyNamespace::Auth, 2),
+        (KeyNamespace::Oracle, 2),
+        (KeyNamespace::Yield, 7),
+    ];
+
+    /// Locals used to stress the fold at the edges of the 32-bit window.
+    const LOCAL_SAMPLES: [u64; 5] = [0, 1, 0xdead_beef, LOCAL_MASK - 1, LOCAL_MASK];
+
     #[test]
     fn every_namespace_has_a_distinct_prefix() {
         let prefixes = [
@@ -354,5 +397,97 @@ mod tests {
             key.discriminant(),
             KeyNamespace::Vault.prefix() | (VaultKey::RefundWindow as u64)
         );
+        // The fold agrees with `encode` for every key in the module.
+        assert_eq!(
+            key.discriminant(),
+            encode(key.namespace(), VaultKey::RefundWindow as u64)
+        );
+    }
+
+    #[test]
+    fn discriminant_folding_is_disjoint_for_every_namespace_pair() {
+        // 1) Full cross product over this module's own keys: no two keys from
+        //    different namespaces may fold to the same `u64`.
+        for a in ALL_DATA_KEYS {
+            for b in ALL_DATA_KEYS {
+                if a.namespace() != b.namespace() {
+                    assert_ne!(
+                        a.discriminant(),
+                        b.discriminant(),
+                        "keys from different namespaces folded to the same u64"
+                    );
+                }
+            }
+        }
+
+        // 2) Every unordered pair of namespaces, crossed with boundary local
+        //    values: `encode(ns, local) == ns.prefix() | (local & LOCAL_MASK)`,
+        //    so pin it at both edges of the 32-bit local window — including a
+        //    local that would alias the neighbouring namespace's window if the
+        //    high bits were not disjoint.
+        for (i, ns_a) in ALL_NAMESPACES.iter().enumerate() {
+            for ns_b in ALL_NAMESPACES.iter().skip(i + 1) {
+                for local_a in LOCAL_SAMPLES {
+                    for local_b in LOCAL_SAMPLES {
+                        let folded_a = encode(*ns_a, local_a);
+                        let folded_b = encode(*ns_b, local_b);
+                        assert_ne!(
+                            folded_a, folded_b,
+                            "namespace {ns_a:?} folded onto {ns_b:?}"
+                        );
+                        assert_eq!(folded_a, ns_a.prefix() | local_a);
+                        assert_eq!(folded_b, ns_b.prefix() | local_b);
+                    }
+                }
+                // The two folds can never share their high 32 bits, which is
+                // the invariant that makes every sample above hold for all
+                // locals, not just the sampled ones.
+                for local_a in LOCAL_SAMPLES {
+                    for local_b in LOCAL_SAMPLES {
+                        assert_ne!(
+                            encode(*ns_a, local_a) >> NAMESPACE_SHIFT,
+                            encode(*ns_b, local_b) >> NAMESPACE_SHIFT,
+                            "namespace high-bits of {ns_a:?} and {ns_b:?} are not disjoint"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn namespace_local_discriminants_are_unique() {
+        // Within one namespace, distinct keys must have distinct local
+        // discriminants — and therefore distinct folded keys.
+        for (i, a) in ALL_DATA_KEYS.iter().enumerate() {
+            for b in ALL_DATA_KEYS.iter().skip(i + 1) {
+                if a.namespace() == b.namespace() {
+                    let local_a = a.discriminant() & LOCAL_MASK;
+                    let local_b = b.discriminant() & LOCAL_MASK;
+                    assert_ne!(
+                        local_a,
+                        local_b,
+                        "two keys in {:?} share local discriminant {local_a}",
+                        a.namespace()
+                    );
+                    assert_ne!(
+                        a.discriminant(),
+                        b.discriminant(),
+                        "two keys in {:?} folded to the same u64",
+                        a.namespace()
+                    );
+                }
+            }
+        }
+
+        // Per-namespace coverage: exact entry counts, so a key added without
+        // appending it to ALL_DATA_KEYS fails here too.
+        for (ns, expected) in EXPECTED_PER_NAMESPACE {
+            let count = ALL_DATA_KEYS.iter().filter(|k| k.namespace() == ns).count();
+            assert_eq!(
+                count, expected,
+                "expected {expected} keys in namespace {ns:?}, found {count}"
+            );
+        }
     }
 }

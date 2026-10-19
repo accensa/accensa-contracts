@@ -399,6 +399,13 @@ pub fn claim_yield(env: &Env, user: &Address) -> Result<i128, Error> {
     if amount <= 0 {
         return Err(Error::NoYieldToClaim);
     }
+
+    let client = token::Client::new(env, &token_addr);
+    let float_balance = client.balance(&env.current_contract_address());
+    if float_balance < amount {
+        return Err(Error::InsufficientBalance);
+    }
+
     user_dist.pending = 0;
 
     user_dist.claimed = user_dist
@@ -407,7 +414,6 @@ pub fn claim_yield(env: &Env, user: &Address) -> Result<i128, Error> {
         .ok_or(Error::MathOverflow)?;
     save_user_distribution(env, user, &user_dist);
 
-    let client = token::Client::new(env, &token_addr);
     client.transfer(&env.current_contract_address(), user, &amount);
 
     YieldClaimedEvent {
@@ -449,4 +455,50 @@ pub fn distribution_state(env: &Env) -> Result<DistributionState, Error> {
 /// Read-only: a user's distribution state, if they have one.
 pub fn get_user_distribution(env: &Env, user: &Address) -> Option<UserDistribution> {
     user_distribution(env, user)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Treasury, TreasuryClient};
+    use soroban_sdk::{testutils::Address as _, token::StellarAssetClient};
+
+    #[test]
+    fn claim_yield_returns_insufficient_balance_on_unfunded_float() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let alice = Address::generate(&env);
+
+        let holding_token = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let yield_token = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let treasury = env.register(Treasury, (admin.clone(), holding_token.clone()));
+        let client = TreasuryClient::new(&env, &treasury);
+
+        StellarAssetClient::new(&env, &holding_token).mint(&alice, &1_000_000);
+        client.initialize_distribution(&yield_token);
+        client.stake(&alice, &1_000_000);
+
+        client.distribute_yield(&100_000);
+
+        let pending_before = client.pending_yield(&alice);
+        assert_eq!(pending_before, 100_000);
+
+        let res = client.try_claim_yield(&alice);
+        assert_eq!(res, Err(Ok(Error::InsufficientBalance)));
+
+        let pending_after = client.pending_yield(&alice);
+        assert_eq!(pending_after, 100_000);
+
+        StellarAssetClient::new(&env, &yield_token).mint(&treasury, &100_000);
+        let claimed = client.claim_yield(&alice);
+        assert_eq!(claimed, 100_000);
+        assert_eq!(client.pending_yield(&alice), 0);
+    }
 }

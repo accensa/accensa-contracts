@@ -125,40 +125,51 @@ jobs:
 
       - id: vector-parity-hash
         name: Vector parity, cross-repo hash
-        # Copied verbatim, including the `ACCELSA_APP_REF` variable name, so
-        # issue #556 still applies cleanly against this file.
+        # Pinned via ACCENSA_APP_REF (issue #556); guard fails loudly when absent.
         env:
-          ACCENSA_APP_REF: ${{ vars.ACCELSA_APP_REF || 'main' }}
+          ACCENSA_APP_REF: ${{ vars.ACCENSA_APP_REF }}
           # On a PR we have not yet synced accensa-app, so a hash mismatch must
           # not block the PR itself — it is reported as a warning. On main,
           # schedule, dispatch and manual runs the same mismatch is a hard
           # failure, which is the whole point of issue #53.
           STRICT: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
         run: |
-          URL="https://raw.githubusercontent.com/accensa/accensa-app/${ACCELSA_APP_REF}/packages/sdk/merkle-vectors.json"
+          REF="${ACCENSA_APP_REF}"
+          if [ -z "$REF" ]; then
+            echo "::error::Repository variable ACCENSA_APP_REF is absent or empty. Maintainers must configure ACCENSA_APP_REF in repository variables."
+            if [ "$STRICT" = "true" ]; then
+              echo "::error::Failing build because ACCENSA_APP_REF is required on strict runs."
+              exit 1
+            fi
+            echo "::warning::vars.ACCENSA_APP_REF is absent; falling back to 'main' for non-strict pull_request run."
+            REF="main"
+          fi
+          echo "Resolved accensa-app ref: ${REF}"
+
+          URL="https://raw.githubusercontent.com/accensa/accensa-app/${REF}/packages/sdk/merkle-vectors.json"
           echo "Fetching ${URL}"
           if curl -fsSL "$URL" -o /tmp/sdk-merkle-vectors.json; then
             SDK_HASH=$(sha256sum /tmp/sdk-merkle-vectors.json | cut -d' ' -f1)
             LOCAL_HASH=$(tr -d '[:space:]' < contracts/receipt-anchor/merkle-vectors.json.sha256)
-            echo "SDK hash (accensa-app@${ACCELSA_APP_REF}):   ${SDK_HASH}"
-            echo "Local hash (this repo):                      ${LOCAL_HASH}"
+            echo "SDK hash (accensa-app@${REF}):   ${SDK_HASH}"
+            echo "Local hash (this repo):          ${LOCAL_HASH}"
             if [ "$SDK_HASH" != "$LOCAL_HASH" ]; then
               if [ "$STRICT" = "true" ]; then
-                echo "::error::merkle-vectors.json diverged from accensa-app@${ACCELSA_APP_REF}."
+                echo "::error::merkle-vectors.json diverged from accensa-app@${REF}."
                 echo "::error::Bring the two repos in sync: update both copies of merkle-vectors.json"
                 echo "::error::AND both committed .sha256 files, then pin ACCENSA_APP_REF. The"
                 echo "::error::cross-implementation proof-of-parity is broken until you do."
                 exit 1
               fi
-              echo "::warning::merkle-vectors.json diverged from accensa-app@${ACCELSA_APP_REF}."
+              echo "::warning::merkle-vectors.json diverged from accensa-app@${REF}."
               echo "::warning::This is expected until accensa-app vendors the new canonical vectors"
               echo "::warning::(see cross-repo/accensa-app/README.md). Once both repos carry the"
               echo "::warning::same hash this becomes a hard failure instead of a warning."
             else
-              echo "Vector fixture matches accensa-app@${ACCELSA_APP_REF}."
+              echo "Vector fixture matches accensa-app@${REF}."
             fi
           else
-            echo "::warning::Could not fetch accensa-app@${ACCELSA_APP_REF} merkle-vectors.json."
+            echo "::warning::Could not fetch accensa-app@${REF} merkle-vectors.json."
             echo "::warning::This usually means accensa-app has not yet vendored the canonical"
             echo "::warning::vectors (see docs/CONFORMANCE.md). The divergence guard is active but"
             echo "::warning::cannot verify until the SDK copy exists. Open the accensa-app PR."
@@ -191,11 +202,11 @@ jobs:
           cargo install --git https://github.com/Tollcraft/soroban-budget-assert.git \
             --tag "$SOROBAN_BUDGET_ASSERT_REF" --locked cargo-budget-report
       - name: Run cargo budget-report (Tier B)
-        # Requires a funded testnet identity; only runs in the repo's own runs
-        # where the secret is set. `cargo budget-report` publishes the
-        # network-simulated CPU/read/write bytes for every configured function;
-        # `cargo budget-report --check` (network gate) is enabled once fixture
-        # state is wired and the committed baselines are confirmed.
+        # Requires a funded testnet identity; only runs in post-merge runs
+        # where STELLAR_TESTNET_SECRET is set. Enabled in PR #244, this step runs
+        # `cargo budget-report --check` to enforce the committed `[functions.*]`
+        # baselines in budget.toml (anchor_batch_*, verify_receipt_*, prune_batches_100,
+        # refund, deposit) with a 15% tolerance ceiling against testnet simulation.
         if: ${{ github.event_name != 'pull_request' && env.STELLAR_TESTNET_SECRET != '' }}
         run: |
           echo "$STELLAR_TESTNET_SECRET" | stellar keys add alice --network testnet --secret-key-stdin
@@ -218,7 +229,43 @@ jobs:
         uses: peter-evans/repository-dispatch@v4
         continue-on-error: true
         with:
-          token: ${{ secrets.ACCELSA_APP_PAT }}
+          token: ${{ secrets.ACCENSA_APP_PAT }}
           repository: accensa/accensa-app
           event-type: accensa-contracts-vector-update
           client-payload: '{"ref": "${{ github.sha }}"}'
+
+      - name: cargo deny
+        # Supply-chain gate (issue #554): `deny.toml` was committed but nothing
+        # ever ran it, so its policy was unenforced. Runs advisories, bans,
+        # licenses and sources against the *locked* workspace: the metadata
+        # step below fails if Cargo.toml and Cargo.lock disagree instead of
+        # silently re-resolving.
+        #
+        # The tool is pinned to the version `deny.toml` is written for (the
+        # config format is tied to the tool version — the file this repo carried
+        # before was rejected outright by 0.20.2 — so an unpinned cargo-deny
+        # could start rejecting `deny.toml` on a later release). The binary and the advisory
+        # database both live under `target/` (`db-path` in deny.toml), so the
+        # "Cache cargo" step above carries them between runs; the version check
+        # rebuilds the binary when the pin below changes.
+        run: |
+          set -euo pipefail
+          DENY_VERSION="0.20.2"
+          DENY_ROOT="target/cargo-deny-tools"
+          DENY_BIN="$DENY_ROOT/bin/cargo-deny"
+          if ! "$DENY_BIN" --version 2>/dev/null | grep -q " ${DENY_VERSION}$"; then
+            cargo install cargo-deny --version "$DENY_VERSION" --locked --root "$DENY_ROOT"
+          fi
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
+          "$DENY_BIN" --metadata-path "$RUNNER_TEMP/cargo-metadata.json" check
+
+      - name: Deploy smoke test (dry-run)
+        # Issue #555: runs deploy.sh argument parsing, validation, and safety checks in dry-run.
+        run: bash tests/test_deploy.sh
+
+      - name: Differential fuzz harness
+        # Issue #555: runs bounded campaign with documented iteration count for invariant testing.
+        run: |
+          rustc --test tests/differential/bolero_test.rs -o target/bolero_test
+          ./target/bolero_test --nocapture
+
