@@ -7,6 +7,7 @@
 //! explicit reverts (see [`lib.rs`]) so that callers who try the standard
 //! token interface get a typed error instead of a missing-function trap.
 
+use crate::SbtError;
 use soroban_sdk::{contractevent, contracttype, Address, Env, String};
 
 /// The tier of a soulbound credential.
@@ -130,14 +131,26 @@ pub fn store(env: &Env, owner: &Address, sbt: &SoulboundToken) {
 }
 
 /// Deletes a credential (revoke) and writes the re-issue-blocking tombstone.
-pub fn burn(env: &Env, owner: &Address) -> SoulboundToken {
+///
+/// Returns [`SbtError::SbtNotFound`] instead of trapping when `owner` holds no
+/// credential, so a caller that reaches this before any credential is stored
+/// gets a typed result.
+pub fn burn(env: &Env, owner: &Address) -> Result<SoulboundToken, SbtError> {
     let key = SbtDataKey::Sbt(owner.clone());
-    let sbt: SoulboundToken = env.storage().persistent().get(&key).unwrap();
+    let sbt: SoulboundToken = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(SbtError::SbtNotFound)?;
     env.storage().persistent().remove(&key);
     let tombstone = SbtDataKey::Revoked(owner.clone());
     env.storage().persistent().set(&tombstone, &true);
     env.storage()
         .persistent()
         .extend_ttl(&tombstone, 100, 518_400);
-    sbt
+    Ok(sbt)
 }
+
+#[cfg(test)]
+#[path = "sbt_burn_missing_test.rs"]
+mod sbt_burn_missing_test;

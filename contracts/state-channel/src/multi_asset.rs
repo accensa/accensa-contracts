@@ -80,11 +80,25 @@ pub struct MultiAssetState {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultiAssetChannelOpenedEvent {
+    /// Channel id assigned by `open` (the incremented `DataKey::ChannelCount`,
+    /// first channel `1`) and repeated in every signed state and later event
+    /// for this channel.
     #[topic]
     pub channel_id: u64,
+    /// Address that escrowed the deposits (authorized the `open` transfer per
+    /// asset); state signatures for this channel verify against its key set at
+    /// `open`.
     pub sender: Address,
+    /// Address entitled to the per-asset receiver balances paid out at
+    /// `settle`.
     pub receiver: Address,
+    /// Token address → amount escrowed from the sender at `open`, in that
+    /// token's smallest unit; each entry seeds the channel's per-asset
+    /// `BalanceRecord`, and every per-asset receiver balance stays within it.
     pub deposits: Map<Address, i128>,
+    /// Dispute window in ledgers, applied by `effective_challenge_period` (0
+    /// selects the default, anything larger is capped) and enforced between
+    /// `close` and `settle`.
     pub challenge_period: u32,
 }
 

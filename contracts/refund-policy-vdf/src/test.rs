@@ -424,3 +424,102 @@ fn test_verify_resource_cost_budget() {
         "VDF verify memory cost regression! Measured: {mem}, Limit: {VDF_VERIFY_MAX_MEM}"
     );
 }
+
+// ── Fallback dispute coverage (#702) ─────────────────────────────────────────
+
+#[test]
+fn test_fallback_request_dispute_invalid_amount() {
+    use soroban_sdk::testutils::Address as _;
+
+    let env = test_env();
+    let contract_id = env.register(VdfPolicy, ());
+    let merchant = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let pref = payment_ref(&env, 1);
+
+    env.as_contract(&contract_id, || {
+        assert_eq!(
+            crate::fallback::request_dispute(&env, &merchant, &oracle, &pref, &recipient, 0),
+            Err(Error::InvalidAmount)
+        );
+    });
+
+    let merchant2 = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        assert_eq!(
+            crate::fallback::request_dispute(&env, &merchant2, &oracle, &pref, &recipient, -10),
+            Err(Error::InvalidAmount)
+        );
+    });
+}
+
+#[test]
+fn test_fallback_request_dispute_and_oracle_request_bytes() {
+    use soroban_sdk::{testutils::Address as _, xdr::FromXdr};
+
+    let env = test_env();
+    let contract_id = env.register(VdfPolicy, ());
+    let merchant = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let pref = payment_ref(&env, 2);
+
+    env.as_contract(&contract_id, || {
+        let dispute_id =
+            crate::fallback::request_dispute(&env, &merchant, &oracle, &pref, &recipient, 500)
+                .expect("request_dispute should succeed");
+        assert_eq!(dispute_id, 1);
+
+        let bytes = crate::fallback::oracle_request_bytes(&env, dispute_id)
+            .expect("oracle_request_bytes should succeed");
+        let dispute = FallbackDispute::from_xdr(&env, &bytes).expect("should decode dispute");
+        assert_eq!(dispute.amount, 500);
+        assert_eq!(dispute.merchant, merchant);
+        assert_eq!(dispute.oracle, oracle);
+        assert_eq!(dispute.recipient, recipient);
+        assert_eq!(dispute.payment_ref, pref);
+        assert!(dispute.open);
+
+        assert_eq!(
+            crate::fallback::oracle_request_bytes(&env, 999),
+            Err(Error::DisputeNotFound)
+        );
+    });
+}
+
+#[test]
+fn test_fallback_settle_dispute_and_error_variants() {
+    use soroban_sdk::testutils::Address as _;
+
+    let env = test_env();
+    let contract_id = env.register(VdfPolicy, ());
+    let merchant = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let pref = payment_ref(&env, 3);
+
+    env.as_contract(&contract_id, || {
+        let dispute_id =
+            crate::fallback::request_dispute(&env, &merchant, &oracle, &pref, &recipient, 250)
+                .expect("request_dispute should succeed");
+
+        // Settle nonexistent dispute
+        assert_eq!(
+            crate::fallback::settle_dispute(&env, 999, true),
+            Err(Error::DisputeNotFound)
+        );
+
+        // Settle successfully
+        assert_eq!(
+            crate::fallback::settle_dispute(&env, dispute_id, true),
+            Ok(())
+        );
+
+        // Settle closed dispute
+        assert_eq!(
+            crate::fallback::settle_dispute(&env, dispute_id, false),
+            Err(Error::DisputeClosed)
+        );
+    });
+}

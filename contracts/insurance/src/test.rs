@@ -4,7 +4,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     Address, Env,
 };
@@ -329,4 +329,226 @@ fn test_token_balances_move_with_pool() {
     s.client.withdraw(&s.alice, &1_000);
     assert_eq!(s.token.balance(&pool), 400);
     assert_eq!(s.token.balance(&s.alice), FUNDS);
+}
+
+// ── Lifecycle event assertions & storage consistency (issue #608) ────────
+
+mod lifecycle_events {
+    use super::*;
+    use soroban_sdk::events::Event as _;
+
+    #[test]
+    fn test_lifecycle_events_full_circle() {
+        let s = setup();
+        let pool = s.client.address.clone();
+
+        // 1. Deposit: Alice deposits 1,000
+        s.client.deposit(&s.alice, &1_000);
+
+        let events_after_deposit = s.env.events().all().filter_by_contract(&pool);
+        assert_eq!(events_after_deposit.events().len(), 1);
+        let expected_deposit = DepositEvent {
+            user: s.alice.clone(),
+            amount: 1_000,
+            total_supplied: 1_000,
+        };
+        assert_eq!(
+            &events_after_deposit.events()[0],
+            &expected_deposit.to_xdr(&s.env, &pool)
+        );
+
+        // Cross-check total_supplied against contract storage
+        let stored_total_supplied: i128 = s.env.as_contract(&pool, || {
+            s.env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalSupplied)
+                .unwrap()
+        });
+        assert_eq!(expected_deposit.total_supplied, stored_total_supplied);
+
+        // Check user position in storage
+        let alice_position = s.env.as_contract(&pool, || {
+            s.env
+                .storage()
+                .persistent()
+                .get::<_, UserInfo>(&DataKey::UserInfo(s.alice.clone()))
+                .unwrap()
+        });
+        assert_eq!(alice_position.supplied, 1_000);
+        assert_eq!(alice_position.borrowed, 0);
+
+        // 2. Borrow: Alice borrows 400
+        s.client.borrow(&s.alice, &400);
+
+        let events_after_borrow = s.env.events().all().filter_by_contract(&pool);
+        assert_eq!(events_after_borrow.events().len(), 1);
+        let expected_borrow = BorrowEvent {
+            user: s.alice.clone(),
+            amount: 400,
+            total_borrowed: 400,
+        };
+        assert_eq!(
+            &events_after_borrow.events()[0],
+            &expected_borrow.to_xdr(&s.env, &pool)
+        );
+
+        let stored_total_borrowed: i128 = s.env.as_contract(&pool, || {
+            s.env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalBorrowed)
+                .unwrap()
+        });
+        assert_eq!(expected_borrow.total_borrowed, stored_total_borrowed);
+
+        // 3. Repay: Alice repays 400
+        s.client.repay(&s.alice, &400);
+
+        let events_after_repay = s.env.events().all().filter_by_contract(&pool);
+        assert_eq!(events_after_repay.events().len(), 1);
+        let expected_repay = RepayEvent {
+            user: s.alice.clone(),
+            amount: 400,
+            total_borrowed: 0,
+        };
+        assert_eq!(
+            &events_after_repay.events()[0],
+            &expected_repay.to_xdr(&s.env, &pool)
+        );
+
+        let stored_total_borrowed_after_repay: i128 = s.env.as_contract(&pool, || {
+            s.env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalBorrowed)
+                .unwrap()
+        });
+        assert_eq!(
+            expected_repay.total_borrowed,
+            stored_total_borrowed_after_repay
+        );
+
+        // 4. Withdraw: Alice withdraws full 1,000
+        s.client.withdraw(&s.alice, &1_000);
+
+        let events_after_withdraw = s.env.events().all().filter_by_contract(&pool);
+        assert_eq!(events_after_withdraw.events().len(), 1);
+        let expected_withdraw = WithdrawEvent {
+            user: s.alice.clone(),
+            amount: 1_000,
+            total_supplied: 0,
+        };
+        assert_eq!(
+            &events_after_withdraw.events()[0],
+            &expected_withdraw.to_xdr(&s.env, &pool)
+        );
+
+        // Cross-check total_supplied in event equals storage
+        let stored_total_after_withdraw: i128 = s.env.as_contract(&pool, || {
+            s.env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalSupplied)
+                .unwrap()
+        });
+        assert_eq!(
+            expected_withdraw.total_supplied,
+            stored_total_after_withdraw
+        );
+
+        // Assert user's stored record reflects zero balance rather than a stale entry
+        let alice_after_withdraw = s.env.as_contract(&pool, || {
+            s.env
+                .storage()
+                .persistent()
+                .get::<_, UserInfo>(&DataKey::UserInfo(s.alice.clone()))
+                .unwrap()
+        });
+        assert_eq!(alice_after_withdraw.supplied, 0);
+        assert_eq!(alice_after_withdraw.borrowed, 0);
+        assert_eq!(s.client.get_user_info(&s.alice).supplied, 0);
+        assert_eq!(s.client.get_user_info(&s.alice).borrowed, 0);
+    }
+
+    #[test]
+    fn test_multi_user_lifecycle_events_and_storage_cross_check() {
+        let s = setup();
+        let pool = s.client.address.clone();
+
+        // Alice deposits 1,000
+        s.client.deposit(&s.alice, &1_000);
+        // Bob deposits 500
+        s.client.deposit(&s.bob, &500);
+
+        let events = s.env.events().all().filter_by_contract(&pool);
+        assert_eq!(events.events().len(), 1);
+        let expected_bob_deposit = DepositEvent {
+            user: s.bob.clone(),
+            amount: 500,
+            total_supplied: 1_500,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_bob_deposit.to_xdr(&s.env, &pool)
+        );
+
+        // Cross-check total_supplied in storage matches DepositEvent.total_supplied
+        let stored_total: i128 = s.env.as_contract(&pool, || {
+            s.env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalSupplied)
+                .unwrap()
+        });
+        assert_eq!(stored_total, 1_500);
+
+        // Bob borrows 300
+        s.client.borrow(&s.bob, &300);
+        let events = s.env.events().all().filter_by_contract(&pool);
+        assert_eq!(events.events().len(), 1);
+        let expected_borrow = BorrowEvent {
+            user: s.bob.clone(),
+            amount: 300,
+            total_borrowed: 300,
+        };
+        assert_eq!(&events.events()[0], &expected_borrow.to_xdr(&s.env, &pool));
+
+        // Bob repays 300
+        s.client.repay(&s.bob, &300);
+        let events = s.env.events().all().filter_by_contract(&pool);
+        assert_eq!(events.events().len(), 1);
+        let expected_repay = RepayEvent {
+            user: s.bob.clone(),
+            amount: 300,
+            total_borrowed: 0,
+        };
+        assert_eq!(&events.events()[0], &expected_repay.to_xdr(&s.env, &pool));
+
+        // Bob withdraws 500 to empty position
+        s.client.withdraw(&s.bob, &500);
+        let events = s.env.events().all().filter_by_contract(&pool);
+        assert_eq!(events.events().len(), 1);
+        let expected_withdraw = WithdrawEvent {
+            user: s.bob.clone(),
+            amount: 500,
+            total_supplied: 1_000,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_withdraw.to_xdr(&s.env, &pool)
+        );
+
+        // Bob's stored position reflects zero balances
+        let bob_position = s.env.as_contract(&pool, || {
+            s.env
+                .storage()
+                .persistent()
+                .get::<_, UserInfo>(&DataKey::UserInfo(s.bob.clone()))
+                .unwrap()
+        });
+        assert_eq!(bob_position.supplied, 0);
+        assert_eq!(bob_position.borrowed, 0);
+        assert_eq!(s.client.get_user_info(&s.bob).supplied, 0);
+    }
 }

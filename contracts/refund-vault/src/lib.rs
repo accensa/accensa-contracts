@@ -1,8 +1,8 @@
 #![no_std]
 
 use accensa_common::{
-    storage::extend_instance_ttl, Error, PolicyContext, RefundPolicyClient, TimePolicyParams,
-    VaultInit, VdfPolicyParams,
+    math::add_amounts, storage::extend_instance_ttl, Error, PolicyContext, RefundPolicyClient,
+    TimePolicyParams, VaultInit, VdfPolicyParams,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contractmeta, contracttype, token, xdr::ToXdr, Address,
@@ -389,6 +389,7 @@ pub struct YieldDeployedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when principal is withdrawn from a yield strategy.
 pub struct YieldWithdrawnEvent {
     #[topic]
     pub strategy: Address,
@@ -400,6 +401,7 @@ pub struct YieldWithdrawnEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when yield is harvested from a strategy.
 pub struct YieldHarvestedEvent {
     pub amount: i128,
     /// Monotonic nonce at the time of this operation (issue #136).
@@ -408,6 +410,7 @@ pub struct YieldHarvestedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when a new refund policy is proposed.
 pub struct PolicyProposedEvent {
     #[topic]
     pub window: u32,
@@ -418,6 +421,7 @@ pub struct PolicyProposedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when a proposed refund policy is executed.
 pub struct PolicyExecutedEvent {
     #[topic]
     pub window: u32,
@@ -973,6 +977,7 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
 const MAX_REFUND_BATCH_SIZE: u32 = 100;
 
 #[contract]
+/// Refund vault contract for holding settlement funds and processing refunds.
 pub struct RefundVault;
 
 const INITIAL_STORAGE_VERSION: u32 = 1;
@@ -1052,11 +1057,11 @@ impl RefundVault {
     }
 
     /// Domain separator for this vault instance (issue #136).
-    pub fn get_domain_separator(env: Env) -> BytesN<32> {
+    pub fn get_domain_separator(env: Env) -> Result<BytesN<32>, Error> {
         env.storage()
             .instance()
             .get(&DataKey::DomainSeparator)
-            .unwrap()
+            .ok_or(Error::NotInitialized)
     }
 
     /// Current monotonic nonce (issue #136).
@@ -1071,6 +1076,15 @@ impl RefundVault {
         current_user_nonce(&env, &caller)
     }
 
+    /// Deposit a positive amount from the vault admin, optionally applying a coupon.
+    ///
+    /// # Errors
+    /// - `Paused`: the vault is paused.
+    /// - `InvalidAmount`: `amount` is not positive.
+    /// - `NotInitialized`: the admin or settlement token is not configured.
+    /// - `Unauthorized`: `from` is not the vault admin.
+    /// - `CouponNotFound`: the supplied coupon ID does not exist.
+    /// - Errors returned by the reentrancy guard or while applying the coupon.
     pub fn deposit(
         env: Env,
         from: Address,
@@ -1166,6 +1180,13 @@ impl RefundVault {
         coupons::get_coupon(&env, coupon_id)
     }
 
+    /// Replace the settlement token when the vault has no token balance.
+    ///
+    /// Requires authorization from the configured merchant.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault admin is not configured.
+    /// - `FloatNotEmpty`: the current settlement token balance is nonzero.
     pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
@@ -1413,6 +1434,17 @@ impl RefundVault {
         Ok(results)
     }
 
+    /// Withdraw a positive amount to `to`, recalling strategy funds if needed.
+    ///
+    /// Requires authorization from the configured merchant and an unpaused vault.
+    ///
+    /// # Errors
+    /// - `Paused`: the vault is paused.
+    /// - `InvalidAmount`: `amount` is not positive.
+    /// - `SelfTransfer`: `to` is the vault contract itself.
+    /// - `NotInitialized`: the merchant or settlement token is not configured.
+    /// - `InsufficientFloat`: available and recalled funds do not cover `amount`.
+    /// - Errors returned by the reentrancy guard or while ensuring liquidity.
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
@@ -1571,20 +1603,37 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Reads the policy proposal that is waiting out its timelock, if any.
+    /// Read-only and unauthenticated. Returns `None` when nothing was ever
+    /// proposed and again after `execute_policy` runs, which removes the
+    /// entry once the new values are applied.
     pub fn get_pending_policy(env: Env) -> Option<PolicyProposal> {
         env.storage().instance().get(&DataKey::PendingPolicy)
     }
 
+    /// The timelock every policy change must sit out before it can be
+    /// executed, in ledgers: `POLICY_TIMELOCK`, 17,280, about 24 hours at
+    /// ~5 s/ledger. Infallible — it reads a compile-time constant, not storage.
     pub fn get_policy_timelock() -> u32 {
         POLICY_TIMELOCK
     }
 
+    /// Reads the v2 refund record stored under `payment_ref`, or `None` when
+    /// the vault holds no record for that reference. Read-only and
+    /// unauthenticated; the caller checks the record's own state fields.
     pub fn get_refund(env: Env, payment_ref: BytesN<32>) -> Option<RefundRecord> {
         env.storage()
             .persistent()
             .get(&DataKey::RefundV2(payment_ref))
     }
 
+    /// Admin setter: store `contract` under the instance `SettlementContract`
+    /// key, overwriting any previous value. Pre-condition: the vault has an
+    /// `Admin` in instance storage, else `Error::NotInitialized`, and that
+    /// admin must authorize (an unauthorized call traps in `require_auth`
+    /// rather than returning an `Error`). Extends the instance TTL. No code in
+    /// this crate reads the key back, so this records the intended settlement
+    /// contract rather than changing how a refund is settled.
     pub fn set_settlement_contract(env: Env, contract: Address) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
@@ -1618,6 +1667,9 @@ impl RefundVault {
         Ok(())
     }
 
+    /// The minimum seconds between successive claims by the same recipient, as
+    /// written by `set_claim_cooldown`. Read-only; returns `0` when no value
+    /// has ever been set, which is the same value that disables the cooldown.
     pub fn get_claim_cooldown(env: Env) -> u64 {
         env.storage()
             .instance()
@@ -2048,6 +2100,11 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Admin setter: move the address fees accrue to, replacing the recipient
+    /// captured at initialization. Returns `Error::SelfTransfer` before any
+    /// auth if `recipient` is this contract, and `Error::NotInitialized` when
+    /// the vault has no `Admin`; the admin must authorize otherwise. Publishes
+    /// `FeeConfigUpdatedEvent` with `field` set to "fee_recipient".
     pub fn set_fee_recipient(env: Env, recipient: Address) -> Result<(), Error> {
         if recipient == env.current_contract_address() {
             return Err(Error::SelfTransfer);
@@ -2316,7 +2373,11 @@ impl RefundVault {
             return Err(Error::StrategyNotApproved);
         }
 
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_addr);
         let token_balance = token_client.balance(&env.current_contract_address());
 
@@ -2471,9 +2532,10 @@ impl RefundVault {
             .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
+        let total_harvested = add_amounts(harvested, yield_amount)?;
         env.storage()
             .persistent()
-            .set(&DataKey::HarvestedYield, &(harvested + yield_amount));
+            .set(&DataKey::HarvestedYield, &total_harvested);
         persist_yield_ttl(&env, &DataKey::HarvestedYield);
 
         let nonce = increment_nonce(&env);
@@ -2612,6 +2674,14 @@ impl RefundVault {
         flash_loan::flash_loan(&env, receiver, amount, data)
     }
 
+    /// Tops up the TTL of the v2 refund record for `payment_ref`: the entry is
+    /// extended by the ledgers still remaining before `paid_at_ledger +
+    /// refund_window` (the window read from instance storage), with a floor of
+    /// `TTL_EXTEND`, or by the network maximum TTL when the window is 0 — the
+    /// same "no time bound" reading `refund` gives it. Takes no auth, requires
+    /// no admin, and changes nothing but the extension, so any caller may keep
+    /// a record alive. Returns `Error::RefundNotFound` when the vault holds no
+    /// v2 record for that reference.
     pub fn extend_refund_ttl(env: Env, payment_ref: BytesN<32>) -> Result<(), Error> {
         let record: RefundRecord = env
             .storage()
@@ -2623,7 +2693,7 @@ impl RefundVault {
             .storage()
             .instance()
             .get(&DataKey::RefundWindow)
-            .unwrap();
+            .ok_or(Error::NotInitialized)?;
 
         let extend_to = refund_record_ttl_extend_to(&env, window, record.paid_at_ledger);
         // Threshold == extend_to: a caller invoking this well before expiry
@@ -2639,6 +2709,11 @@ impl RefundVault {
         Ok(())
     }
 
+    /// Begins the two-step admin handover: stores `new_admin` under
+    /// `PendingAdmin` and publishes `AdminTransferInitiatedEvent`.
+    /// Pre-condition: the vault has an `Admin`, else `Error::NotInitialized`,
+    /// and that admin must authorize. Nothing changes until `accept_admin`
+    /// runs with the pending admin's own auth.
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -2704,16 +2779,32 @@ impl RefundVault {
     }
 }
 
+/// Typed failure for the missing `DataKey::Token` in `deploy_to_yield` (issue #685).
+#[cfg(test)]
+mod deploy_to_yield_token_tests;
 #[cfg(test)]
 mod dust_tests;
+/// Typed failure for the missing `DataKey::RefundWindow` in `extend_refund_ttl`
+/// (issue #686).
+#[cfg(test)]
+mod extend_refund_ttl_window_tests;
 #[cfg(test)]
 mod flash_loan_tests;
 #[cfg(test)]
 mod fuzz_test;
+/// Boundary test for `harvest_yield`'s checked running total (issue #720).
+#[cfg(test)]
+mod harvest_yield_overflow_tests;
 #[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
+mod preview_settlement_overflow_tests;
+#[cfg(test)]
+mod recall_principal_overflow_tests;
+#[cfg(test)]
 mod reentrancy_tests;
+#[cfg(test)]
+mod settlement_ceiling_test;
 #[cfg(test)]
 mod settlement_test;
 /// Yield-bearing escrow strategy hook tests (issue #415).

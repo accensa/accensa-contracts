@@ -33,6 +33,8 @@ use soroban_sdk::{
     Address, Env,
 };
 
+#[cfg(test)]
+mod init_guard_tests;
 pub mod interest;
 #[cfg(test)]
 mod test;
@@ -67,6 +69,8 @@ pub enum Error {
     InvalidAmount = 4,
     /// A borrow would push the user's debt above their supplied collateral.
     ExceedsCollateral = 5,
+    /// The contract's bootstrap admin or token is missing from instance storage.
+    NotInitialized = 6,
 }
 
 #[contracttype]
@@ -151,20 +155,20 @@ pub struct RepayEvent {
     pub total_borrowed: i128,
 }
 
-fn admin(env: &Env) -> Address {
+fn admin(env: &Env) -> Result<Address, Error> {
     env.storage()
         .instance()
         .get(&DataKey::Admin)
-        .expect("initialized in the constructor")
+        .ok_or(Error::NotInitialized)
 }
 
-fn token_client(env: &Env) -> token::Client<'_> {
+fn token_client(env: &Env) -> Result<token::Client<'_>, Error> {
     let token: Address = env
         .storage()
         .instance()
         .get(&DataKey::Token)
-        .expect("initialized in the constructor");
-    token::Client::new(env, &token)
+        .ok_or(Error::NotInitialized)?;
+    Ok(token::Client::new(env, &token))
 }
 
 fn total_supplied(env: &Env) -> i128 {
@@ -365,7 +369,7 @@ impl InsurancePool {
             .set(&DataKey::TotalSupplied, &new_total);
         save_user(&env, &user, &info);
 
-        token_client(&env).transfer(&user, env.current_contract_address(), &amount);
+        token_client(&env)?.transfer(&user, env.current_contract_address(), &amount);
 
         DepositEvent {
             user,
@@ -418,7 +422,7 @@ impl InsurancePool {
             .set(&DataKey::TotalSupplied, &new_total);
         save_user(&env, &user, &info);
 
-        token_client(&env).transfer(&env.current_contract_address(), &user, &amount);
+        token_client(&env)?.transfer(&env.current_contract_address(), &user, &amount);
 
         WithdrawEvent {
             user,
@@ -464,7 +468,7 @@ impl InsurancePool {
             .set(&DataKey::TotalBorrowed, &new_total_borrowed);
         save_user(&env, &user, &info);
 
-        token_client(&env).transfer(&env.current_contract_address(), &user, &amount);
+        token_client(&env)?.transfer(&env.current_contract_address(), &user, &amount);
 
         BorrowEvent {
             user,
@@ -503,7 +507,7 @@ impl InsurancePool {
             .set(&DataKey::TotalBorrowed, &new_total_borrowed);
         save_user(&env, &user, &info);
 
-        token_client(&env).transfer(&user, env.current_contract_address(), &actual);
+        token_client(&env)?.transfer(&user, env.current_contract_address(), &actual);
 
         RepayEvent {
             user,
@@ -540,12 +544,12 @@ impl InsurancePool {
     }
 
     /// Read-only: the pool admin.
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
         admin(&env)
     }
 
     /// Read-only: the SEP-41 token the pool moves.
-    pub fn get_token(env: Env) -> Address {
-        token_client(&env).address
+    pub fn get_token(env: Env) -> Result<Address, Error> {
+        Ok(token_client(&env)?.address)
     }
 }

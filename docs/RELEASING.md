@@ -10,6 +10,15 @@ We use Semantic Versioning (SemVer) with the following contract-specific definit
 - **MINOR (`0.x.0`)**: Backwards-compatible additions. This includes adding new functions, new events, or adding new `DataKey` fields that do not break existing state.
 - **PATCH (`0.0.x`)**: Backwards-compatible bug fixes or optimizations (e.g., reducing CPU/memory footprint) that do not alter the public interface or event shapes.
 
+**Pre-1.0 exception (the rule this repository follows).** While the project is
+below `1.0.0`, a **breaking** change bumps the **minor** version (`0.x.0`)
+instead of the major one, and the changelog entry marks it as breaking. This is
+the single authoritative statement of the pre-1.0 rule: `0.2.0` shipped the
+event-topic changes called out under [`CHANGELOG.md`](../CHANGELOG.md)'s
+`⚠️ Breaking` heading, and `0.3.0` shipped further breaking changes — both as
+minor releases. From `1.0.0` onward the strict MAJOR/MINOR/PATCH definitions
+above apply with no exception.
+
 ## Release Process
 
 When preparing a release, follow these steps to ensure reproducible builds and provenance:

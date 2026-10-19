@@ -3,12 +3,283 @@
 All notable changes to `ReceiptAnchor` and `RefundVault` are recorded here.
 
 The two contracts are versioned together and share a tag. Versioning follows the
-policy in [`docs/RELEASING.md`](docs/RELEASING.md): while the project is pre-1.0,
-breaking changes bump the **minor** version, and they are called out as such.
+policy in [`docs/RELEASING.md`](docs/RELEASING.md), including its pre-1.0
+exception: while the project is below `1.0.0`, breaking changes bump the
+**minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`refund-vault` (issue #620): per-strategy approval key semantics pinned by
+  tests.** New `per_strategy_approval_key` module in
+  `contracts/refund-vault/src/strategy_tests.rs` approves two strategies,
+  deploys to each in turn, and shows that revoking one leaves the other
+  approved, active and deployable; that an address which was never approved is
+  rejected with `StrategyNotApproved` at both registration and deployment; and
+  that re-approving is idempotent (one revoke clears it). Test-only — no
+  contract behavior change.
+- **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
+- **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 
-- **`refund-vault` (issue #474): test NFT escrow events.** Added coverage for NFT escrow deposits, merchant claims, buyer refunds, and rejected operations, verifying emitted events, escrow records, and NFT ownership transitions.
+- fix(refund-vault): route `resolve_ceiling`'s cumulative sum through the checked
+  `accensa_common::math::add_amounts` helper, so an `i128` overflow in the
+  partial-refund ceiling computation surfaces as the typed error
+  `MathOverflow` instead of aborting the host call; boundary test pins the
+  behaviour at `i128::MAX` (issue #721)
+- fix(receipt-shard): `get_shard_diagnostics` now returns
+  `Err(Error::NotInitialized)` instead of trapping when the TTL-evictable
+  `StartBatchId`/`EndBatchId` instance keys are missing, so the read-only
+  monitoring entry point degrades gracefully for indexers and light clients;
+  error-path and populated/drained health tests added (issue #615)
+- fix(ci): the wasm budget gate (`scripts/check_wasm_budget.sh`) hard-fails on
+  missing artifacts, missing or non-numeric budget entries, and a missing or
+  broken `jq`, and checks the union of its contract list and every
+  `.wasm-budget.json` key so nothing is silently dropped from the gate
+  (issue #623)
+- docs(state-channel): add `///` doc comments to the five exported fields of
+  `MultiAssetChannelOpenedEvent`- **Contract payload field documentation (#763, #764, #765):** Documented the public fields of governance `Proposal`, receipt-anchor `AnchorPayload`, and `RefundEventPayload`.
+- **`refund-vault` (issue #685): report a missing payment token from
+  `deploy_to_yield` instead of aborting.** The `DataKey::Token` read in
+  `contracts/refund-vault/src/lib.rs` was an `unwrap()`, so a deployment that
+  reached it aborted with an untyped `WasmRuntimeError` while the pause, amount,
+  admin and strategy arms in the same function return `Error`. It now reads
+  `ok_or(Error::NotInitialized)?`, matching how the other entry points resolve
+  the same key. New
+  `contracts/refund-vault/src/deploy_to_yield_token_tests.rs` approves and
+  activates a strategy, removes the stored token and asserts the returned
+  variant.
+- **`refund-vault` (issue #686): report a missing refund window from
+  `extend_refund_ttl` instead of aborting.** The `DataKey::RefundWindow` read
+  that sizes the TTL extension was an `unwrap()`; it now returns
+  `Error::NotInitialized`, so a call that finds a refund record but no window
+  answers with a typed variant the caller can match, like the `RefundNotFound`
+  arm beside it. New
+  `contracts/refund-vault/src/extend_refund_ttl_window_tests.rs` stores a v2
+  refund record, removes the window and asserts the returned variant.
+- **`refund-vault` (issue #687): walk the fee ladder in `tier_for_volume`
+  without indexing.** The active-rung scan read each rung through
+  `ladder.get(i).unwrap()`, whose safety rested on a manual argument about the
+  loop bound. It now iterates the ladder with an enumerated index, so no line
+  can trap at host-call time. Behaviour is unchanged for every input that
+  passed before; no signature or public API changed.
+- **`refund-vault` (issue #688): resolve `next_threshold` from the bound
+  `Option` instead of unwrapping.** The next-rung lookup
+  (`ladder.get(next).unwrap()`) is now a `match` on `get`, whose `None` arm is
+  exactly the documented top-rung case returning `i128::MAX`. No new error
+  variant is reachable and no behaviour changes for previously valid input.
+- **`governance` / `multisig-account` (issues #747, #748): document the optimistic-track and pause-admin entry points.**
+  Added `///` doc comments to the public items the rustdoc issues named: `submit`,
+  `veto`, `execute` and `get` in `contracts/governance/src/optimistic.rs`, and
+  `is_paused`, `get_guardian`, `pause` and `unpause` in
+  `contracts/multisig-account/src/admin.rs`. Doc comments only — no signature,
+  body or test changes.
+
+- **`reputation` (issue #691): return a typed error when burning a missing credential.** Updated `sbt::burn` to return `SbtError::SbtNotFound` when the owner has no credential instead of aborting, propagated the error through `Reputation::revoke`, and added a regression test confirming that a failed burn does not create a revocation tombstone.
+  
+- **`automation` (issue #557): remove stray scratch files from repository root.**
+  Removed 10 automation scratch files (`fix.sh`, `fix_budget.sh`,
+  `fix_common.sh`, `fix_lib.sh`, `patch.sed`, `patch_changelog.py`,
+  `pr_body.md`, `pr_body.txt`, `pr_description.md`, `pr_document.md`) from
+  the repository root and added `.gitignore` patterns to prevent recommittal.
+- **`upto-authorization` / `governance` (issues #564, #565): pin the
+  domain-separator context and enforce the absolute quorum floor.**
+  `domain.rs` gains inline tests proving the authorization digest differs
+  across network ids, contract addresses and protocol versions, and is
+  reproducible for identical inputs. `current_quorum_bps` now raises a
+  `start_bps` below `QUORUM_FLOOR_BPS` to the floor, so the documented
+  absolute floor holds for every constructor-valid threshold.
+- **`governance` (issue #438): time-weighted vote escrow (veToken).**
+  New `vetoken` module. A member locks governance tokens with `create_lock`
+  for between 30 days and 4 years (`518_400` to `25_228_800` ledgers) and gets
+  voting power `amount * remaining_ledgers / MAX_LOCK_LEDGERS`, which decays
+  linearly to zero at the unlock ledger. `withdraw_lock` pays the tokens back
+  only at or after the unlock ledger. The power is added to the input of
+  `voting::quadratic_weight` (`isqrt(deposit + voting_power)`), so a member
+  without a lock has exactly the weight they had before. The escrowed token is
+  set once with `set_ve_token`, gated like `set_treasury_token`. Escrow errors
+  are a separate `VeError` enum, so the governance `Error` spec does not grow.
+- **`stream-vault` (issue #692): report a missing token with a typed error.**
+  `StreamVault::token_client` now returns `Result<token::Client, Error>` with
+  `Error::NotInitialized` when the constructor-written `Token` key is absent,
+  instead of unwinding on a vault whose state was reset, and the disbursement,
+  claim and settlement paths unwrap through `token_client` only after that
+  check. `token_client_before_initialization_returns_not_initialized` pins
+  the typed result.
+  `contracts/refund-vault/src/coupons.rs` gains an inline suite pinning the
+  5 000 bp discount cap (accepted at the boundary, `Error::InvalidRatio` above
+  it), the duplicate-mint guard, and the redeemed-once rule with `get_coupon`
+  observing `redeemed: true` between calls. The new
+  `contracts/receipt-anchor/src/incremental_api_test.rs` drives
+  `insert_receipt_leaf`, `get_incremental_leaf_count`, `get_incremental_root`
+  and `get_min_anchor_interval` through the client: sequential zero-based
+  indices, root parity with the batch root accepted by `anchor_batch`,
+  `Error::RootNotFound` before the first insert, and the interval
+  setter/getter round-trip. Test-only — no contract behavior change.
+- **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
+  Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
+- **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
+  for the exported surface missing `///` comments.**
+  `contracts/stream-vault/src/lib.rs` now documents `DataKey`, `StreamVault`,
+  `get_merchant` and `get_token`; `contracts/multisig-account/src/weights.rs`
+  documents `store_signer_list`, `store_signer_weight` and
+  `clear_signer_weight`. Doc comments only — no signature, body or behavior
+  change.
+- **`refund-vault-factory` / `oracle` (issues #562, #563): test the fee hardcap
+  boundary and the oracle read surface.**
+  `factory_tests.rs` proves `create_vault` rejects 501 bp with
+  `Error::FeeExceedsHardcap` without advancing the salt counter, tracking a
+  vault or changing TVL, and accepts the inclusive 500 bp boundary with the fee
+  stored on the new vault. `oracle/src/test.rs` round-trips stored rounds
+  through `get_round_data` and `latest_round_data`, asserts the typed `NoData`
+  error for an unknown round id and an empty feed, and checks `get_admin`
+  returns the constructor address. Test-only — no contract behavior change.
+- **`refund-vault` (issue #689): `on_settled` walks the fee ladder without indexing.**
+  The promoting rung's fee is read by iterating the ladder, so an out-of-range rung can no longer trap the claim path. Behaviour for every valid ladder is unchanged.
+- **`refund-vault` (issue #690): `set_tier_ladder` uses a checked lookup.**
+  `set_tier_ladder` reads the selected rung's fee with `tiers.get(current_tier)` followed by a typed `Error::InvalidTierLadder` fallback (instead of unwrapping), so a missing rung resolves to the crate's error and validated ladders retain their existing behaviour.
+
+- **`governance` (issue #552): test instance storage TTL eviction returns typed errors.**
+  Added tests in `contracts/governance/src/test.rs` asserting that `propose` and
+  `execute` operations return typed errors `InvalidVotingPeriod` and `InvalidMembers`
+  rather than panicking when instance storage TTL expires or mandatory config keys
+  are missing from instance storage.
+- **`ci` (issue #584): align Tier B budget-report comment with live `--check` enforcement.**
+  The `.github/workflows/ci.yml` Tier B step comment and the `budget.toml`
+  provenance header now accurately describe that `cargo budget-report --check`
+  runs on post-merge builds with `STELLAR_TESTNET_SECRET` to enforce committed
+  `[functions.*]` baselines within a 15% tolerance ceiling.
+- **`multisig-account` (issue #585): test execute_batch auth, ordering, and atomic rollback.**
+  New `execute_batch_tests` module in `contracts/multisig-account/src/test.rs`
+  proves that proposal execution runs calls in order with 1:1 result mapping,
+  direct external calls without multisig authorization fail `require_auth`,
+  and mid-batch traps cleanly roll back preceding state changes.
+- **`governance` (issue #586): client-driven tests for optimistic voting wrappers.**
+  Extended `contracts/governance/src/test.rs` with `GovernanceClient`-driven
+  tests covering `optimistic_submit`, `veto_optimistic`, `execute_optimistic`,
+  and `get_optimistic_proposal` across pass and deny paths, and verified ID
+  counter independence between standard and optimistic proposals.
+- **`state-channel` (issue #587): test verify_zk_commitment phase gates, amount bounds, and hash mismatch error.**
+  New `verify_zk_commitment_tests` module in `contracts/state-channel/src/test.rs`
+  tests that valid commitments return `Ok` on open channels, closed channels
+  return `ChannelNotOpen`, commitment hash mismatches return `InvalidSignature`
+  (pinned and documented), and values exceeding balance or negative values
+  return `InvalidAmount`.
+- **`reputation` (issue #621): credit key and event-payload parity tests.** Test-only
+  addition to `contracts/reputation/src/credit_score_test.rs` pinning the storage and
+  event surface of the credit scorer: `CreditDataKey::CompletionEscrow(u64)` replay
+  makes a duplicate escrow id a no-op on the score and the stored record, both
+  `record_completion` and `record_fraud` update the single shared
+  `CreditDataKey::Credit(Address)` entry, and the `CreditUpdatedEvent` payload is
+  asserted in full by XDR comparison on both paths, staying in agreement with the
+  getters and `get_fee_bps`. No contract behaviour change.
+- **`refund-vault` (issue #720): guard `harvest_yield`'s running total against
+  overflow.** The `harvested + yield_amount` sum in
+  `contracts/refund-vault/src/lib.rs` now goes through
+  `accensa_common::math::add_amounts` instead of a bare `+`, so a
+  non-representable total returns the typed `Error::MathOverflow` (321) rather
+  than aborting the host call (the release profile sets `overflow-checks = true`
+  with `panic = "abort"`). New
+  `contracts/refund-vault/src/harvest_yield_overflow_tests.rs` pins the stored
+  total at `i128::MAX`, harvests one more unit and asserts the returned variant
+  rather than a panic.
+- **`refund-vault` (issue #722): guard `preview_settlement`'s cumulative sum
+  against overflow.** The `previous_refunded + amount` sum in
+  `contracts/refund-vault/src/settlement.rs` now goes through
+  `accensa_common::math::add_amounts` instead of a bare `+`, so the failure arm
+  is the typed `Error::MathOverflow` (321) rather than a host abort (the
+  release profile sets `overflow-checks = true` with `panic = "abort"`). At the
+  boundary, `resolve_ceiling`'s ceiling gate rejects the non-representable
+  total first with `Error::ExceedsPayment`, so every overflowing input answers
+  with a typed variant. New
+  `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` pins both
+  operands of the sum at `i128::MAX` and asserts the returned variant rather
+  than a panic.
+- **`receipt-shard` (issue #551): replace panic and assert sites in `consolidate`
+  with typed Error variants.** `ReceiptShard::consolidate` now returns
+  `Result<u32, Error>` instead of panicking on user-reachable conditions: a
+  destination matching the source returns `Error::DestinationMismatch` (104), a
+  missing batch returns `Error::BatchNotFound` (100), and a cross-contract
+  round-trip mismatch returns `Error::RoundTripMismatch` (105) while leaving
+  source storage untouched.
+- **`chore` (issue #558): remove unreferenced `contracts/upgrade-proxy`.**
+  Deleted the stranded `contracts/upgrade-proxy/` directory which contained only
+  an unreferenced test stub without Cargo.toml, src/, or workspace membership.
+  In-place upgrade paths on Soroban use `env.deployer().update_current_contract_wasm`
+  as documented in ADR-003.
+- **`ci` (issue #555): run deploy dry-run smoke test and bounded differential fuzz harness.**
+  Added CI steps to run `tests/test_deploy.sh` in dry-run mode and execute
+  `tests/differential/bolero_test.rs` bounded invariant campaign. Added
+  `tests/README.md` with instructions for reproducing both tests locally.
+- **`docs` (issue #559): reconcile DEPLOYMENTS.md and docs/ARCHITECTURE.md with manifest versions.**
+  Refreshed version banner to indicate `main` is at `0.3.0` while testnet addresses
+  run `0.1.0`. Added explicit per-address deployed version tags, verification
+  commands via on-chain WASM bytecode inspection, a notice on stale deployments,
+  and aligned CLI examples.
+- **`treasury` (issue #649): return typed InsufficientBalance error on unfunded yield float.**
+  `claim_yield` reads the contract's yield token balance before mutating user `pending` or `claimed` and returns `Error::InsufficientBalance` when the balance cannot cover the claim, leaving accrued yield intact.
+- **`insurance` (issue #608): assert deposit, withdraw, borrow and repay lifecycle events.**
+  Extended `contracts/insurance/src/test.rs` with `lifecycle_events` asserting exact event XDR, cross-checking storage values, and asserting zero balance on emptied positions.
+- **`receipt-shard` (issue #678): return typed error on missing state in has_live_records.**
+  `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` when `StartBatchId` or `EndBatchId` is absent from instance storage instead of trapping.
+- **`privacy` (issue #439): dual-key stealth-address registry for vault deposits.**
+  New `stealth` module on BN254 G1 (the SDK's `bn254` host functions). A
+  recipient publishes a spend key `S` and a view key `V` with
+  `register_stealth_keys`; a buyer derives, off chain, an ephemeral key `R = r*G`
+  and a one-time stealth key `P = S + H(r*V)*G` and calls `stealth_deposit`,
+  which takes the tokens into custody and emits `R` and `P` for the recipient to
+  scan (`P' = S + H(v*R)*G`). `stealth_claim` pays the deposit out against a
+  Schnorr proof of knowledge of `p = s + H(v*R)`, bound to the deposit and to the
+  receiving account, so a proof cannot be replayed or redirected. Errors are a
+  module-local `StealthError`. The derivation helpers
+  (`derive_stealth_address`, `scan_stealth_address`, `stealth_private_key`) are
+  library functions for off-chain code.
+- **`cross-chain` / `governance`: panic paths now return typed errors (#669, #671, #672, #673).**
+  `cross-chain::verify_vaa` no longer unwraps `vaa.signatures.get(i)` or the
+  guardian lookup: signatures are iterated, and a guardian index past the end of
+  the guardian set resolves to `Error::InvalidSignature` before any signature
+  work. `governance::propose` returns `Error::InvalidVotingPeriod` when the
+  voting period is missing from instance storage, and `governance::execute`
+  returns `Error::InvalidMembers`, `Error::InvalidThreshold` and
+  `Error::InvalidVotingPeriod` for a missing total weight, threshold and voting
+  period. `governance::vote_anonymous` iterates its ring instead of indexing it.
+  No new `Error` variants, and no change for any input that was valid before.
+- **`privacy` (issue #609): escrow lifecycle events pinned in XDR form.** New
+  `escrow_events` module in `contracts/privacy/src/test.rs` asserts the exact
+  XDR of `EscrowCreatedEvent` on `create_escrow` (and that its payload agrees
+  with `get_escrow`), `EscrowRejectedEvent` on a verification whose proof
+  fails the commitment, and `EscrowVerifiedEvent` on one the verifier accepts
+  — each as the only event of its invocation. The reject branch returns
+  `Ok(false)` rather than erroring, so that invocation succeeds and its events
+  are observable, which is what makes "exactly one event, and never the
+  verified type" falsifiable there; the all-zero commitment and the
+  amount-below-floor refusals are asserted as errors that publish nothing.
+  Test-only — no contract behavior change.
+- **`cross-chain` (issue #619): LayerZero delivery-guard keys pinned by
+  tests.** New `delivery_guard_keys` module in
+  `contracts/cross-chain/src/layerzero_test.rs` reads the three persistent
+  keys that guard inbound deliveries back through the crate's own getters.
+  `is_trusted_peer` is true only for the registered `(chain_id, sender)` pair;
+  `get_peer_nonce` is absent until a delivery is accepted and then holds the
+  highest accepted nonce, so a strictly higher nonce is taken even when it
+  skips packets that were never delivered while every nonce at or below the
+  mark stays refused; and `is_dispute_settled` keeps a settled dispute
+  settled while its accepted delivery remains the only event published, with
+  a fresh dispute free to claim the nonce the refused duplicate named.
+  Test-only — no contract behavior change.
+- **`governance` (issue #670): the constructor iterates its members.**
+  `Governance::__constructor` pairs each member with its deposit by zipping the
+  two vectors instead of indexing them with `get(i).unwrap()`. The vectors are
+  already checked to have equal length, so behaviour for every valid input is
+  unchanged and the constructor has no panic path left.
+- **`governance` (issue #447): 48-hour timelock for approved proposals.**
+  New `timelock` module. Once `enable_timelock` has been called (gated like
+  `set_treasury_token`, and permanent), an approved proposal has to be queued
+  with `queue_transaction` and can only execute `34_560` ledgers (48 hours)
+  later, through `execute_queued_transaction` or a plain `execute`; earlier
+  attempts fail with `Error::TimelockNotExpired`, and an unqueued one with
+  `Error::TimelockRequired`. The queue entry stores the SHA-256 of
+  `(target, function, args)` and the unlock ledger, and queueing extends the
+  proposal's TTL so it outlives the delay. The timelock is off by default, so
+  existing deployments behave as before. Adds `Error::TimelockRequired` (32),
+  `TimelockNotExpired` (33) and `AlreadyQueued` (34).
 - **`state-channel` (issue #622): hashlock reserve bookkeeping pinned by
   tests.** New tests in `contracts/state-channel/src/hashlock_test.rs`
   assert, after every add/resolve/refund transition, that `HashlockReserved`
@@ -27,6 +298,16 @@ breaking changes bump the **minor** version, and they are called out as such.
   accepts an optional `coupon_id` parameter; when provided, the discount is applied
   atomically before the token transfer. Added error codes `CouponNotFound` and
   `CouponAlreadyRedeemed` to the common Error enum.
+- docs: rustdoc for `receipt-shard`'s 4 exported names (#749) and for the 5
+  public fields of `BuybackConfiguredEvent` (#790). Doc comments only — no
+  signature, struct layout or behaviour change.
+- docs: rustdoc for the 13 action symbols in `common/events` (#758, #760), the
+  8 exported getters and admin setters of `refund-vault` (#759), and the 6
+  public fields of `FallbackDisputeRequestedEvent` (#769). Each entry states the
+  pre-condition and the `Error` arm the body returns, and no unit is claimed
+  for a value the code does not fix. Doc comments only — no signature, struct
+  layout, ordering or behaviour change.
+
 ### Added
 - **`privacy` (issue #440): Groth16 verification for concealed escrow amounts.**
   New `privacy` contract (`contracts/privacy/`) holds an escrow against a
@@ -75,4 +356,1044 @@ breaking changes bump the **minor** version, and they are called out as such.
   block. Extensions are capped at 3; a fourth late counter-proof is rejected with
   the new shared `Error::DisputeExtensionLimitReached` (code 417, appended so no
   existing error code moves).
-- **`oracle`: Chainlink data-feed consumer trait.** New `accensa-oracle` contract (`contracts/oracle/src/chainlink.rs`) implements an AggregatorV3-style consumer: admin-pushed `RoundData` with rou[...]
+- **`oracle`: Chainlink data-feed consumer trait.** New `accensa-oracle` contract (`contracts/oracle/src/chainlink.rs`) implements an AggregatorV3-style consumer: admin-pushed `RoundData` with round-completeness checks (`answered_in_round`, `updated_at`, positive answer), staleness rejection, monotonic round ids, and the standard `get_price` + `get_last_update_ledger` oracle interface for `RefundVault` fee scaling.
+- **`cross-chain` (issue #455): LayerZero omnichain dispute bridging.** New
+  `layerzero` module lets decentralized arbitrators on remote chains deliver
+  dispute resolutions to Soroban through a LayerZero endpoint. The admin
+  registers the endpoint (`set_layerzero_endpoint`) and trusted peer
+  contracts per source chain (`set_trusted_peer`); the endpoint delivers
+  packets with `lz_receive(src_eid, sender, nonce, payload)`, which validates
+  the sender against the trusted-peer registry, enforces strictly-advancing
+  per-channel packet nonces (replays rejected with `StaleState`),
+  bounds-checks the versioned dispute payload (`parse_dispute_payload`),
+  refuses a dispute id that already settled (`AlreadyRefunded`), and emits
+  `DisputeResolvedEvent`. A mock-endpoint integration suite proves the real
+  auth path: only the registered endpoint calling in can pass
+  `require_auth`.
+- **`state-channel` (issue #488): Lightning-style pre-image reveal
+  mechanics.** New `hashlock` module locks a slice of a channel's free
+  escrow against `sha256(preimage)` (`add_hashlock_payment`) and settles it
+  when the preimage is revealed on-chain (`reveal_preimage`, permissionless,
+  `InvalidPreimage` on mismatch, `HtlcNotPending` on double reveal),
+  crediting the receiver's balance and emitting
+  `HashlockPaymentRevealedEvent` carrying the hashlock — never the secret.
+  `close_channel_with_preimage` ties the reveal into the close flow: the
+  sender's signed final state plus the receiver's preimage settle the
+  invoice atomically, with the receiver's payout becoming
+  `balance + amount` before the challenge window starts. Hashlock
+  reservations share the escrow ceiling with HTLC reservations
+  (`get_reserved_escrow`), so no combination of states, hops and invoices
+  can overdraw escrow.
+- **`governance` (issue #483): proposal simulation hooks.** Proposals can
+  carry a `SimulationReport` from a registered simulator contract
+  (`ProposalSimulator::simulate` dry-runs the exact calldata off-chain, the
+  on-chain side cannot): `propose_with_simulation` verifies the report's
+  simulator is the registered one (its `require_auth` co-signs the
+  creation), that `sim_hash` re-derives to the canonical
+  `sim_payload` binding this proposal id and this exact calldata, and that
+  the outcome is `SIM_OK` — a proposal the dry-run says would revert is
+  rejected at creation (`SimulationFailed`) and never reaches a vote.
+  `set_simulation_config` turns mandatory simulation on/off per body; when
+  mandatory, the plain `propose` path fails with `SimulationRequired`.
+  Reports are stored under their own key (`get_simulation_report`) so the
+  `Proposal` record shape is unchanged.
+- **`reputation` (issue #450): soulbound tokens for verified merchants.** New
+  `sbt` module mints non-transferable KYC / volume-tier credentials
+  (`Verified` / `Trusted` / `Premium`) bound to one address each, issued and
+  governed by the contract authority (`issue` / `revoke` / `slash`).
+  `transfer` and `approve` exist only to revert with typed errors
+  (`SbtNonTransferable` / `SbtApprovalDisabled`), so a credential can never
+  be bought, borrowed or farmed; a revoke burns the credential and writes a
+  permanent tombstone that blocks re-issue, while a slash flags it in place
+  as a public record.
+- **`reputation` (issue #452): on-chain credit scoring for buyers.** New
+  `credit_score` module maintains a dynamic 0–1000 score per buyer: the
+  escrow authority records successful completions (growth of 25% of the
+  remaining headroom per completion, `record_completion` with replay-protected
+  escrow ids) and fraudulent dispute losses (a 50%-of-current-score penalty,
+  `record_fraud`); scores decay 1% of the headroom above a floor of 100 per
+  ~10 days of inactivity and start neutral at 500. `get_score` is read-only,
+  and zero-fee tiers unlock by score (half fee at the gold cut-off, zero at
+  `zero_fee_tier`, both re-tunable by the authority via `set_score_config`).
+- **`reputation` (issue #451): tiered NFT dispute-resolution badges for
+  arbitrators.** New `accensa-reputation` contract tracks each arbitrator's
+  lifetime accurate dispute resolutions — recorded only by the arbiter
+  authority bound at initialization, keyed by caller-supplied dispute ids
+  with replay protection — and mints a non-transferable Bronze badge on the
+  first accepted resolution, upgrading it in place to Silver at 50 and Gold
+  at 100 accurate resolutions (`BadgeMintedEvent` / `BadgeUpgradedEvent`).
+- **Tiered Fee Hook**: Implemented Tiered Fee Assessment Hook in Refund-Vault-Factory Deployments (issue #375).
+- **Batch Transaction Pipeline**: Added Batch Transaction Execution Pipeline to Multisig-Account (issue #385).
+- **Zero-Knowledge Commitments**: Implemented Zero-Knowledge Commitment Verification for State-Channel Off-Chain Settlements (issue #386).
+- **Reentrancy Guard Protocol**: Implemented Cross-Contract Call Reentrancy Guard Protocol (issue #388).
+- **`state-channel` (issue #458): virtual multi-hop HTLCs.** New `htlc` module
+  locks slices of a channel's free escrow against a SHA-256 hash lock and
+  settles them with a preimage (`add_htlc` / `resolve_htlc` / `refund_htlc`).
+  Hops may be linked to an upstream parent, and a linked hop's timeout must be
+  **strictly smaller** than its parent's, so a route's timeouts decrease
+  downstream and an intermediary can always pull the upstream hop through
+  before it expires. Pending reservations are excluded from the sender's free
+  balance, and refunds release them permissionlessly after the timeout.
+- **`state-channel` (issue #459): watchtower reward bounties.** The receiver
+  may attach a bounty (`set_watchtower_bounty`, capped at 20%) that pays a
+  fraction of the recovered balance to the watchtower that files a successful
+  counter-proof on their behalf (`watchtower_counter_evidence`). The reward is
+  carved out of the receiver's settlement payout at `finalize_dispute` and is
+  one-shot, so escrow still balances exactly.
+- **`state-channel` (issue #460): channel splicing.** `splice_in` / `splice_out`
+  resize an open channel's capacity in place — adding sender funds or
+  withdrawing only the sender's uncommitted escrow — while the off-chain state
+  keeps running. Both parties must authorize the new capacity limit.
+- **`treasury` (issue #465): automated governance-token buyback & burn.** New
+  `buyback` module spends accumulated protocol fees on the governance token via
+  a pluggable `DexRouter`, verifies the swap against a caller-supplied slippage
+  floor, and sends the proceeds to a configured burn address. Admin configures
+  it once with `set_buyback_config`; anyone may trigger a swap with
+  `execute_buyback` above the configured minimum size.
+- **`common`: standardized read-only telemetry view for frontend dashboards.**
+  New `telemetry` module (`contracts/common/src/telemetry.rs`) defines the
+  canonical `Telemetry` response struct — total/open/closed/disputed/finalized
+  channel counts, active escrow sum, and cumulative fees collected, stamped
+  with the ledger sequence and wall-clock timestamp — plus the
+  `TelemetryProvider` trait and generated `TelemetryClient` so dashboards pull
+  one aggregated snapshot cross-contract. The view is strictly read-only:
+  no writes, no TTL extension, no authorization, and O(1) targeted storage
+  reads (one `instance().get` per field, never record iteration), so the CPU
+  cost is independent of channel/refund volume. Includes unit, read-only
+  property, and completeness tests.
+- **`common` (issue #436): constant-time cryptographic comparison.** New
+  `constant_time_eq(a, b)` helper (`contracts/common/src/constant_time.rs`)
+  compares byte slices without short-circuiting: every byte and the length
+  difference are folded into one OR accumulator that is inspected exactly once
+  at the end, and `core::hint::black_box` stops the optimizer re-introducing the
+  early exit. Intended for MAC/token/digest equality where a shared-prefix
+  timing leak matters.
+- **`multisig-account` (issue #434): weight-based threshold voting.** Signers
+  now carry a `u32` weight (default `1`), and `__check_auth` admits a call when
+  the aggregate weight of the attached approvers reaches the threshold rather
+  than the raw signer count. Governance (the account's own threshold
+  authorization) updates a signer with `set_signer_weight`, adds/removes
+  weighted signers with `add_signer` / `remove_signer`, and every mutation
+  enforces the invariant `total_signers_weight >= threshold`.
+  `rotate_signers_and_threshold` keeps the weighted bookkeeping consistent and
+  refuses a rotation that would break that invariant.
+- **`upto-authorization` (issue #435): inactivity auto-cancellation.** New
+  `cancel_inactive_escrow(payment_id)` lets the buyer unilaterally release an
+  authorization that has gone unclaimed for the governance-set inactivity
+  window (`set_inactivity_timeout`, default ~30 days), zeroing the outstanding
+  allowance and deleting the record to reclaim its rent. Only the buyer's
+  authorization is required — never the facilitator's. Emits
+  `EscrowCancelledInactivity`.
+- **`treasury` (issue #444): automated AMM fee liquidation.** New `liquidation`
+  module (`contracts/treasury/src/liquidation.rs`) with abstracted `Amm` and
+  `PriceFeed` clients. Governance whitelists an AMM (`whitelist_amm`), sets the
+  primary stablecoin (`set_stable_token`) and price feed (`set_price_feed`);
+  `liquidate_fees(token_in, amount_in, max_slippage_bps)` derives a minimum
+  output from the oracle price, swaps through the AMM, and rejects any delivery
+  below that floor or below what the AMM reported.
+- **`common` (issue #463): standardized event emission for indexer subgraphs.**
+  Defines canonical `[Protocol, Module, Action]` topic schema (`PROTOCOL = symbol_short!("accensa")`)
+  and typed event payloads (`TransferEventPayload`, `RefundEventPayload`, `ChannelStatePayload`,
+  `AnchorEventPayload`) for granular GraphQL indexing.
+- **`state-channel` (issue #461): ephemeral key delegation for mobile wallets.**
+  Adds `DelegationCertificate` allowing temporary Ed25519 signing keys to act on
+  behalf of master keys within a ledger sequence window. Supports both
+  channel-scoped and wildcard delegations, verified on-chain in
+  `update_state_delegated` and `close_channel_delegated`.
+- **`cross-chain` (issue #457): Wormhole VAA parsing and guardian verification.**
+  Parses Wormhole VAA binary envelopes and verifies guardian secp256k1 signatures
+  over double-keccak256 body digests via `env.crypto().secp256k1_recover`. Enforces
+  strictly ascending guardian index ordering and quorum requirements (`(2N/3) + 1`)
+  against stored active `GuardianSet` records.
+- **`cross-chain` (issue #456): outbound withdrawal bridging requests.** Implements
+  `withdraw_to_evm` on `CrossChainBridge`, burning wrapped tokens on Soroban,
+  incrementing a monotonic sequence number, and emitting standardized
+  `OutboundBridgePayload` events under `(bridge, withdraw, sequence)` for
+  relayer consumption. Includes admin-controlled pause/unpause toggles.
+- **`refund-vault-factory` (issue #464): protocol TVL query.** New read-only
+  `get_tvl(asset)` sums the `asset` balance of every vault the factory has
+  deployed — read from the SEP-41 token contract rather than the vault's own
+  bookkeeping — so one call answers "how much value is locked?" for
+  DefiLlama-style analytics. A vault configured with a different token holds
+  no `asset` and contributes `0`, so a single factory can host vaults across
+  many assets.
+- **`treasury` (issue #467): token vesting schedules.** New contract
+  (`contracts/treasury`, `src/vesting.rs`) releasing team/investor
+  allocations linearly over four years after a one-year cliff. The admin
+  registers a `VestingSchedule` per beneficiary with `add_schedule` (or
+  `add_team_schedule` for the 1y-cliff/4y-window defaults) and the
+  beneficiary calls `claim_vested` to withdraw whatever has unlocked;
+  `vested_amount` / `claimable` preview the curve without changing state. A
+  schedule can never pay out more than its `total`, and a claim with nothing
+  new unlocked fails with `Error::NothingToClaim`.
+- **`treasury` (issue #466): diversified stablecoin yield strategies.** New
+  `strategies` module (`contracts/treasury/src/strategies.rs`) splitting idle
+  reserves across several whitelisted yield protocols. Governance approves
+  addresses with `whitelist_strategy` and sets percentages with
+  `set_allocations` (weights in basis points, summing to exactly `10_000`);
+  `rebalance_portfolio` then recalls every strategy and redeploys the balance
+  minus the liquid reserve (`set_reserve_bps`, 100% liquid by default), and
+  `recall_strategy` brings a single position — and the yield riding on it —
+  home early. A `Strategy` trait (`deposit` / `withdraw` / `total_balance` /
+  `accrued_yield`, mirroring `refund-vault`'s yield hook) is the adapter
+  interface. Strategies stay untrusted: returns are checked against the
+  treasury's own token balance delta (`Error::StrategyUnderpaid`) and every
+  strategy call runs under a reentrancy lock (`Error::ReentrancyBlocked`).
+- **`state-channel` (issue #471): batched Ed25519 verification.** New `crypto`
+  module (`crypto::verify_signatures`) verifies a flat array of
+  signer/signature pairs against one canonical payload in a single pass, and
+  length-checks the pairing before touching the host (a mismatch returns
+  `Error::InvalidSignature`; a forged signature still traps). `mutual_close`
+  routes both of its signatures through it.
+- **`refund-vault` (issue #473): partial-refund settlement preview.** New
+  read-only `preview_settlement(payment_ref, amount, payment_amount)` reports
+  exactly how a partial refund would split — the buyer's payout, the fee, the
+  remainder the merchant retains, and the running cumulative total — including
+  the fee's round-up dust. The ceiling rule and fee split now live once, in
+  `settlement::resolve_ceiling` / `settlement::split_amount`, and are shared
+  with the live `refund` path so a preview can never disagree with the
+  transfer it describes.
+- **`multisig-account`: emergency pause circuit breaker.** `pause(caller)` /
+  `unpause(caller)` may be called by the account itself (`threshold` signers)
+  or a security guardian set with `set_guardian` (threshold only). While
+  paused, `__check_auth` refuses every outbound authorization, including
+  sub-threshold spends, with `Error::Paused` (10); only the account's own
+  `pause`, `unpause`, `set_guardian` and `rotate_signers_and_threshold` stay
+  authorizable, and queued timelock transactions cannot execute. Read-only
+  queries are unaffected. Adds `is_paused`, `get_guardian`, `PausedEvent`,
+  `UnpausedEvent` and `GuardianSetEvent`.
+- **`upto-authorization`: slippage tolerance.** New
+  `authorize_with_slippage(payment_id, from, to, cap, expiry, max_slippage_bps)`
+  lets `settle` charge up to `cap + floor(cap * bps / 10_000)`; the token
+  allowance covers that maximum. `authorize` and `authorize_signed` are
+  unchanged (0 bps). The bound is computed without forming `cap * bps`, so it
+  cannot overflow; `bps` above 10,000 fails with `Error::InvalidSlippage`
+  (11) and an unrepresentable maximum with `Error::AmountOverflow` (12).
+  `AuthorizationRecord` and `AuthorizeEvent` gain a `max_slippage_bps` field.
+- **`receipt-anchor`: `verify_receipt_leaf(shard_id, root, leaf, proof)`.**
+  Verifies a sorted-pair Merkle proof (ADR-001) against the shard's retained
+  roots. The fold lives in the new `merkle` module. Worst case (depth 10):
+  2.81M CPU instructions, 1.52 MB memory; see `docs/BENCHMARKS.md`.
+- **`receipt-shard` (issue #419): shard health diagnostics.** New read-only
+  `get_shard_diagnostics()` returns a `ShardDiagnostics` snapshot: assigned
+  range, pruning cursor (oldest unpruned batch), high-water batch id, live
+  batch and leaf counts, lifetime leaf total, live batches still inside the
+  retention window (`active_dispute_count`), deepest Merkle tree anchored,
+  persistent storage entries, and a `consistent` flag covering the shard's
+  internal invariants. The counters live in one `ShardStats` instance entry
+  kept up to date by `anchor_batch` and both pruning paths.
+- **`multisig-account` (issue #413): daily spending limits for sub-threshold
+  signers.** Governance sets a per-token allowance with
+  `set_daily_limit(token, limit)` (full threshold). After that, a
+  `transfer` of the account's own funds authorized by fewer than `threshold`
+  signers is accepted while it fits in each signer's remaining allowance for
+  the current 24-hour window (ledger timestamp). Anything else still needs
+  the full threshold (`Error::InsufficientSignatures` /
+  `Error::DailyLimitExceeded`). Adds `get_daily_limit`, `get_spent_today`
+  and `DailyLimitSet`.
+- **`state-channel` (issue #412): cooperative mutual close.** The receiver
+  registers an Ed25519 key with `register_receiver_key`. `mutual_close(final_state,
+sig_a, sig_b)` then checks both signatures over a domain-separated
+  `MutualCloseState` (bound to the contract and channel id), requires the
+  split to add up to the escrow, pays both parties at once from `Open`,
+  `Closed` or `Disputed`, deletes the channel's storage entries and emits
+  `ChannelClosedCooperative`.
+- **`refund-policy-time` (issue #426): oracle-assisted dispute resolution.**
+  The time policy also accepts `TimeOraclePolicyParams` (`window`,
+  `deadline`, `oracle`, `max_report_age`). It asks the delivery oracle for
+  the payment's `DeliveryReport`: `Lost` admits the refund even outside the
+  window, `Delivered` rejects it with `Error::OraclePolicyDenied`, and
+  `Pending` falls back to the window/deadline check. So do stale, future-dated
+  or mismatched reports, and oracles that trap or do not exist. Emits
+  `OracleResolutionApplied`. Plain `TimePolicyParams` behave as before.
+- **`RefundVault` (issue #415): yield-bearing escrow strategy hook.** The
+  `YieldStrategy` interface moves to `src/strategy.rs`. Strategies must be
+  whitelisted with `approve_yield_strategy` (`revoke_yield_strategy`,
+  `is_strategy_approved`) before `set_yield_strategy` / `deploy_to_yield`
+  accept them (`Error::StrategyNotApproved`); a strategy still holding
+  principal cannot be replaced or revoked (`Error::StrategyHasPrincipal`).
+  Deployed principal is now instantly redeemable: `refund`, `claim_batch`,
+  `process_batch` and `withdraw` recall any liquidity shortfall from the
+  strategy in the same call, checked against the vault's real balance delta.
+  `emergency_exit_yield` recalls all principal, even while paused.
+  `set_yield_recipient` / `distribute_yield` route harvested yield to the
+  protocol treasury or a merchant rebate pool (default: the merchant).
+  **Behaviour change:** a refund larger than the liquid float but covered by
+  deployed principal now succeeds instead of failing with `InsufficientFloat`.
+- **`refund-vault-factory` (issue #472): deterministic CREATE2-style vault
+  deployments.** New `deploy_for_participants(init, buyer)` derives the
+  deployment salt as `sha256(buyer ‖ merchant)` (a pure function of the escrow
+  participants) and deploys the vault through the existing
+  counter-independent `create_vault(salt)` path, reusing its `SaltCollision`
+  guard. `predict_address(buyer, merchant)` exposes
+  `with_current_contract(salt).deployed_address()`, so two parties can agree
+  on — and even pre-fund — an escrow address off-chain before the factory
+  deploys it.
+- **`refund-vault` (issue #474): NFT escrow.** New `deposit_nft`,
+  `claim_nft`, `refund_nft` and `get_nft_escrow` let a vault escrow Soroban
+  non-fungible tokens alongside the fungible float. NFTs go through the
+  standard non-fungible surface (`owner(token_id)`, `transfer(from, to,
+token_id)`) rather than SEP-41, are keyed by exact `(contract, token_id)`,
+  and `claim_nft`/`refund_nft` return the very token id released. Reentrancy
+  and pause guards are shared with the fungible path; new errors
+  `NftAlreadyEscrowed`, `NftNotOwned`, `NftEscrowNotFound`.
+- **`refund-policy-vdf` (issue #469): dispute fallback oracle.** When the
+  primary arbitrators time out, `request_fallback_dispute` escalates a
+  dispute to an external optimistic-oracle-style fallback oracle;
+  `build_fallback_oracle_request` hands the dispute to it as an XDR payload;
+  and `settle_fallback_dispute` (oracle-authorized only) records the ruling.
+  Disputes live in a bounded persistent ledger inside the otherwise-stateless
+  policy contract, readable via `get_fallback_dispute`. New errors
+  `DisputeNotFound`, `DisputeClosed`.
+- **`governance` (issue #475): optimistic execution queue.** `optimistic_submit`
+  queues a routine call executable immediately by anyone; members can veto it
+  during a 24-hour window with `veto_optimistic`, and cumulative quadratic
+  veto weight reaching a ~2/3 supermajority of total weight locks it so
+  `execute_optimistic` reverts with `OptimisticVetoed`. Vetoes close after
+  the window (`ChallengeWindowClosed`), a proposal executes exactly once
+  (`AlreadyExecuted`), and a member vetoes once (`AlreadyVetoed`).
+  `get_optimistic_proposal` exposes the queue state.
+- **`state-channel` (issue #423): multi-asset collateral pooling.** New
+  `open_multi_asset_channel` escrows several tokens in one channel, tracked
+  per token as a `BalanceRecord`. Signed `MultiAssetState`s must name exactly
+  the channel's asset set (`Error::UnsupportedAsset` otherwise) and keep each
+  asset within its own deposit. `settle_multi_asset_channel` pays out every
+  asset in one atomic call after the challenge window, and newer states can
+  still be submitted during that window. Signatures are bound to the
+  contract and channel id.
+- **`receipt-anchor` (issue #424): incremental Merkle tree for continuous
+  anchoring.** New `insert_receipt_leaf(leaf_hash)` appends one receipt at a
+  time to an append-only tree whose frontier (one subtree root per level,
+  packed into a single `Bytes` blob) lives in instance storage, so each
+  insert costs at most 32 hashes and one storage write. Depth up to 32
+  (2^32 leaves). The root is byte-identical to the batch/SDK root of the same
+  leaves (checked against `merkle-vectors.json`). Adds
+  `get_incremental_root`, `get_incremental_leaf_count` and
+  `ReceiptLeafInsertedEvent`.
+- **`refund-vault` (issue #427): dust sweep for orphaned escrows.** New
+  `sweep_dust(payment_ref)` lets the merchant move a payment's unrefunded
+  remainder to a treasury once it is strictly below the dust threshold
+  (default 100, configurable with `set_dust_config(threshold, treasury)`)
+  and the escrow has been closed (refund window elapsed and no later refund)
+  for more than 90 days of ledgers. The swept `RefundV2` record is deleted to
+  reclaim storage, and a `DustSweptEvent` is emitted. Treasury falls back to
+  the fee recipient when unset.
+- **`stream-vault` (issue #410): streaming micro-disbursement schedules.**
+  New standalone contract, constructed with `(merchant, token)`.
+  `create_stream(buyer, start_ledger, stop_ledger, rate_per_ledger,
+deposit)` escrows a buyer's deposit and streams it linearly to the
+  merchant; the claimable balance is `min(deposit, (ledger - start) * rate)`
+  less prior claims. `claim_stream` is permissionless and closes the stream
+  once the stop ledger is reached. The buyer can `pause_stream` /
+  `resume_stream` (resuming shifts the schedule by the paused duration) or
+  `cancel_stream`, which pays the merchant what has streamed and returns
+  unspent principal. Adds `get_stream` and `get_stream_claimable`. It is a
+  separate contract because `RefundVault` has no room left under the
+  128 KiB contract size limit, and it keeps buyer escrow apart from the
+  refund float.
+- **`multisig-account` (issue #425): Ed25519 signature malleability protection.**
+  New `crypto` module rejects any signature whose `s` scalar is not strictly
+  below the group order `L` (e.g. the malleated twin `(R, s + L)`) with
+  `Error::NonCanonicalSignature` _before_ host verification; exposed as the
+  `verify_ed25519` entrypoint. Also restores the crate's build (misplaced
+  module docs, invalid `[u8; 32]` contract types, bad zero-address strkey) and
+  makes `rotate_signers_and_threshold` require the account's own auth.
+- **Quadratic Voting Module**: Implemented integer square root voting power calculation for the Governance contract to prevent single-whale domination (issue #382).
+- **CI WASM Binary Size & Budget Check**: Added automated WASM binary size and CPU/memory budget assertion CI check with `scripts/check_wasm_budget.sh` and GitHub Actions `wasm-budget-inspect` job (issue #381).
+- **Timelock Delay Queue**: Added timelock delay queue for sensitive admin actions in multisig-account with `queue_transaction`, `execute_queued_transaction`, `cancel_queued_transaction`, and `approve_queued_transaction` functions (issue #383).
+- **Dynamic Threshold Rotation**: Implemented atomic multi-signer threshold reconfiguration in a single call to avoid insecure intermediate states (issue #384).
+- **Dual-Asset Support**: Added support for native XLM and SEP-41 tokens in RefundVault.
+- **Upto-Authorization Fuzzing**: Added extensive fuzz testing limits.
+- **VDF Slashing Penalty**: Accurate assessment of slashing penalty calculations.
+- **Time Policy Transitions**: Supported Grace Period and Cooldown transitions.
+
+- **`receipt-anchor` (issue #394): multi-party Ed25519 signature
+  aggregation validator in `contracts/receipt-anchor/src/signatures.rs`.**
+  A multi-party receipt is authorized by several Ed25519 keys; instead of
+  one host `ed25519_verify` per participant it commits every participant to
+  one canonical message (contract-domain-separated via the sender-provided
+  domain bytes, length-prefixed payload, enumerated keys, and the exact
+  participation bitmap) and verifies the single aggregated signature first
+  with one host call — `Ok(false)`/`Err` rejects the whole set, and an
+  invalid signature traps. `validate_mask` enforces the 32-key cap and that
+  no set bit indexes a missing key; `verify_individual_signature` provides
+  a per-key audit path. Fully unit-tested in `signatures_test.rs`.
+- **`state-channel` (issue #387): dispute-window expiration safeguards.**
+  `dispute` now records the exact ledger (`disputed_at`) and transitions the
+  channel `Closed -> Disputed` instead of reopening it; `submit_counter_evidence`
+  lets anyone holding a newer sender-signed state fight the dispute while the
+  window is open (each accepted state re-arms the window); `finalize_dispute`
+  is callable by anyone once the window elapses and settles strictly per the
+  last verified state — receiver gets `balance`, sender is refunded
+  `amount - balance`. Timing helpers live in `contracts/state-channel/src/dispute.rs`.
+- **`common` (issue #396): checked financial math helpers in
+  `contracts/common/src/math.rs`.** `add_amounts`, `sub_amounts`,
+  `mul_amounts`, `div_amounts`, `checked_accumulate`, `mul_ratio`,
+  `apply_fee_bps`, checked `u64`<->`i128` conversions and checked
+  ledger-sequence arithmetic now return a `MathError` on overflow,
+  truncation, or a zero divisor instead of wrapping, saturating, or
+  trapping. `Error::MathOverflow` is added and wired through
+  `From<MathError>`.
+- **`receipt-shard` (issue #395): policy-driven storage eviction for
+  expired receipts.** `prune_expired_receipts` deletes batches whose
+  anchor is past `RETENTION_LEDGERS`, bounded by `max_count` per call,
+  and accrues a per-batch cleanup bounty to the caller, settled via
+  `claim_prune_bounty` (zeroed before transfer so a claim cannot pay
+  twice) with a `ReceiptsPrunedEvent` published on every call. The scan
+  is footprint-safe: it stops at the first gap past the last anchored
+  batch instead of iterating the full shard range.
+- **Distinct events for every `ReceiptAnchor` state change** (issue #89):
+  `prune_batches` now actually emits the long-documented `PruneEvent` — it was
+  defined in the code and pinned in `docs/EVENTS.md` but never published —
+  bracketing the deleted batch ids as the closed range
+  `[start_batch_id, end_batch_id]`, and is suppressed when a call deletes
+  nothing so no-op calls do not spam the log. Admin configuration changes emit
+  three new events: `InitializedEvent` (from `initialize`; carries the merchant
+  and shard wasm hash so a deployment is discoverable from the event log
+  alone), `RateLimitUpdatedEvent` (from `set_anchor_rate_limit`; topics carry
+  the previous `{burst, refill}` config and the data map the new one, so a
+  reader never joins two events) and `AnchorIntervalUpdatedEvent` (from
+  `set_min_anchor_interval`; previous interval in the topics, new interval in
+  the data map). Both config events also carry the ledger sequence. New events
+  are additive — no existing topic tuple or field changed — and each is pinned
+  by a test asserting the exact topics and data map the host records
+  (`contracts/receipt-anchor/src/test.rs`), with shapes documented in
+  `docs/EVENTS.md` and the README event table.
+- **`refund-vault-factory` (issue #393): deterministic vault deployment with
+  an optional custom salt.** `create_vault` now accepts
+  `salt: Option<BytesN<32>>`; passing `Some` derives the deployment address
+  via `with_current_contract(salt)` so an identical salt always reproduces an
+  identical vault address, and reusing a salt whose derived address already
+  holds a deployed vault reverts with `SaltCollision`. The read-only
+  `compute_vault_address` entrypoint lets merchants precompute deployment
+  addresses off-chain. `deploy_vault` delegates with `None`, leaving the
+  existing counter-derived salt family unchanged.
+- **`governance` (issue #392): proposal quorum decays toward a safety floor
+  over the voting window.** The effective quorum now falls linearly from the
+  configured initial threshold to 3 500 bps as a proposal ages across its
+  voting window (`contracts/governance/src/quorum.rs`), so inactive proposals
+  late in their window need less "yes" weight to pass — but never beneath the
+  floor, and "yes" must still outweigh "no".
+
+### Performance
+
+- **`refund-vault`: nonce-key allocation halved in `check_and_bump_user_nonce`
+  (issue #295).** `DataKey::UserNonce(caller.clone())` is now constructed once
+  and reused for both the storage `get` and `set`, eliminating one
+  `Address::clone` per `refund`, `claim_batch`, and `process_batch` call.
+
+- **`refund-vault`: policy-level state reads are now cached once per entry
+  point (issue #86).** `claim_single` no longer re-reads the six policy keys
+  (`RefundWindow`, `RefundDeadline`, `OraclePolicy`, `VdfDelay`, `Token`,
+  `FeeBps`) from instance storage on every claim. A `read_policy_cache` pass
+  builds a policy cache up front and `refund`, `claim_batch` and
+  `process_batch` share it, removing `6×(N−1)` redundant instance reads for a
+  batch of `N` claims (594 fewer reads for `process_batch` at `N=100`).
+
+### Changed
+
+- **`common`: `keys` module docs now mark the namespace partition as reserved
+  (issue #626).** The module docs implied the partition was enforced
+  workspace-wide, but no contract imports `keys::` — every contract still
+  defines its own flat `DataKey` — so on-chain storage written today is not
+  routed through these namespaces. The docs now state there is no production
+  consumer, that adopting these key types in a deployed contract needs a
+  storage-compatibility plan (persisted ledger keys encode their namespace by
+  variant position), and scope the compile-time collision guarantee to this
+  module's own key enums. New unit tests pin `discriminant()` folding for
+  every namespace pair (boundary values of the 32-bit local window included)
+  and the uniqueness of each namespace's local discriminants. Documentation
+  and tests only — no public-item or behavior change.
+
+- **`receipt-anchor`: extracted `push_shard_root` and `check_no_duplicate_root`
+  helpers from `anchor_batch_internal` (issue #292).** The ring-buffer update
+  and per-shard duplicate-root guard are now private methods, shortening the
+  main anchoring path and making each responsibility independently readable.
+
+- **`receipt-anchor`: added `build_proof` test helper (issue #291).** The
+  inline proof-assembly loop in `test_shared_vectors_match_typescript_sdk` is
+  now a reusable `build_proof(env, siblings)` function. The static `vectors.rs`
+  data (zero-heap `&'static [[u8; 32]]` slices) is already optimal and required
+  no change.
+
+- **`refund-vault`: extracted event-data map helpers in `test.rs` (issue #296).**
+  `deposit_event_data`, `refund_event_data`, and `withdraw_event_data` in the
+  `event_helpers` module replace inline `Map::<Val, Val>` construction in
+  `test_events_emitted`, removing the repeated field-set boilerplate.
+
+### Fixed
+- **`receipt-shard` (issue #642): typed errors from the config getters.**
+  `get_router` and `get_range` now return `Result<_, Error>` and answer
+  `NotInitialized` (2) when the instance config is absent — before construction
+  or after instance TTL eviction — instead of aborting the host call with a
+  generic error; a successful read extends the instance TTL the same way the
+  write paths do.
+- **`treasury`: the yield distribution module is now part of the build (issue
+  #523).** #523 landed `distribution.rs` and `distribution_test.rs` without the
+  `pub mod distribution;` / `#[cfg(test)] mod distribution_test;` declarations
+  and without the seven `Error` variants the module returns, so `treasury` did
+  not compile and `fmt`, `test`, `budget-limits` and `build-wasm` were all red
+  on `main`. Added the module declarations plus `DistributionNotInitialized`
+  through `NoYieldToClaim` as variants `= 30..=36`, appended after the existing
+  set so every current error code keeps its value.
+- **`treasury`: staking moves the treasury's own asset, and changing a stake no
+  longer forfeits accrued yield.** `DistributionConfig` holds the *yield* token
+  (the one `initialize_distribution` registers), but `stake` and `unstake`
+  transferred that token as if it were the staked asset, so every stake tried to
+  pull yield tokens from users who hold none. They now transfer
+  `DataKey::Token`, and the yield token stays the payout asset for
+  `claim_yield`. Separately, `stake` and `unstake` re-anchored the user's
+  checkpoint to the current accumulator without settling what had accrued at the
+  previous stake size, which silently discarded pending yield on every position
+  change. Accrued yield is now settled into a `UserDistribution::pending` bucket
+  before the stake changes, and `pending_yield` / `claim_yield` report and pay
+  that bucket plus the current accrual.
+- **`refund-vault`: test modules are no longer compiled into the release
+  build.** `token_agnostic_tests` and `yield_tests` were the only two test
+  modules declared without `#[cfg(test)]`, so roughly 1.3k lines of test code
+  entered the non-test build path. They are dead-code eliminated at present,
+  which is why the deployed WASM is unchanged, but the mismatch meant a test
+  helper with any side effect would have shipped silently.
+- **Build fixes for code merged without compiling.** `governance` declares
+  its `voting` and `math` modules and no longer moves `member` before reuse;
+  stray `#![no_std]` attributes in submodules (`governance` `ragequit.rs` /
+  `voting.rs`, `upto-authorization` `domain.rs`) are removed; unit tests in
+  `governance::voting` run inside a contract context, and two `isqrt`
+  expectations that were off by 10x are corrected.
+- **Known issue, test ignored:** `governance::set_treasury_token` is reachable
+  only through `execute` invoking the contract itself, which Soroban rejects
+  ("Contract re-entry is not allowed"). Its test is `#[ignore]`d pending a
+  design fix.
+- **`state-channel`: restore the build.** The merge of #504 dropped the
+  `extend_instance_ttl` and `NonceWindow` imports and the `nonce` module
+  declaration, and `nonce.rs` used a non-existent `BytesN::zero` and a
+  module-level `#![no_std]`.
+- **`common`, `refund-vault`: clippy clean again.** Removed a module-level
+  `#![no_std]` in `common/src/storage.rs` and a needless borrow in
+  `refund-vault`.
+
+- **Repaired source corruption that left `main` unable to compile.** Two bad
+  merges (`a6e234b`, then `8eb4fa6` "Resolve conflicts in PR 263") committed
+  literal conflict markers into `receipt-anchor/src/lib.rs` and spliced
+  function bodies into the wrong signatures across `refund-vault/src/lib.rs`,
+  `src/fuzz_test.rs` and `src/test.rs`. Nothing in the workspace built, so
+  every check on every branch had been failing. Specifically:
+  - `receipt-anchor`: removed the committed `<<<<<<< ours` markers; restored
+    `get_shard_capacity`, `get_shard_count`, `get_shard_address` and
+    `set_min_anchor_interval`, whose bodies the bad resolution had swallowed
+    into `set_anchor_rate_limit`; restored `get_min_anchor_interval` and the
+    `MinAnchorInterval` key and `MAX_ANCHOR_INTERVAL` cap they need (the
+    governance suite drives this pair end to end).
+  - `refund-vault`: rebuilt `__constructor` (it had been left half-merged with
+    the removed `initialize` signature), and restored `set_reserve_ratio`,
+    `set_max_deploy_ratio`, `deploy_to_yield`, `withdraw_from_yield`,
+    `harvest_yield`, `pause`, `set_fee_bps`, `set_fee_recipient`,
+    `set_oracle_policy` and `clear_oracle_policy`, each of which had been
+    carrying a neighbouring function's body.
+  - `fuzz_test.rs`: dropped a dead second op-model (`arb_op`, `execute_op`,
+    referencing `Op` variants that no longer exist) that the merge had left
+    interleaved with the live one, and restored the `execute` driver and
+    `amount_strategy` the live tests call.
+- **`Error::InvalidRateLimitConfig` (204)** was referenced by
+  `ReceiptAnchor::set_anchor_rate_limit` and its tests but never existed on the
+  shared `Error` enum. Added.
+- **`test_extend_refund_ttl_fails_if_missing`** called `get_refund` (which
+  returns `Option` and cannot yield `RefundNotFound`) instead of
+  `extend_refund_ttl`, so it never tested what it was named for.
+- **`test_nonce_does_not_increment_on_failed_operation`** called the removed
+  `set_refund_window`, and with a window that contradicted its own
+  `WindowExpired` assertion. Removed the stale call.
+
+### Changed
+
+- **`receipt_anchor` WASM budget raised 48000 -> 59000 bytes.** The 48000 figure
+  was set before sharding, the token-bucket rate limiter and the zk verifier
+  landed, and was never re-validated because the contract had not compiled
+  since. 59000 reflects the contract as actually built (58847 bytes).
+
+### Removed
+
+- **`RefundVault::test_uninitialized_calls_fail`** and
+  **`test_set_yield_strategy_uninitialized_fails`** asserted `NotInitialized`
+  on a vault registered without arguments. Issue #129 moved initialization into
+  `__constructor`, so that state is now unreachable — registration itself
+  fails. Replaced by `test_vault_cannot_be_deployed_without_config`, which
+  asserts the stronger constructor-level property; the auth path stays covered
+  by `test_set_yield_strategy_requires_auth`.
+
+- **CI and Toolchain Configuration**: updated `.github/workflows/ci.yml` to use stable `dtolnay/rust-toolchain` action references and synchronized `Cargo.lock` with dependency changes.
+
+### Added
+
+- **`RefundVaultFactory` with constructor-wired vaults** (issue #129): vaults
+  are now created by a singleton factory via `deploy_vault(vault_init)` and are
+  fully initialized in their constructor — there is no `initialize` window to
+  front-run. The factory owns the deployment inputs a merchant must not be able
+  to pick (`vault_wasm_hash`, and the stateless time/VDF policy contract
+  addresses), derives a deterministic salt per merchant, and authorizes the
+  merchant so griefing on someone else's salt family is impossible. Policy
+  resolution: a policy set on the merchant's `VaultInit` wins; `None` falls
+  back to the factory's global policy addresses. A vault deployed with a `None`
+  policy on an active gate is still deployable but refuses the gate at claim
+  time with `PolicyContractsNotConfigured` (317). The time and VDF gates are
+  delegated to new stateless `TimePolicy` and `VdfPolicy` contracts
+  (`contracts/refund-policy-time`, `contracts/refund-policy-vdf`) that
+  evaluate a claim's window/deadline and Wesolowski proof respectively, keeping
+  per-vault storage and upgrade surface small. Direct (non-factory)
+  deployments of `RefundVault` remain supported.
+
+- **Never persist `Option::None` (a `Void` value) in contract storage**: the
+  vault and factory formerly stored their `Option<Address>` policy fields
+  verbatim, so a cleared policy left a `Void` in the ledger, which the host
+  rejects/breaks on in several read paths (observed as `Error(Context,
+InvalidAction)` and abort traps in the wasm constructor path). Policy fields
+  are now written only when `Some`, and setters `remove()` the key on `None`.
+  Absent key ⇔ unconfigured, which is the correct on-chain semantic anyway
+  (`Void` is not a legal contract-data value).
+
+- **Per-user nonce replay protection** (issue #122): `refund`, `claim_batch`,
+  and `process_batch` now each take a required `nonce` argument equal to the
+  caller's (merchant's) current per-user counter, stored in persistent storage
+  under `DataKey::UserNonce(Address)`. The counter starts at `0`, increments
+  once per **successful** claim call, and a mismatch — replaying a consumed
+  nonce or skipping ahead — reverts the call with `Error::StaleState`
+  (mirroring the state channel's nonce semantics). Failed claims revert
+  atomically and do not consume a nonce; an empty `process_batch` returns
+  early without consuming one. New `get_user_nonce(caller)` getter, and new
+  tests covering sequential advance, replay rejection, per-caller
+  independence, and batched entry points. This is a **breaking interface
+  change** to the three claim entry points.
+
+### Changed
+
+- **`Governance` contract**: a proposal-based, weighted-vote governance wrapper
+  that closes the single-admin-key SPOF on `ReceiptAnchor`'s merchant role. A
+  fixed set of members (each with a weight, set at construction) can `propose`
+  a call to any target contract, `vote` on it over a bounded voting window,
+  and once "yes" weight clears a configured quorum (in basis points) and
+  strictly exceeds "no" weight, anyone can `execute` it. No change to the
+  governed contract is required: `initialize` `ReceiptAnchor` with a
+  `Governance` instance's address as `merchant`, and its existing
+  merchant-gated calls (`set_min_anchor_interval`, `anchor_batch`,
+  `prune_batches`) become reachable only through a passed proposal — the
+  host's own self-authorization rule (a contract's `require_auth()` on its
+  own address auto-succeeds when it is the direct caller) is what carries the
+  authority through, the same mechanism already used for a `MultisigAccount`
+  admin. Storage is kept intentionally small: each member's weight is its own
+  persistent entry, per-voter "already voted" markers live in **temporary**
+  storage so they expire on their own with the voting window, and a resolved
+  proposal's calldata can be reclaimed immediately via `prune_proposal`
+  rather than waiting on archival. `ReceiptAnchor` has no upgrade entry point
+  (see `docs/ADR-003-upgradeability.md`, which forbids adding one without
+  reopening that ADR), so this wrapper does not gate or introduce one — it
+  covers the admin surface that actually exists today. See
+  `contracts/governance/src/lib.rs` and
+  `contracts/governance/tests/receipt_anchor_admin.rs`.
+
+- **Commit-reveal front-running protection for `RefundVault`** (issue #128):
+  sensitive vault operations (`refund`, `claim_batch`, `propose_policy`) are
+  visible in the mempool, so a validator or bot could observe a merchant's
+  transaction and submit a competing one with a higher fee, reordering the
+  pool. To close that window, `RefundVault` now implements a commit-reveal
+  scheme: the merchant first calls `commit(operation, commitment_hash)` to
+  bind a SHA-256 hash of the intended action (with no plaintext visible), then
+  calls `reveal(operation, commitment_hash, plaintext)` no earlier than
+  `COMMIT_MIN_DELAY_LEDGERS` (7) ledgers later to surface and consume the
+  action. `reveal` re-derives the hash from the plaintext and rejects a
+  mismatch (`CommitMismatch`), a reveal before the delay (`CommitDelayNot
+Elapsed`), a reveal with no pending commit (`NoCommit`), a reveal under a
+  different operation than the one committed (`CommitOperationMismatch`), and
+  a duplicate pending commit (`CommitAlreadyExists`). Commitments are
+  merchant-only and single-use. New error codes 305–309 are appended without
+  renumbering. `get_commit_min_delay()` and `get_commit(hash)` are added as
+  read-only getters.
+
+- **VDF-gated refunds for `RefundVault`** (issue #138): the refund policy now
+  carries a Verifiable Delay Function requirement — `propose_policy(ledgers,
+deadline, vdf_delay)` configures a delay in squarings (subject to the same
+  timelock) and `execute_policy` applies it. When the policy has a delay
+  configured, `refund`, every claim in `claim_batch`, and every item in
+  `process_batch` must supply a valid **Wesolowski VDF proof** that the delay
+  has genuinely elapsed; claims without one fail with `VdfProofRequired`
+  (302), with an invalid or premature one with `InvalidVdfProof` (303), and a
+  proof supplied against a policy with no delay with `VdfNotConfigured` (304).
+  The proof is bound to the payment (challenge = `sha256(payment_ref)`), so it
+  cannot be replayed across payments, and the delay is _computational_ — a
+  validator that controls block timestamps or transaction ordering cannot
+  shorten it without factoring the contract's fixed 1024-bit modulus. The
+  verifier (`contracts/refund-vault/src/vdf.rs`) runs in pure WASM via
+  `crypto-bigint` (already in the dependency tree, so no new transitive
+  crates), is exposed publicly as read-only `verify_vdf(challenge, delay,
+proof)` for randomness-verification flows, and its cost is pinned by a
+  budget test (a verification measures ≈51k CPU units — about a tenth of a
+  refund call). The new `get_vdf_delay()` getter exposes the configured delay.
+  This is a **breaking change** for clients: the `propose_policy` signature is
+  extended and `refund`/`RefundClaim`/`RefundParam` gain a `vdf_proof`
+  argument/field. `initialize` is unchanged and existing deployments default
+  to no delay (`0`), keeping them behaviour- and storage-compatible. The
+  contract's modulus is a fixed constant with its factors discarded after
+  generation; a production deployment should replace it with a
+  ceremony-chosen modulus (see `docs/SECURITY_MODEL.md` § "VDF Fairness").
+
+- **ZK validity proof batch anchoring for `ReceiptAnchor`**: `anchor_batch_zk`
+  allows merchants to anchor batch state roots on-chain by providing a Groth16
+  zero-knowledge validity proof (`ZkProof`), verifying validity in $O(1)$ time
+  and saving computational overhead on-chain. Added `verify_zk_proof` to verify
+  Groth16 proofs against verifying keys and public inputs, and introduced
+  `Error::InvalidProof` (code 203).
+
+- **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
+  processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
+  as `RefundClaim`) under a single merchant authorization, returning
+  `Vec<bool>` with one entry per claim. A failing claim is recorded as `false`
+  and processing continues, so valid claims in a mixed batch complete rather
+  than the whole call aborting; a batch larger than 100 claims fails with
+  `BatchTooLarge`. Every claim runs the identical per-claim logic as `refund`
+  (deadline, ceiling, float, and the configured fee), publishing a
+  `RefundEvent` per applied claim. Non-atomic by design — callers that require
+  all-or-nothing semantics should use `claim_batch` instead.
+- **Batch refunds for `RefundVault`**: `claim_batch(claims)` refunds multiple
+  claims in a single transaction, each processed with exactly the same logic,
+  checks, fees and events as `refund`, sharing one merchant authorization and
+  one reentrancy-lock acquisition. The batch is **atomic** — the first failing
+  claim returns its error and the Soroban transaction revert discards every
+  transfer, storage write and event of the batch, so either all claims persist
+  or none do. The float is read fresh from the token contract before every
+  element (so a batch cannot overdraw the vault), and repeated `payment_ref`s
+  accumulate against the same ceiling across elements. Each claim publishes its
+  own `RefundEvent` in claim order; an empty batch succeeds as a no-op. Callers
+  pass a `Vec<RefundClaim>`, a `#[contracttype]` struct mirroring the `refund`
+  arguments (`payment_ref`, `recipient`, `amount`, `paid_at_ledger`,
+  `payment_amount`). This is an **additive** change: `refund` and every existing
+  endpoint are unchanged (the shared claim path is extracted verbatim), and gas
+  is pinned by a budget test asserting a ten-claim batch stays well under the
+  default CPU and memory limits and scales near-linearly with a single claim.
+- **Refund fees for `RefundVault`**: the merchant can configure a fee deducted
+  from every successful refund — `set_fee_bps(bps)` fixes the rate (basis
+  points, up to 10_000) and `set_fee_recipient(recipient)` the collector
+  address; both are admin-only and setting the recipient to the vault's own
+  address is rejected (`SelfTransfer`). `refund` splits each claim into the
+  buyer's payout and the fee, which always rounds **up** so the sub-unit
+  remainder accrues to the protocol. If no recipient is configured the fee
+  defaults to the merchant. The total outflow per claim is unchanged
+  (`payout + fee == amount`), the `payment_amount` ceiling and the float check
+  are untouched, and the fee is `0` unless configured, so `initialize` and
+  existing deployments are unaffected. New `get_fee_bps()` /
+  `get_fee_recipient()` getters expose the configuration, and the
+  `RefundEvent` data map gains a `fee` field (append-only, see
+  `docs/EVENTS.md`).
+- **Refund expiration deadline for `RefundVault`**: the refund policy now
+  carries a wall-clock deadline (Unix timestamp) alongside the ledger-based
+  window — `propose_policy(ledgers, deadline)` configures it (subject to the
+  same timelock) and `execute_policy` applies it. `refund` rejects claims whose
+  current ledger timestamp is strictly past the deadline with a new
+  `RefundExpired` error (code 23); a deadline of `0` disables expiry. The new
+  `get_refund_deadline()` getter exposes the configured deadline. This is a
+  contract-source change: the `propose_policy` signature is extended, so it is
+  a **breaking change** for clients; `initialize` is unchanged and existing
+  deployments default to no expiration (deadline `0`), keeping them behaviour-
+  and storage-compatible. Deadline boundary semantics are pinned by unit tests
+  that manipulate the mock ledger timestamp.
+
+- **Admin events for `RefundVault`** (issue #114): `PauseEvent` and
+  `UnpauseEvent` carry the ledger sequence so a pause window is reconstructible
+  from the event log alone, and `RefundWindowUpdatedEvent` carries both the
+  previous and the new window (old value captured before overwrite). All three
+  follow the existing `#[contractevent]` convention and are documented in
+  `docs/EVENTS.md` and the README event table.
+- **Trustworthy build provenance in `contractmeta`** (issue #164): both
+  `build.rs` files now fail loudly (a `cargo:warning`) when the git commit hash
+  cannot be resolved instead of silently embedding `"unknown"`, embed a new
+  `commit_dirty` key computed from `git status --porcelain`, and re-run on
+  `.git/HEAD`, the resolved branch ref, the index and `src/` so a cached build
+  cannot report a stale hash. A `test_commit_meta_is_well_formed` test in both
+  crates pins the embedded commit to 40 hex characters.
+- **Oracle aggregator for dynamic refund policies** (`RefundVault`): a
+  standard `Oracle` interface (`get_price` + `get_last_update_ledger`) that
+  any price/data feed contract can implement, merchant-whitelisted via
+  `add_oracle`/`remove_oracle`/`get_oracles`; a median aggregator
+  (`get_median_price`) that queries every whitelisted oracle for a feed and
+  returns the median of the fresh (non-stale) values, so no single provider
+  is trusted; and an `OraclePolicy` (feed, threshold, staleness bound,
+  `refund_when_below`) installed via `set_oracle_policy`/`clear_oracle_policy`
+  that gates `refund` and `process_batch` — a refund is only paid out while
+  the aggregated feed satisfies the condition, failing closed on a missing
+  whitelist or all-stale data. New events `oracle_policy_set_event` /
+  `oracle_policy_cleared_event` and error codes 302–307
+  (`NoOraclesConfigured`, `OracleAlreadyAdded`, `OracleNotFound`,
+  `StaleOracleData`, `NoOraclePolicy`, `OraclePolicyDenied`).
+
+### Changed
+
+- **CI fixes**: the `build-wasm` job now builds the deployable contract crates
+  with `--workspace --exclude testutils` — the `testutils` workspace member
+  activates `soroban-sdk`'s `testutils` feature, which is not supported on the
+  `wasm32v1-none` target and made every wasm build fail at the SDK boundary.
+
+  The `.wasm-budget.json` size budgets are updated to the current deterministic
+  release builds (receipt-anchor 33,067 B, refund-vault 85,453 B) with ~5%
+  headroom — the exact-pin approach kept breaking on toolchain drift, and the
+  refund-vault budget had not caught up with the VDF crypto code.
+
+  The `ReceiptAnchor` budget gate in `fuzz_test.rs` is re-baselined for
+  `verify_receipt`: the pure-WASM SHA-256 folding merged in #250 moved hashing
+  out of the host into WASM, raising the host CPU instruction count for that
+  path (~569.9k → ~780.8k) while cutting WASM instructions; the gate's limits
+  now reflect the current implementation (measured 2026-08-29) and still allow
+  15% headroom for toolchain drift.
+
+- **Lower-cost Merkle proof verification** (issue #125): `ReceiptShard` and
+  `ReceiptAnchor` now fold sorted-pair proofs in a single iterative pure-WASM
+  SHA-256 loop, avoiding redundant proof buffering and host crypto roundtrips.
+  Batch-size instruction measurements were added to the ReceiptAnchor test suite
+  and documented in `docs/BENCHMARKS.md`.
+
+- **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
+  Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
+  static buffer (`proof_buffer: [[u8; 32]; 128]`) and perform intermediate hashing using the pure Wasm
+  `sha2` crate. This eliminates all guest heap allocations and host roundtrips for intermediate hashes,
+  ensuring a flat guest memory footprint across all Merkle tree depths.
+- **`RefundVault` token generality is documented and pinned** (issue #166): the
+  vault treats all amounts as raw integer units in the token's smallest unit and
+  performs no decimal arithmetic, so any SEP-41 precision behaves identically.
+  New `token_agnostic_tests.rs` proves the full lifecycle (deposit, refund,
+  withdraw, float-bound check) against 0- and 2-decimal tokens, including the
+  smallest unit, i128 extremes, and a refund exactly equal to the float.
+  Documented in `docs/storage-audit.md` (Token Generality) and
+  `docs/contracts.mdx`.
+
+### Security
+
+- **`multisig-account` (issue #449): 14-day TTL expiration for stale multisig
+  approvals.** Every approval of a queued transaction is stamped with a
+  `created_at` ledger timestamp (`ApprovalRecord`, stored under
+  `DataKey::TimelockApproval`) and only counts toward the threshold while its
+  age is strictly below `APPROVAL_TTL_SECONDS` (`1_209_600` = 14 days), so a
+  partial quorum can no longer be assembled against an intent nobody stands
+  behind anymore. `prune_stale_approvals` drops expired records the moment the
+  threshold is evaluated and `clear_approvals` drops the remainder when the
+  entry executes or is cancelled; a shortfall caused by pruning surfaces as
+  `Error::StaleSignature` rather than a bare `Error::InsufficientSignatures`,
+  and an expired approval no longer blocks its signer from voting again.
+
+- **Merchant-only float funding is a documented guarantee** (issue #157):
+  `docs/SECURITY_MODEL.md` now states it explicitly — only the merchant's own
+  funds are ever at stake, a third party cannot contribute float the merchant
+  has not authorised, and `withdraw` stays merchant-only. The existing
+  `test_deposit_from_non_merchant_fails` pins the behaviour and is annotated as
+  deliberate.
+
+- **`refund-vault` (issue #708): add coupon and liquidity test coverage.**
+  Added tests for `apply_coupon`, `get_coupon`, and `ensure_liquidity`, including
+  their observable success behavior and applicable error paths. Test-only; no
+  contract behavior change.
+
+### Fixed
+
+- **`main` was failing CI** (left red by the advanced-wasm-memory merge):
+  restored the truncated `assert_eq!` in
+  `test_process_batch_exceeds_max_size_fails` (the file would not parse),
+  fixed the clippy 1.98 `needless_borrow` / `unnecessary_cast` violations,
+  excluded the host-only `testutils` crate from the wasm artifact build (it
+  enables soroban-sdk's `testutils` feature, which the SDK rejects on wasm),
+  and re-baselined the cost-regression constants and wasm size budgets to the
+  freshly measured values (`verify_receipt` CPU 569,906 → 780,985 after the
+  pure-Wasm sha2 rewrite; `refund` CPU 397,721 → 477,714; `refund_vault.wasm`
+  37,376 → 56,320 bytes; `receipt_anchor.wasm` 24,576 → 33,792 bytes on the
+  current toolchain).
+
+## [0.3.0] — 2026-08-26
+
+### ⚠️ Breaking
+
+- **`refund` gained a required `payment_amount` argument** (issue #99). Refunds
+  are now cumulative: each call adds `amount` to a running total for the
+  `payment_ref`, and the total can never exceed the `payment_amount` ceiling.
+  The refund window is still measured from `paid_at_ledger`, never from a
+  partial.
+- **`RefundRecord` layout changed and is stored under a new key.** The single
+  `amount` field is replaced by `amount_refunded` + `payment_amount`, and
+  records are stored under a new `RefundV2` storage key. A `Refund` key written
+  by the 0.2.0 single-refund rule is still recognised and treated as a
+  fully-refunded payment (rejected with `ExceedsPayment`), never mis-decoded.
+- **Error codes are unified across both contracts** (issue #98). Both contracts
+  now return the single `accensa-common` `Error` enum; the two codes that used
+  to collide (`AlreadyInitialized`, `NotInitialized`) keep their original
+  values, and the anchor-only codes moved to a dedicated block (100+) so no two
+  variants overlap. See the error table in the README.
+
+### Added
+
+`RefundVault`:
+
+- **Partial refunds** — a payment may be refunded across multiple calls, each
+  emitting a `RefundEvent` carrying both the per-call amount and the cumulative
+  total, so an indexer never has to sum history.
+- **Multisig contract-account admin support is verified and documented** (issue
+  #97). Tests prove both contracts work with a `__check_auth` contract account
+  as merchant — see `contracts/multisig-account`,
+  `contracts/refund-vault/tests/multisig_admin_vault.rs` and
+  `contracts/receipt-anchor/tests/multisig_admin_anchor.rs`.
+- **Tests for the two README cross-contract claims** (issue #163):
+  `readme_claim_payment_ref_is_receipt_leaf` and
+  `readme_claim_refunds_outlive_pruned_batches` in
+  `contracts/refund-vault/tests/integration_test.rs`.
+
+### Added
+
+- CI job enforcing `CHANGELOG.md` updates on contract changes and checking version alignment (#192).
+- Shared cross-implementation test vectors and conformance suite for `RefundVault` (#184).
+- Dependabot configuration for `cargo` and `github-actions` (#185).
+- CI WASM artifact uploading and size budget enforcement gate (#186).
+
+### Fixed
+
+- **Build was broken on `main` after the yield-strategy merge (#200).** The
+  `YieldStrategy` trait used `#[contractimpl]`, which cannot generate a client on
+  a bare trait; it is now `#[contractclient(name = "YieldStrategyClient")]`.
+  `deploy_to_yield` also transferred tokens to the strategy without notifying it
+  (`strategy_client.deposit`), so the strategy never recorded the principal and
+  later withdrawals failed. `yield_tests.rs` additionally used event APIs that
+  do not exist in this SDK. No deployed contract is affected — this restores a
+  compiling, green test suite.
+
+### Tested
+
+- Property-based fuzz suites in `contracts/*/src/fuzz_test.rs` now generate
+  random operation sequences and assert invariants after every step: pruning
+  stays a contiguous prefix with a monotonic `PrunedUpTo` cursor, Merkle
+  verification rejects every wrong proof shape (wrong leaf/sibling/length/batch
+  and reversed level order), vault float always equals
+  `deposits - refunds - withdrawals` and never goes negative, cumulative
+  refunds per `payment_ref` never exceed the supplied ceiling, paused
+  operations never mutate state, and TTL extension never shortens a TTL while
+  missing records always error. Budgets
+  are tunable via `FUZZ_CASES`/`FUZZ_SEQ_LEN` with longer `#[ignore]`d local
+  profiles.
+
+### Deployment status
+
+Like `0.2.0`, this is a source release: the live testnet addresses in
+[`DEPLOYMENTS.md`](DEPLOYMENTS.md) still run `0.1.0`, and the new `refund`
+signature, event shapes and error codes **do not exist at those addresses**.
+
+## [0.2.0] — 2026-08-14
+
+Everything below has been merged and tested on `main`. **It is not what is deployed
+on testnet** — see [Deployment status](#deployment-status).
+
+### ⚠️ Breaking
+
+- **Event topics changed and any indexer written against `0.1.0` matches nothing.**
+  `0.1.0` published events by hand as `("anchored", batch_id)` and
+  `("refunded", payment_ref)`. Both contracts now derive their events with
+  `#[contractevent]`, which emits the topics `anchor_event`, `prune_event`,
+  `deposit_event`, `refund_event`, and `withdraw_event`. The README advertised the
+  old topics for three weeks after the code had changed; that is fixed, and the
+  shapes are now pinned as a contract in [`docs/EVENTS.md`](docs/EVENTS.md) with an
+  Event Stability Policy in [`CONTRIBUTING.md`](CONTRIBUTING.md) so it cannot drift
+  again silently.
+
+### Added
+
+`ReceiptAnchor`:
+
+- `extend_batch_ttl(batch_id)` — public and unauthenticated, so anyone can stop an
+  anchored batch being archived.
+- `prune_batches(before_ledger)` — merchant-authorised, walking forward from a
+  persisted `PrunedUpTo` cursor and stopping at the first batch not old enough, so
+  the pruned range stays a contiguous prefix and no batch is ever removed from the
+  middle.
+- `get_batch_count()` — exposes the batch count; a maximum batch size is now
+  enforced on `anchor_batch`.
+- `AnchorEvent` and `PruneEvent`.
+
+`RefundVault`:
+
+- `pause()` / `unpause()` under merchant auth. Deposit, refund and withdraw all
+  reject while paused.
+- `extend_refund_ttl(payment_ref)` — public and unauthenticated, same rationale as
+  above.
+- `DepositEvent`, `RefundEvent` and `WithdrawEvent`, so the vault is indexable
+  rather than poll-only.
+
+Both:
+
+- `contractmeta!` embedding `name`, `version`, `repo` and the build's `GIT_SHA`
+  via a `build.rs`, so a deployed contract can be traced to its exact source
+  commit. `deploy.sh` now records wasm `sha256sum` alongside the contract IDs.
+
+### Changed
+
+- `soroban-sdk` 27.0.0 → 27.0.4.
+- TTL constants set to roughly 30 days of ledgers, with a threshold so a bump is
+  not written on every call. Archival and restore implications are documented.
+- `refund` now validates `amount > 0`.
+
+### Fixed
+
+- `RefundVault` storage `.set()` calls corrected.
+- README test counts and event-topic names no longer contradict the code.
+
+### Documentation
+
+- [`docs/EVENTS.md`](docs/EVENTS.md) — the indexer-facing event contract.
+- [`docs/storage-audit.md`](docs/storage-audit.md) — rewritten from a single line
+  of escaped text into an audit of all 13 `DataKey` variants, with storage class,
+  justification, TTL strategy and projected rent.
+- [`docs/ADR-002`](docs/ADR-002-upto-scheme.md) — design notes on the x402 `upto`
+  scheme for Stellar. Status **DRAFT**: the construction has not been validated
+  against the upstream spec, a running contract, or Soroban's authorization
+  semantics, and §6 lists what must be confirmed first.
+- [`docs/RELEASING.md`](docs/RELEASING.md), [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md),
+  and a SEP-41 section in [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md)
+  recording why `RefundVault` lets a missing-trustline transfer panic at the token
+  rather than paying the budget cost of a pre-check.
+
+### Testing
+
+- 25 → **58 tests**: `receipt-anchor` 24, `refund-vault` 29, and 5 cross-contract
+  integration tests that replaced a placeholder asserting nothing. The integration
+  tests cover receipt correspondence, double-refund against a valid proof, refund
+  of a payment inside a pruned batch, TTL archival across both contracts, and the
+  pause interaction.
+- `verify_receipt` remains pinned to conformance vectors shared with the
+  TypeScript SDK, so off-chain and on-chain verification are proven to agree.
+
+### Deployment status
+
+**The testnet deployment has deliberately not been updated to `0.2.0`.** The
+contracts live at:
+
+| Contract        | Contract ID                                                | Version deployed |
+| --------------- | ---------------------------------------------------------- | ---------------- |
+| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0`          |
+| `RefundVault`   | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0`          |
+
+Soroban deployment mints a new contract ID. Redeploying would invalidate every
+published address — including the ones the public receipt verifier at
+<https://accensa-dashboard.vercel.app/verify> reads live, and every contract link
+in this repository and in `accensa-app`. So `0.2.0` is a **source release**: the
+tag, the notes and the reproducible build are the artifact. A redeployment is a
+coordinated change across both repositories and is tracked separately in
+[#59](https://github.com/accensa/accensa-contracts/issues/59), which also covers
+pubnet.
+
+Practical consequence: the new functions above and the new event topics exist in
+the source and in the tagged build, **not at those two addresses**. Anything
+reading the live contracts should keep treating them as `0.1.0`.
+
+## [0.1.0] — 2026-07-14
+
+First testnet deployment. `ReceiptAnchor` with `anchor_batch`, `get_batch`,
+`verify_receipt` and `initialize`; `RefundVault` with `deposit`, `refund`,
+`withdraw`, `get_refund`, `set_refund_window` and `initialize`. Contract IDs and
+the transactions that created them are recorded in
+[`DEPLOYMENTS.md`](DEPLOYMENTS.md).
+
+[0.3.0]: https://github.com/accensa/accensa-contracts/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/accensa/accensa-contracts/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/accensa/accensa-contracts/releases/tag/v0.1.0
+
+## [Unreleased]
+- Fixed issues

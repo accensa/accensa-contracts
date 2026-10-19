@@ -14,26 +14,37 @@ are produced by [`deploy.sh`](deploy.sh).
 Deployed 2026-07-22 with `soroban-sdk` 27.0.0, built for `wasm32v1-none`.
 
 > [!IMPORTANT]
-> **These addresses run `0.1.0`. `main` is at `0.2.0`.**
+> **These addresses run `0.1.0`. `main` is at `0.3.0`.**
 >
 > Soroban deployment mints a new contract ID, so redeploying would invalidate every
 > published address — including the ones the public verifier at
-> <https://accensa-dashboard.vercel.app/verify> reads live. `0.2.0` is therefore a
-> source release and these contracts were deliberately left in place.
+> <https://accensa-dashboard.vercel.app/verify> reads live. Both `0.2.0` and `0.3.0`
+> are source releases and the deployed bytecode lags `main`; these contracts were
+> deliberately left in place.
 >
 > What that means in practice: `prune_batches`, `get_batch_count`,
-> `extend_batch_ttl`, `pause`, `unpause` and `extend_refund_ttl` **do not exist at
-> these addresses**, and the events they emit here are still `0.1.0`'s
-> `("anchored", batch_id)` and `("refunded", payment_ref)` rather than the
+> `extend_batch_ttl`, `pause`, `unpause`, `extend_refund_ttl`, yield strategy
+> paths (`withdraw_from_yield`, `harvest_yield`), and the two-step admin flow
+> **do not exist at these addresses**, and the events they emit here are still
+> `0.1.0`'s `("anchored", batch_id)` and `("refunded", payment_ref)` rather than the
 > `anchor_event` / `refund_event` topics documented in
 > [`docs/EVENTS.md`](docs/EVENTS.md). An indexer pointed at these addresses must
 > use the old topics. See [`CHANGELOG.md`](CHANGELOG.md) and
 > [#59](https://github.com/accensa/accensa-contracts/issues/59).
 
-| Contract | Contract ID | Explorer |
-|---|---|---|
-| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV) |
-| `RefundVault` | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA) |
+> [!NOTE]
+> **Stale Deployments Notice**: Operators and indexers integrating with testnet
+> should note that the published addresses are frozen at `0.1.0` for backward
+> compatibility with live verifiers and existing demo integrations. If your
+> application requires `0.3.0` functionality (`prune_batches`, `pause`/`unpause`,
+> yield management, or cumulative refund tracking), deploy a fresh instance
+> using `./deploy.sh` or refer to the instructions below. Stale addresses are
+> retained here so existing integrations continue resolving.
+
+| Contract | Contract ID | Deployed Version | Explorer |
+|---|---|---|---|
+| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0` (lags `main` `0.3.0`) | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV) |
+| `RefundVault` | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0` (lags `main` `0.3.0`) | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA) |
 
 - **Merchant / admin:** `GCALKSGAZRJLSUEJT3M5W6LN4R7XQOLIRCOS6ZA6EDZVTZDBIIPPFKJ6`
 - **Refund token:** native XLM SAC `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`
@@ -56,13 +67,30 @@ Deployed 2026-07-22 with `soroban-sdk` 27.0.0, built for `wasm32v1-none`.
 
 ### Verifying the live testnet deployment yourself
 
-Batch #1 is anchored on-chain over four demo receipts.  Its Merkle root was
-computed off-chain by the TypeScript SDK (`packages/sdk` in
-[`accensa-app`](https://github.com/accensa/accensa-app)) and verified on-chain
-by `ReceiptAnchor.verify_receipt` — the two implementations agree on the same
-sorted-pair SHA-256 convention.
+Anyone can verify the deployed bytecode and version claim independently:
 
-Read the anchored batch:
+1. **Verify the on-chain WASM bytecode hash** matches release tag `v0.1.0` (commit `d6e0cbfa74f4eb6a55cd9333e4dfe828bd94089d`):
+
+   ```bash
+   # Inspect ReceiptAnchor deployed bytecode hash:
+   stellar contract inspect \
+     --id CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV \
+     --network testnet
+
+   # Inspect RefundVault deployed bytecode hash:
+   stellar contract inspect \
+     --id CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA \
+     --network testnet
+   ```
+
+2. **Verify deployed contract methods directly on-chain**:
+   Batch #1 is anchored on-chain over four demo receipts. Its Merkle root was
+   computed off-chain by the TypeScript SDK (`packages/sdk` in
+   [`accensa-app`](https://github.com/accensa/accensa-app)) and verified on-chain
+   by `ReceiptAnchor.verify_receipt` — the two implementations agree on the same
+   sorted-pair SHA-256 convention.
+
+Read the anchored batch (method exists in `0.1.0`):
 
 ```bash
 stellar contract invoke \
@@ -100,10 +128,11 @@ Both are read-only simulations and cost nothing to run.
 `initialize` takes a single `Address` as the merchant/admin, and on Soroban that
 address does not have to be a keypair. Point it at a **contract account** that
 implements `__check_auth` (this repo ships `contracts/multisig-account`, a
-threshold account) and every privileged call — `pause`, `unpause`,
-`set_refund_window`, `refund`, `withdraw`, `anchor_batch`, `prune_batches` —
+threshold account). On newly deployed instances (`0.3.0`), every privileged call
+— `pause`, `unpause`, `refund`, `withdraw`, `anchor_batch`, `prune_batches` —
 requires the account's threshold of signers, with **no change to the vault or
-anchor**. See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)
+anchor**. (Note: the deployed `0.1.0` testnet instances support only `0.1.0`
+calls: `anchor_batch`, `refund`, `withdraw`). See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md#1-the-admin-merchant)
 for what this means for key-compromise risk; the mechanism is exercised by
 tests in `contracts/refund-vault/tests/multisig_admin_vault.rs` and
 `contracts/receipt-anchor/tests/multisig_admin_anchor.rs`.
