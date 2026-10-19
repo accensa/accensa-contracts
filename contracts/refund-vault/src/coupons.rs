@@ -92,3 +92,118 @@ pub fn apply_coupon(
 pub fn get_coupon(env: &Env, coupon_id: u64) -> Option<CouponRecord> {
     env.storage().persistent().get(&DataKey::Coupon(coupon_id))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::vault_init;
+    use crate::RefundVault;
+    use soroban_sdk::testutils::Address as _;
+
+    fn setup() -> (Env, Address) {
+        let env = Env::default();
+        let merchant = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(merchant.clone())
+            .address();
+        let vault = env.register(RefundVault, (vault_init(&env, &merchant, &token, 100),));
+        (env, vault)
+    }
+
+    fn record(owner: &Address, discount_bps: u32, redeemed: bool) -> CouponRecord {
+        CouponRecord {
+            owner: owner.clone(),
+            discount_bps,
+            redeemed,
+        }
+    }
+
+    #[test]
+    fn minting_above_the_discount_cap_is_rejected_without_storing_a_record() {
+        let (env, vault) = setup();
+        env.as_contract(&vault, || {
+            let owner = Address::generate(&env);
+
+            for discount_bps in [MAX_COUPON_DISCOUNT_BPS + 1, u32::MAX] {
+                assert_eq!(
+                    mint_coupon(&env, 7, owner.clone(), discount_bps),
+                    Err(Error::InvalidRatio)
+                );
+            }
+            assert_eq!(get_coupon(&env, 7), None);
+        });
+    }
+
+    #[test]
+    fn minting_at_the_discount_cap_is_accepted() {
+        let (env, vault) = setup();
+        env.as_contract(&vault, || {
+            let owner = Address::generate(&env);
+
+            assert_eq!(
+                mint_coupon(&env, 1, owner.clone(), MAX_COUPON_DISCOUNT_BPS),
+                Ok(())
+            );
+            assert_eq!(
+                get_coupon(&env, 1),
+                Some(record(&owner, MAX_COUPON_DISCOUNT_BPS, false))
+            );
+        });
+    }
+
+    #[test]
+    fn minting_the_same_id_twice_is_rejected_and_leaves_the_record_unchanged() {
+        let (env, vault) = setup();
+        env.as_contract(&vault, || {
+            let owner = Address::generate(&env);
+            let second_owner = Address::generate(&env);
+
+            mint_coupon(&env, 9, owner.clone(), 1_000).unwrap();
+            assert_eq!(
+                mint_coupon(&env, 9, second_owner, MAX_COUPON_DISCOUNT_BPS),
+                Err(Error::AlreadyInitialized)
+            );
+            assert_eq!(get_coupon(&env, 9), Some(record(&owner, 1_000, false)));
+        });
+    }
+
+    #[test]
+    fn applying_a_coupon_discounts_the_first_call_and_rejects_the_second() {
+        let (env, vault) = setup();
+        env.as_contract(&vault, || {
+            let owner = Address::generate(&env);
+
+            mint_coupon(&env, 3, owner.clone(), 1_000).unwrap();
+
+            // 10 % of 10 000 is 1 000, so the effective amount is 9 000.
+            assert_eq!(apply_coupon(&env, &owner, 3, 10_000), Ok(9_000));
+            assert_eq!(get_coupon(&env, 3), Some(record(&owner, 1_000, true)));
+
+            assert_eq!(
+                apply_coupon(&env, &owner, 3, 10_000),
+                Err(Error::CouponAlreadyRedeemed)
+            );
+            assert_eq!(get_coupon(&env, 3), Some(record(&owner, 1_000, true)));
+        });
+    }
+
+    #[test]
+    fn a_coupon_at_the_cap_halves_the_amount() {
+        let (env, vault) = setup();
+        env.as_contract(&vault, || {
+            let owner = Address::generate(&env);
+
+            mint_coupon(&env, 4, owner.clone(), MAX_COUPON_DISCOUNT_BPS).unwrap();
+
+            assert_eq!(apply_coupon(&env, &owner, 4, 10_000), Ok(5_000));
+        });
+    }
+
+    #[test]
+    fn get_coupon_returns_none_before_minting() {
+        let (env, vault) = setup();
+        env.as_contract(&vault, || {
+            assert_eq!(get_coupon(&env, 0), None);
+        });
+    }
+}

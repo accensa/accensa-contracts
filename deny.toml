@@ -1,18 +1,89 @@
+# Supply-chain policy for `cargo deny check`, enforced by the "cargo deny"
+# step at the tail of the single `ci` job in .github/workflows/ci.yml.
+#
+# Written for cargo-deny 0.20.2 (the version that step pins). 0.20.2 rejects
+# the `version = 1` section headers and the `severity = "warn"` / `unwrap = true`
+# keys the previous file carried; the policy below is the same intent in the
+# current schema.
+#
+# Every waiver below carries a reason and a review date. Re-review each entry
+# at the date it names, or earlier if the crate it names changes version.
+
 [advisories]
-version = 1
-severity = "warn"
+# The advisory DB lives under `target/` so the existing "Cache cargo" step
+# (which caches `target`) also caches the database between runs.
+db-path = "target/advisory-dbs"
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time proc-macro reached through ark-ff -> ark-bls12-381 in soroban-env-host's curve support. It is a proc-macro (no runtime code in any contract wasm) and has no safe upgrade. Re-review when soroban-sdk's env-host drops ark-ff or ark-ff replaces paste. Review by 2027-01-15." },
+    { crate = "soroban-env-common@29.0.0", reason = "Yanked version reachable only through the unused `soroban-env-host = \"29.0.0\"` dev-dependency in contracts/receipt-anchor/Cargo.toml (no source file references soroban_env_host). Removing that dependency is a follow-up outside this issue's file ownership. Review by 2026-12-31." },
+    { crate = "soroban-env-host@29.0.0", reason = "Yanked version from the same unused receipt-anchor dev-dependency as soroban-env-common@29.0.0. Review by 2026-12-31." },
+    { crate = "soroban-env-macros@29.0.0", reason = "Yanked version from the same unused receipt-anchor dev-dependency as soroban-env-common@29.0.0. Review by 2026-12-31." },
+]
 
 [licenses]
-version = 1
-unwrap = true
 allow = [
     "MIT",
     "Apache-2.0",
+    # Permissive licenses already present in the tree through soroban-sdk's
+    # crypto and wasm dependencies (curve25519/ed25519-dalek, unicode-ident,
+    # wasmparser). All are OSI-approved and FSF Free/Libre.
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "Unicode-3.0",
 ]
+confidence-threshold = 0.8
+# Workspace crates that inherit the MIT license from `[workspace.package]` but
+# do not repeat it in their own manifest (no `license.workspace = true`).
+# Adding that field to each manifest is the real fix and is a follow-up
+# outside this issue's file ownership; until then their license is declared
+# here, matching the workspace license.
+[[licenses.clarify]]
+crate = "accensa-common"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "multisig-account"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "receipt-shard"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "testutils"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "upto-authorization"
+expression = "MIT"
+license-files = []
 
 [bans]
-version = 1
+# Duplicate transitive versions are reported (and reviewed) but do not fail
+# the gate; one version per crate is not achievable for a Soroban SDK tree.
 multiple-versions = "warn"
+# Count dev-dependencies too: the duplicate SDK resolution this repository
+# carries exists only under `[dev-dependencies]` (see the skip list below), so
+# filtering dev-only crates would hide exactly the finding this gate exists to
+# surface.
+multiple-versions-include-dev = true
+# Explicit waiver for the duplicate SDK resolution. The whole 29.0.0 SDK
+# generation is pulled in by the unused `soroban-env-host = "29.0.0"`
+# dev-dependency in contracts/receipt-anchor/Cargo.toml, next to the 27.x
+# generation that soroban-sdk 27.0.6 actually uses. The tree skip below waives
+# every duplicate that dependency drags in (base64, dalek, digest, ed25519,
+# rand, sha2, syn, ...). Removing the dev-dependency (follow-up, outside this
+# issue's ownership) collapses the whole tree. Review by 2026-12-31.
+skip-tree = [
+    { crate = "soroban-env-host@29.0.0", depth = 20, reason = "29.0.0 SDK generation from the unused receipt-anchor dev-dependency; production crates use 27.x via soroban-sdk 27.0.6. Review by 2026-12-31." },
+]
 
 [sources]
-version = 1
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

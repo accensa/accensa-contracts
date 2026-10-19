@@ -186,7 +186,15 @@ pub fn apply_decay(score: u64, last_update: u32, current_ledger: u32) -> u64 {
         .saturating_mul(intervals as u128)
         / BPS_DENOMINATOR;
     let decayed = headroom.saturating_sub(decay) as u64;
-    SCORE_FLOOR + decayed
+    // Precondition: `decayed` is the remainder of the headroom
+    // `score - SCORE_FLOOR`, so `SCORE_FLOOR + decayed <= score` and the sum
+    // is provably in range for every input, including `score == u64::MAX`.
+    // The addition is checked rather than bare so the guard does not depend
+    // on the release profile's overflow checks; the unreachable failure arm
+    // states the precondition that keeps the operation honest.
+    SCORE_FLOOR
+        .checked_add(decayed)
+        .expect("decayed <= score - SCORE_FLOOR, so SCORE_FLOOR + decayed fits in u64")
 }
 
 /// Maps a score to the escrow fee in basis points for the buyer: the full

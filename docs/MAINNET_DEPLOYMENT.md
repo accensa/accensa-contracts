@@ -22,16 +22,19 @@ is missing.
 Soroban contracts are **not upgradeable** by default.  Once deployed, a contract
 ID is bound to its uploaded WASM.  A new deployment mints a new contract ID.
 
-- [ ] Confirm whether the contracts will be deployed as immutable or whether a
-      upgradeability mechanism (e.g., a router proxy, a WASM replacement via the
-      Stellar `upgrade` facility, or a key rotation) is in scope.
-- [ ] If upgradeability is desired, document the mechanism and ensure it is
-      implemented and tested before deployment.
-- [ ] If the contracts are immutable, acknowledge that any future bug fix or
-      feature addition requires a new deployment and coordinated migration.
+- [x] Confirm whether the contracts will be deployed as immutable or whether an
+      upgradeability mechanism is in scope: `ReceiptAnchor` is immutable, while
+      `RefundVault` provides an admin-gated upgrade mechanism via `migrate_state`
+      and `upgrade_wasm` (see [`ADR-003`](ADR-003-upgradeability.md)).
+- [x] If upgradeability is desired, document the mechanism and ensure it is
+      implemented and tested before deployment: `RefundVault`'s two-phase upgrade
+      procedure and verification steps are implemented and documented in
+      [`REFUND_VAULT_MIGRATION.md`](REFUND_VAULT_MIGRATION.md).
+- [x] For immutable contracts (`ReceiptAnchor`), acknowledge that any future bug fix
+      or feature addition requires a new deployment and coordinated migration.
 
-**Status:** Open — tracked in
-[#55](https://github.com/accensa/accensa-contracts/issues/55).
+**Status:** Resolved — documented in
+[`ADR-003`](ADR-003-upgradeability.md) and [`REFUND_VAULT_MIGRATION.md`](REFUND_VAULT_MIGRATION.md).
 
 ### 2. Audit Position (Issue #60)
 

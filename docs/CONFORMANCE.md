@@ -39,11 +39,13 @@ surrounding CI close.
 
 ## The three layers of enforcement
 
-1. **JSON → Rust, in-repo.** `src/vectors.rs` is *generated*, not edited by
-   hand. `scripts/build-vectors.mjs` reads `merkle-vectors.json` and emits it.
-   CI runs `node scripts/build-vectors.mjs --check`, which fails if
-   `vectors.rs` is out of sync with the JSON. (Re-run the script locally to
-   regenerate.)
+1. **JSON → Rust, in-repo.** `contracts/receipt-anchor/src/vectors.rs` is
+   *generated*, not edited by hand.
+   `contracts/receipt-anchor/scripts/build-vectors.mjs` reads
+   `merkle-vectors.json` and emits it. CI runs
+   `node contracts/receipt-anchor/scripts/build-vectors.mjs --check`, which
+   fails if `vectors.rs` is out of sync with the JSON. (Re-run the script
+   locally to regenerate.)
 
 2. **Hash freshness, in-repo.** The same `--check` step fails if
    `merkle-vectors.json.sha256` does not match the current

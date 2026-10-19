@@ -66,3 +66,101 @@ pub fn authorization_digest(
     buf.extend_from_slice(&expiry.to_be_bytes());
     env.crypto().sha256(&buf).into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::UptoAuthorization;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
+
+    // Mirror of `compute_domain_separator` with an explicit version, so the
+    // test can prove the version bytes are part of the preimage without
+    // changing the production constant.
+    fn separator_for_version(env: &Env, version: u32) -> BytesN<32> {
+        let mut buf = Bytes::new(env);
+        buf.extend_from_slice(&env.ledger().network_id().to_array());
+        buf.append(&env.current_contract_address().to_xdr(env));
+        buf.extend_from_slice(&version.to_be_bytes());
+        env.crypto().sha256(&buf).into()
+    }
+
+    fn two_contract_addresses(env: &Env) -> (Address, Address) {
+        (
+            env.register(UptoAuthorization, ()),
+            env.register(UptoAuthorization, ()),
+        )
+    }
+
+    #[test]
+    fn separator_binds_the_network_id() {
+        let env = Env::default();
+        let (contract, _) = two_contract_addresses(&env);
+
+        env.ledger().set_network_id([1u8; 32]);
+        let testnet = env.as_contract(&contract, || compute_domain_separator(&env));
+
+        env.ledger().set_network_id([2u8; 32]);
+        let mainnet = env.as_contract(&contract, || compute_domain_separator(&env));
+
+        assert_ne!(testnet, mainnet, "the separator must bind the network id");
+    }
+
+    #[test]
+    fn separator_binds_the_contract_address() {
+        let env = Env::default();
+        let (first, second) = two_contract_addresses(&env);
+
+        let first_sep = env.as_contract(&first, || compute_domain_separator(&env));
+        let second_sep = env.as_contract(&second, || compute_domain_separator(&env));
+
+        assert_ne!(
+            first_sep, second_sep,
+            "a clone at another address is a different domain"
+        );
+    }
+
+    #[test]
+    fn separator_binds_the_protocol_version() {
+        let env = Env::default();
+        let (contract, _) = two_contract_addresses(&env);
+
+        let actual = env.as_contract(&contract, || compute_domain_separator(&env));
+        let pinned = env.as_contract(&contract, || separator_for_version(&env, PROTOCOL_VERSION));
+        let next = env.as_contract(&contract, || {
+            separator_for_version(&env, PROTOCOL_VERSION + 1)
+        });
+
+        assert_eq!(actual, pinned, "the separator must hash the version bytes");
+        assert_ne!(actual, next, "a version bump must change the separator");
+    }
+
+    #[test]
+    fn digest_is_reproducible_and_domain_scoped() {
+        let env = Env::default();
+        let (first, second) = two_contract_addresses(&env);
+        let payment_id = BytesN::from_array(&env, &[7u8; 32]);
+        let from = Address::generate(&env);
+        let to = Address::generate(&env);
+
+        let digest = |contract: &Address| {
+            env.as_contract(contract, || {
+                let separator = compute_domain_separator(&env);
+                authorization_digest(&env, &separator, &payment_id, &from, &to, 1_000, 42)
+            })
+        };
+
+        let once = digest(&first);
+        let twice = digest(&first);
+        assert_eq!(once, twice, "identical inputs and context must reproduce");
+
+        let other_address = digest(&second);
+        assert_ne!(
+            once, other_address,
+            "the contract address must scope the digest"
+        );
+
+        env.ledger().set_network_id([9u8; 32]);
+        let other_network = digest(&first);
+        assert_ne!(once, other_network, "the network id must scope the digest");
+    }
+}

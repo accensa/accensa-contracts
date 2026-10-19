@@ -29,6 +29,7 @@ use soroban_sdk::{
 };
 
 pub mod groth16;
+pub mod stealth;
 #[cfg(test)]
 mod test;
 
