@@ -10,6 +10,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 ## [Unreleased]
 - **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
+- **`state-channel` (issue #636): dispute, counter-evidence, finalization, and claim event-shape tests.** Added `contracts/state-channel/src/dispute_test.rs` coverage pinning exact XDR event payloads and dispute-window finalization behavior, including late counter-proof extension gating.
 
 - **Contract payload field documentation (#763, #764, #765):** Documented the public fields of governance `Proposal`, receipt-anchor `AnchorPayload`, and `RefundEventPayload`.
 - **`refund-vault` (issue #685): report a missing payment token from
