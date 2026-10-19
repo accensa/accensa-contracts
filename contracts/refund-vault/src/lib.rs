@@ -2804,6 +2804,8 @@ mod recall_principal_overflow_tests;
 #[cfg(test)]
 mod reentrancy_tests;
 #[cfg(test)]
+mod settlement_ceiling_test;
+#[cfg(test)]
 mod settlement_test;
 /// Yield-bearing escrow strategy hook tests (issue #415).
 #[cfg(test)]

@@ -1,5 +1,9 @@
 # Roadmap
 
+## Issue #708: refund-vault coupon and liquidity test coverage
+
+- [x] Add refund-vault coupon and liquidity test coverage (#708)
+
 ## Issue #709: refund-vault integration test coverage
 
 - [x] Cover NFT transfers, emergency yield exit, and yield distribution (#709)
