@@ -196,7 +196,12 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use soroban_sdk::{testutils::Address as _, xdr::FromXdr, BytesN, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Events},
+        xdr::FromXdr,
+        BytesN,
+        Env,
+    };
 
     fn test_env() -> Env {
         let env = Env::default();
