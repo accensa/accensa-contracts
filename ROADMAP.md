@@ -16,6 +16,14 @@
   - Exchange rate progression and lock-epoch-based redemption
   - CHANGELOG.md entry added
 
+## Issue #660: PR template verification step runs the full workspace suite
+
+- [x] Point the PR template's Verification checkbox at `cargo test --workspace` (#660)
+
+## Issue #658: CHANGELOG's pre-1.0 versioning policy matches RELEASING.md
+
+- [x] State the pre-1.0 minor-for-breaking rule once in `docs/RELEASING.md` and cite it from `CHANGELOG.md` (#658)
+
 ## Issue #670: iterate members in the governance constructor
 
 - [x] `Governance::__constructor` iterates `members`/`deposits` instead of `get(i).unwrap()` (#670)
@@ -122,3 +130,23 @@
 - [x] Match on `ladder.get(next)` in `next_threshold` instead of unwrapping (#688)
   - `contracts/refund-vault/src/tiers.rs` — the `None` arm is the documented top-rung `i128::MAX`, unchanged behaviour
 
+
+## Issue #655: Assert the treasury vesting schedule and claim event shapes
+
+- [x] Pin `ScheduleCreatedEvent` and `ClaimedEvent` topics and payloads, and the silent zero-payout claim (#655)
+  - `contracts/treasury/tests/vesting_events.rs` — integration test file, no contract logic changed
+
+## Issue #657: Cover reputation SBT authority rejection for issue, revoke and slash
+
+- [x] Assert unauthorized `issue`, `revoke` and `slash` calls are rejected and leave state untouched (#657)
+  - `contracts/reputation/src/sbt_test.rs` — negative-path cases, no contract logic changed
+
+## Issue #659: Fix CONTRIBUTING build/test commands to cover non-default crates
+
+- [x] Use `--workspace` for the local build and test examples so they match CI (#659)
+  - `CONTRIBUTING.md` — build/test commands plus the note on the narrower `default-members`
+
+## Issue #661: Update stale 0.2.0 version statements to the released 0.3.0
+
+- [x] Point the supported-versions table at the 0.3.x release line (#661)
+  - `SECURITY.md` — supported and unsupported version rows; the 0.1.0 testnet note is unchanged
