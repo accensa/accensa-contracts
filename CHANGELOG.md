@@ -175,6 +175,14 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   - **`state-channel` & `upto-authorization` (#590):** Wired `budget-assert` feature and added Tier A budget suites for `mutual_close`/`close_channel` (with Ed25519 signatures) and `authorize`/`settle` at cap boundaries; enabled in CI workflow.
   - **`refund-vault-factory` (#591):** Added `initialize_alias` test module asserting proxy initialization matching constructor state, `AlreadyInitialized` protection on repeat calls, and non-admin authorization denial.
 
+- **`refund-vault` (issue #703): dust and flash-loan guard pinned by tests.**
+  `dust_threshold` and `dust_treasury` are asserted — through direct
+  crate-internal calls and the public getters — to return the compiled default,
+  the exact configured values, and the full merchant → fee-recipient →
+  explicit-treasury fallback chain; the flash-loan reentrancy guard is asserted
+  to reject a nested acquire and a locked `flash_loan` with exactly
+  `ReentrancyBlocked` (releasing no lock, moving no funds) and to release the
+  lock after a fully repaid loan. Test-only — no contract behavior change.
 - **Documentation (#750, #751):** Documented the 4 public items of refund-vault `nft_escrow` (`deposit`, `claim`, `refund`, `get`) and the 4 of state-channel `multi_asset` (`MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open`, `get`) with `///` rustdoc, covering role, pre-conditions and each `Error` arm for off-chain integrators; comments only, no code change.
 - **`state-channel` (issue #627): route the HTLC preimage check through the
   constant-time comparator.** `contracts/state-channel/src/htlc.rs` now calls
