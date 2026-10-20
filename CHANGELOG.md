@@ -8,6 +8,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- fix(refund-vault,refund-policy-vdf): guard four amount paths with checked math (closes #716, #717, #718, #719) (#896).
 - **`refund-vault` (issue #703): dust and flash-loan guard pinned by tests.**
   `dust_threshold` and `dust_treasury` are asserted — through direct
   crate-internal calls and the public getters — to return the compiled default,
