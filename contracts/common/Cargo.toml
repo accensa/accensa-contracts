@@ -1,5 +1,6 @@
 [package]
 name = "accensa-common"
+description = "Shared error codes for the Accensa contracts"
 version = "0.2.0"
 edition = "2021"
 

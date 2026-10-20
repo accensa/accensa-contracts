@@ -1,7 +1,15 @@
-//! Lightweight Groth16 / ZK validity proof verifier for Soroban.
+//! Structural Groth16 / ZK validity proof pre-filter for Soroban.
 //!
-//! Provides O(1) on-chain verification of zero-knowledge validity proofs
-//! for batched receipts and state roots on pairing-friendly elliptic curves.
+//! The Soroban host exposes no alt_bn128 pairing precompile, so this module
+//! does NOT perform the Groth16 pairing check e(A, B) = e(alpha, beta) *
+//! e(L, gamma) * e(C, delta). It performs only structural pre-filtering:
+//! IC/public-input count match, non-empty well-sized proof and key elements,
+//! and rejection of all-zero forged points. A returned `true` guarantees
+//! only that the proof is shaped well enough to be *candidate-valid*; it does
+//! NOT guarantee the proof is cryptographically valid, that the state root
+//! is bound to the public inputs, or that any pairing equation holds. Callers
+//! must treat `true` as "passes shape validation" and `false` as
+//! "definitively invalid".
 
 use accensa_common::Error;
 use soroban_sdk::{contracttype, Bytes, BytesN, Env, Vec};
@@ -34,11 +42,15 @@ pub struct VerifyingKey {
     pub ic: Vec<Bytes>,
 }
 
-/// Verifies a Groth16 zero-knowledge proof for a given state root / public inputs.
+/// Structural pre-filter for a Groth16 zero-knowledge proof.
 ///
-/// In Groth16, the pairing check is:
-/// e(A, B) = e(alpha, beta) * e(L, gamma) * e(C, delta)
-/// where L = IC_0 + sum(public_input_i * IC_i).
+/// Returns `true` only when the proof/key elements pass shape validation:
+/// IC count equals public_inputs count + 1, all elements non-empty and at
+/// least 32 bytes, and no proof point is all-zero. This does NOT verify the
+/// Groth16 pairing equation e(A, B) = e(alpha, beta) * e(L, gamma) *
+/// e(C, delta) — Soroban exposes no pairing host call. A `true` result means
+/// the proof is shaped well enough to be candidate-valid, not that it is
+/// cryptographically valid.
 pub fn verify_groth16(
     _env: &Env,
     proof: &ZkProof,
@@ -109,7 +121,14 @@ pub fn verify_groth16(
     Ok(true)
 }
 
-/// Convenience helper to verify a batch validity proof against a state root.
+/// Structural pre-filter for a batch validity proof against a state root.
+///
+/// Returns `true` only when count is non-zero, all proof elements are
+/// non-empty and at least 32 bytes, and no proof point is all-zero. This
+/// does NOT verify any pairing or cryptographic binding between the proof
+/// and the state root — Soroban exposes no pairing host call. A `true`
+/// result means the proof is shaped well enough to be candidate-valid, not
+/// that it is cryptographically valid.
 pub fn verify_batch_zk_proof(
     _env: &Env,
     _state_root: &BytesN<32>,

@@ -334,3 +334,86 @@ fn initialization_is_recorded_and_single_shot() {
         Err(Ok(Error::AlreadyInitialized))
     );
 }
+
+// ── add_schedule guards and event publication (issue #588) ──────────────────
+
+#[test]
+fn add_schedule_validation_rejects_zero_duration_and_cliff_after_duration() {
+    let ctx = setup();
+
+    // Zero-duration schedule is rejected.
+    assert_eq!(
+        ctx.client
+            .try_add_schedule(&ctx.alice, &1_000, &START, &0, &0),
+        Err(Ok(Error::InvalidSchedule))
+    );
+
+    // Cliff after duration is rejected.
+    assert_eq!(
+        ctx.client.try_add_schedule(
+            &ctx.alice,
+            &1_000,
+            &START,
+            &(FOUR_YEARS_SECS + 1),
+            &FOUR_YEARS_SECS,
+        ),
+        Err(Ok(Error::InvalidSchedule))
+    );
+}
+
+#[test]
+fn add_schedule_duplicate_beneficiary_fails_and_leaves_first_untouched() {
+    let ctx = setup();
+
+    // Add first schedule for alice.
+    ctx.client
+        .add_schedule(&ctx.alice, &1_000, &START, &ONE_YEAR_SECS, &FOUR_YEARS_SECS);
+
+    // Adding a second schedule for alice fails with ScheduleAlreadyExists.
+    assert_eq!(
+        ctx.client
+            .try_add_schedule(&ctx.alice, &2_000, &START, &ONE_YEAR_SECS, &FOUR_YEARS_SECS,),
+        Err(Ok(Error::ScheduleAlreadyExists))
+    );
+
+    // First schedule is untouched.
+    let stored = ctx.client.get_schedule(&ctx.alice).unwrap();
+    assert_eq!(stored.beneficiary, ctx.alice);
+    assert_eq!(stored.total, 1_000);
+    assert_eq!(stored.claimed, 0);
+    assert_eq!(stored.start, START);
+    assert_eq!(stored.cliff, ONE_YEAR_SECS);
+    assert_eq!(stored.duration, FOUR_YEARS_SECS);
+}
+
+#[test]
+fn add_schedule_denies_non_admin() {
+    let ctx = setup();
+
+    // Non-admin / unauthenticated caller is denied.
+    ctx.env.set_auths(&[]);
+    assert!(ctx
+        .client
+        .try_add_schedule(&ctx.alice, &1_000, &START, &ONE_YEAR_SECS, &FOUR_YEARS_SECS)
+        .is_err());
+}
+
+#[test]
+fn add_schedule_round_trip_and_event() {
+    let ctx = setup();
+
+    ctx.client
+        .add_schedule(&ctx.alice, &5_000, &START, &ONE_YEAR_SECS, &FOUR_YEARS_SECS);
+
+    let schedule = ctx.client.get_schedule(&ctx.alice).unwrap();
+    assert_eq!(schedule.beneficiary, ctx.alice);
+    assert_eq!(schedule.total, 5_000);
+    assert_eq!(schedule.claimed, 0);
+    assert_eq!(schedule.start, START);
+    assert_eq!(schedule.cliff, ONE_YEAR_SECS);
+    assert_eq!(schedule.duration, FOUR_YEARS_SECS);
+
+    // Call add_schedule as the final invocation so ScheduleCreatedEvent is captured in the test snapshot.
+    ctx.client
+        .add_schedule(&ctx.bob, &10_000, &START, &ONE_YEAR_SECS, &FOUR_YEARS_SECS);
+}

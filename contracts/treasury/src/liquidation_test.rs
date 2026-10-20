@@ -8,14 +8,14 @@
 
 #![cfg(test)]
 
-use crate::liquidation::{BPS_DENOMINATOR, PRICE_SCALE};
+use crate::liquidation::{FeesLiquidatedEvent, BPS_DENOMINATOR, PRICE_SCALE};
 use crate::{Error, Treasury, TreasuryClient};
 use accensa_common::Error as CommonError;
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
-    testutils::Address as _,
+    testutils::{Address as _, Events as _},
     token::{StellarAssetClient, TokenClient},
-    Address, Env,
+    Address, Env, Event,
 };
 
 // ── Mock AMM ──────────────────────────────────────────────────────────────
@@ -318,4 +318,72 @@ fn only_the_admin_can_configure_or_liquidate() {
     assert!(ctx.client.try_set_stable_token(&ctx.stable).is_err());
     assert!(ctx.client.try_set_price_feed(&ctx.feed).is_err());
     let _ = ctx.admin;
+}
+
+// ── Event assertions (issue #606) ──────────────────────────────────────────
+
+#[test]
+fn fees_liquidated_event_assert_exact_xdr_shape_on_successful_swap() {
+    let ctx = setup(10_000, PRICE_SCALE, 0);
+
+    let received = ctx.client.liquidate_fees(&ctx.fee, &FEE_AMOUNT, &100);
+    assert_eq!(received, FEE_AMOUNT);
+
+    // `events().all()` covers only the last invocation: the liquidate_fees call itself.
+    let events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+    assert_eq!(events.events().len(), 1);
+
+    // min_out = 1_000_000 * 1 * (10_000 - 100) / 10_000 = 990_000
+    let min_out = 990_000i128;
+    let expected = FeesLiquidatedEvent {
+        token_in: ctx.fee.clone(),
+        token_out: ctx.stable.clone(),
+        amount_in: FEE_AMOUNT,
+        amount_out: received,
+        min_out,
+    };
+    assert_eq!(
+        &events.events()[0],
+        &expected.to_xdr(&ctx.env, &ctx.treasury)
+    );
+}
+
+#[test]
+fn fees_liquidated_event_with_better_oracle_rate_assert_exact_xdr_shape() {
+    // Oracle says 1:1, AMM pays 1% better: 1,010_000 received.
+    let ctx = setup(10_100, PRICE_SCALE, 0);
+    let received = ctx.client.liquidate_fees(&ctx.fee, &FEE_AMOUNT, &100);
+    assert_eq!(received, 1_010_000);
+
+    // `events().all()` covers only the last invocation: the liquidate_fees call itself.
+    let events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+    assert_eq!(events.events().len(), 1);
+
+    let min_out = 990_000i128;
+    let expected = FeesLiquidatedEvent {
+        token_in: ctx.fee.clone(),
+        token_out: ctx.stable.clone(),
+        amount_in: FEE_AMOUNT,
+        amount_out: received,
+        min_out,
+    };
+    assert_eq!(
+        &events.events()[0],
+        &expected.to_xdr(&ctx.env, &ctx.treasury)
+    );
+}
+
+#[test]
+fn failed_liquidation_emits_no_fees_liquidated_event() {
+    // AMM rate 5_000 delivers 500_000, failing the 990_000 floor.
+    let ctx = setup(5_000, PRICE_SCALE, 0);
+    assert_eq!(
+        ctx.client.try_liquidate_fees(&ctx.fee, &FEE_AMOUNT, &100),
+        Err(Ok(Error::SlippageExceeded))
+    );
+
+    // `events().all()` covers only the last invocation.
+    // Pinning the 'no swap, no event' contract on liquidation failure.
+    let events = ctx.env.events().all().filter_by_contract(&ctx.treasury);
+    assert_eq!(events.events().len(), 0);
 }
