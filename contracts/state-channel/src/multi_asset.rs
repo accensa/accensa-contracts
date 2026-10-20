@@ -53,7 +53,11 @@ pub struct BalanceRecord {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultiAssetChannel {
+    /// Address that escrowed every asset's `deposit` in `open`; `settle`
+    /// refunds it `deposit - receiver_balance` per asset.
     pub sender: Address,
+    /// Address entitled to the per-asset `receiver_balance` that `settle`
+    /// pays out.
     pub receiver: Address,
     /// Ed25519 public key used to verify off-chain state signatures.
     pub sender_pubkey: BytesN<32>,
@@ -61,11 +65,20 @@ pub struct MultiAssetChannel {
     pub assets: Map<Address, BalanceRecord>,
     /// Latest accepted state nonce.
     pub nonce: u64,
+    /// Lifecycle stage: `open` writes `Open`, `close` moves it to `Closed`
+    /// (the challenge window runs from `closed_at`), and `settle` moves it
+    /// to `Finalized`.
     pub phase: ChannelPhase,
+    /// Ledger sequence recorded by `open`; an open channel past
+    /// `opened_at + max lifetime` can no longer be closed and may be
+    /// settled directly (`is_expired`).
     pub opened_at: u32,
     /// Ledger at which the channel was closed (or last challenged); `0` while
     /// open.
     pub closed_at: u32,
+    /// Dispute window in ledgers, applied by `effective_challenge_period` (0
+    /// selects the default, anything larger is capped) and enforced between
+    /// `close` and `settle`.
     pub challenge_period: u32,
 }
 
@@ -77,6 +90,9 @@ pub struct MultiAssetState {
     pub balances: Map<Address, i128>,
 }
 
+/// Emitted when `open` funds a multi-asset channel: the `sender` and
+/// `receiver`, the per-token deposits escrowed and the effective challenge
+/// period, with `channel_id` as the event topic.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultiAssetChannelOpenedEvent {
@@ -112,6 +128,9 @@ pub struct MultiAssetStateUpdatedEvent {
     pub phase: ChannelPhase,
 }
 
+/// Emitted when `settle` finalizes a multi-asset channel: the per-asset
+/// payouts made to the receiver and refunds returned to the sender, with
+/// `channel_id` as the event topic.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultiAssetSettledEvent {
@@ -207,6 +226,19 @@ fn apply_state(
     Ok(channel)
 }
 
+/// Open a channel escrowing every token in `deposits`: pulls each
+/// `(token, amount)` from `sender` (whose authorization is required) into
+/// the contract, stores a fresh [`MultiAssetChannel`] at nonce 0 in the
+/// `Open` phase, emits [`MultiAssetChannelOpenedEvent`] and returns the new
+/// channel id.
+///
+/// Pre-conditions: the contract is initialized, `deposits` is non-empty and
+/// holds at most [`MAX_ASSETS`] tokens, and every amount is strictly
+/// positive. Fails with `Error::NotInitialized` when the contract has no
+/// token set, `Error::InvalidAmount` for an empty map or a non-positive
+/// amount, and `Error::BatchTooLarge` beyond [`MAX_ASSETS`] assets. The
+/// stored `challenge_period` is the requested one normalized: `0` selects
+/// the default, larger values are capped at the crate maximum.
 pub(crate) fn open(
     env: &Env,
     sender: Address,
@@ -398,6 +430,8 @@ pub(crate) fn settle(env: &Env, channel_id: u64) -> Result<(), Error> {
     Ok(())
 }
 
+/// Read the [`MultiAssetChannel`] stored for `channel_id`; fails with
+/// `Error::ChannelNotFound` when no channel with that id exists.
 pub(crate) fn get(env: &Env, channel_id: u64) -> Result<MultiAssetChannel, Error> {
     load(env, channel_id)
 }

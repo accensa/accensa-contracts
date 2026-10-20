@@ -22,6 +22,7 @@
 - [x] Document the publicly exported fields of `YieldInfo` in refund-vault (#785)
 - [x] Document the publicly exported fields of `CouponAppliedEvent` in refund-vault (#783)
 - [x] Document the publicly exported fields of `HtlcAddedEvent` in state-channel (#786)
+- [x] Document the publicly exported fields of `OptimisticQueuedEvent` in governance (#775)
 ## Issue #660: PR template verification step runs the full workspace suite
 
 - [x] Point the PR template's Verification checkbox at `cargo test --workspace` (#660)
@@ -85,10 +86,10 @@
 - [x] Document `dispute_id`, `oracle`, `payment_ref`, `merchant`, `recipient` and `amount` (#769)
   - `contracts/refund-policy-vdf/src/fallback.rs` — doc comments only; field, type, order and derives unchanged, and no unit invented for `amount`
 
-## Issue #678: error arm for absent state in receipt-shard::has_live_records
+## Issue #650: Cover the reputation badge authority guard's two failure arms
 
-- [x] `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` on missing state (#678)
-  - `contracts/receipt-shard/src/consolidation.rs` — returns typed error instead of unwrap on missing `StartBatchId` or `EndBatchId`
+- [x] Pin the not-initialised, wrong-caller and admitted arms of the reputation authority guard (#650)
+  - `contracts/reputation/src/badges_test.rs` — test-only additions; asserts `NotInitialized`, the host `Abort` for a wrong caller, and the admitted admin's persisted tier
 
 ## Issue #683: error arm for absent state in refund-vault::get_domain_separator
 
@@ -156,3 +157,58 @@
 
 - [x] Point the supported-versions table at the 0.3.x release line (#661)
   - `SECURITY.md` — supported and unsupported version rows; the 0.1.0 testnet note is unchanged
+
+## Issue #787: rustdoc for `ChannelOpenedEvent`'s 5 public fields
+
+- [x] Document the struct's 5 public fields (#787)
+  - `contracts/state-channel/src/lib.rs` — doc comments only, no signature, body, order or derive changes
+
+## Issue #788: rustdoc for `MultiAssetChannel`'s 5 public fields
+
+- [x] Document `sender`, `receiver`, `phase`, `opened_at` and `challenge_period` (#788)
+  - `contracts/state-channel/src/multi_asset.rs` — doc comments only, field/type/order/derives unchanged
+
+## Issue #792: rustdoc for `AuthorizeEvent`'s 5 public fields
+
+- [x] Document `payment_id`, `from`, `to`, `cap` and `expiry` (#792)
+  - `contracts/upto-authorization/src/lib.rs` — doc comments only, field/type/order/derives unchanged
+
+## Issue #666: Update ARCHITECTURE.md beyond the two-contract framing
+
+- [x] Broaden `docs/ARCHITECTURE.md`'s scope statement and add the full workspace contract inventory (#666)
+  - `docs/ARCHITECTURE.md` — new intro scope, `Contract Inventory` table derived from `Cargo.toml` members, and the `Cross-Contract Relationship` opener; walkthrough unchanged
+
+## Issue #667: Back RELEASING's reproducible-build claim with a pinned toolchain
+
+- [x] Scope `docs/RELEASING.md`'s reproducibility claim to source-to-commit provenance and document the toolchain (#667)
+  - `docs/RELEASING.md` — step 3 now states what is not byte-reproducible without a pinned compiler and how to record `rustc`/`cargo` versions
+
+## Issue #668: Delete the stray duplicate Unreleased section at CHANGELOG's end
+
+- [x] Remove the duplicate trailing `## [Unreleased]` heading and stub from `CHANGELOG.md` (#668)
+  - `CHANGELOG.md` — only the top `## [Unreleased]` remains; the link-reference block is the final section
+## Issue #750: Document 4 public items in nft_escrow
+
+- [x] Add `///` rustdoc to `deposit`, `claim`, `refund` and `get` (#750)
+  - `contracts/refund-vault/src/nft_escrow.rs` — doc comments only; role, pre-conditions and each `Error` arm documented, signatures and bodies unchanged
+
+## Issue #729: package description for accensa-common
+
+- [x] Add `description` to the `[package]` table of `contracts/common/Cargo.toml` (#729)
+
+## Issue #730: package description for multisig-account
+
+- [x] Add `description` to the `[package]` table of `contracts/multisig-account/Cargo.toml` (#730)
+
+## Issue #731: package description for receipt-shard
+
+- [x] Add `description` to the `[package]` table of `contracts/receipt-shard/Cargo.toml` (#731)
+
+## Issue #732: package description for testutils
+
+- [x] Add `description` to the `[package]` table of `contracts/testutils/Cargo.toml` (#732)
+
+## Issue #751: Document 4 public items in multi_asset
+
+- [x] Add `///` rustdoc to `MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open` and `get` (#751)
+  - `contracts/state-channel/src/multi_asset.rs` — doc comments only; role, pre-conditions and each `Error` arm documented, signatures and bodies unchanged
