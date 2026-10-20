@@ -1,5 +1,10 @@
 # Roadmap
 
+## Issue #780: rustdoc for ShardStats's 5 exported fields
+
+- [x] Document the struct's 5 public fields (#780)
+  - `contracts/receipt-shard/src/diagnostics.rs` — doc comments only, field/type/order/derives unchanged
+
 ## Issue #708: refund-vault coupon and liquidity test coverage
 
 - [x] Add refund-vault coupon and liquidity test coverage (#708)
@@ -102,11 +107,21 @@
   - `contracts/treasury/src/distribution.rs` — verified contract holding balance of yield token before mutating user `pending`/`claimed`
   - Added unit test in `contracts/treasury/src/distribution.rs` asserting typed error and unchanged pending yield
 
+## Issue #725: guard `record_completion`'s growth product and sum against overflow
+
+- [x] `record_completion` computes its growth with `checked_mul` and lands the score with `checked_add`; `headroom` is capped by `MAX_SCORE` and `growth <= headroom`, so the failure arms state those preconditions and no error variant is added (#725)
+
 ## Issue #722: guard `preview_settlement`'s cumulative sum against overflow
 
 - [x] Route the `previous_refunded + amount` sum in `preview_settlement` through `add_amounts` (#722)
   - `contracts/refund-vault/src/settlement.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` — boundary test pins both operands at `i128::MAX` and asserts the returned error variant
+
+## Issue #740: rustdoc for `common/events`' 8 module symbols
+
+- [x] Document `vault`, `channel`, `receipt`, `bridge`, `gov`, `treasury`, `multisig` and `auth` (#740)
+  - `contracts/common/src/events.rs` — doc comments only, no signature, body or ordering change
+
 
 ## Issue #720: check `harvest_yield`'s running total against overflow
 
@@ -114,6 +129,13 @@
   - `contracts/refund-vault/src/lib.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/harvest_yield_overflow_tests.rs` — boundary test pins the stored total at `i128::MAX` and asserts the returned error variant
 
+- [x] Document `DataKey`, `ReceiptAnchor`, `initialize`, `get_batch`, `verify_receipt` and `get_shard_capacity` (#744)
+  - `contracts/receipt-anchor/src/lib.rs` — doc comments only; `initialize` states its no-auth/once pre-condition and `Error::AlreadyInitialized` arm, `get_batch` and `verify_receipt` state the `BatchNotFound`/`ProofTooLong`/`ShardCallFailed` arms, and the getter is marked infallible
+
+## Issue #728: guard state-channel::add's reservation sum against overflow
+
+- [x] Compute the new HTLC reservation with `add_amounts` so an out-of-range sum returns `Error::MathOverflow` instead of trapping (#728)
+  - `contracts/state-channel/src/htlc.rs` — the reservation update uses the shared checked helper; the escrow ceiling above it remains the precondition that keeps every reachable sum in range
 
 ## Issue #685: report a missing payment token from `deploy_to_yield`
 
@@ -173,6 +195,20 @@
 - [x] Document `payment_id`, `from`, `to`, `cap` and `expiry` (#792)
   - `contracts/upto-authorization/src/lib.rs` — doc comments only, field/type/order/derives unchanged
 
+## Issue #666: Update ARCHITECTURE.md beyond the two-contract framing
+
+- [x] Broaden `docs/ARCHITECTURE.md`'s scope statement and add the full workspace contract inventory (#666)
+  - `docs/ARCHITECTURE.md` — new intro scope, `Contract Inventory` table derived from `Cargo.toml` members, and the `Cross-Contract Relationship` opener; walkthrough unchanged
+
+## Issue #667: Back RELEASING's reproducible-build claim with a pinned toolchain
+
+- [x] Scope `docs/RELEASING.md`'s reproducibility claim to source-to-commit provenance and document the toolchain (#667)
+  - `docs/RELEASING.md` — step 3 now states what is not byte-reproducible without a pinned compiler and how to record `rustc`/`cargo` versions
+
+## Issue #668: Delete the stray duplicate Unreleased section at CHANGELOG's end
+
+- [x] Remove the duplicate trailing `## [Unreleased]` heading and stub from `CHANGELOG.md` (#668)
+  - `CHANGELOG.md` — only the top `## [Unreleased]` remains; the link-reference block is the final section
 ## Issue #750: Document 4 public items in nft_escrow
 
 - [x] Add `///` rustdoc to `deposit`, `claim`, `refund` and `get` (#750)

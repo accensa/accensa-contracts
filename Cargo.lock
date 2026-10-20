@@ -1625,6 +1625,7 @@ name = "refund-policy-vdf"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "budget-macros",
  "crypto-bigint",
  "soroban-sdk",
 ]
@@ -2279,6 +2280,7 @@ name = "stream-vault"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "budget-macros",
  "proptest",
  "soroban-sdk",
 ]
