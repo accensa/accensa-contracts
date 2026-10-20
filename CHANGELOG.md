@@ -8,6 +8,8 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+### Changed
+- Remove two no-op modules from the `accensa-common` public API.
 - fix(refund-vault,refund-policy-vdf): guard four amount paths with checked math (closes #716, #717, #718, #719) (#896).
 - feat: resolve #550, #480, #479, and #478 (#866).
 - docs(factory): rustdoc for 7 public items in refund-vault-factory/lib… (#880).
@@ -29,6 +31,11 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 
+- **`multisig-account` (issue #413): daily spending limits for sub-threshold
+  signers.** Governance can configure a per-token daily allowance for routine
+  transfers authorized by fewer than the full threshold. Spending is tracked
+  per signer and token in 24-hour ledger-time windows; other calls and spends
+  beyond the remaining allowance still require the full threshold.
 - **`multisig-account` / `refund-vault` (issues #592, #593): pin verify_ed25519 trap semantics and refund-vault config getters.**
   Added unit test coverage for `verify_ed25519` in `contracts/multisig-account/src/test.rs`, asserting that valid signatures return normally, malleated non-canonical `s` scalar signatures return typed `Error::NonCanonicalSignature`, and invalid signatures trap the host VM (`Err(Err(_))`). Extended `contracts/refund-vault/src/test.rs` to exercise unexercised config getters (`get_admin`, `get_token`, `get_refund_window`, and `is_paused`), verifying configured values, pause/unpause boolean transitions, and `Error::NotInitialized` when called on an uninitialized instance. Test-only — no contract behavior changes.
 
