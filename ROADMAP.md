@@ -1,5 +1,9 @@
 # Roadmap
 
+## Issue #703: refund-vault dust and flash-loan guard test coverage
+
+- [x] Add refund-vault dust and flash-loan guard test coverage (#703)
+
 ## Issue #708: refund-vault coupon and liquidity test coverage
 
 - [x] Add refund-vault coupon and liquidity test coverage (#708)
