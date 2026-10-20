@@ -34,7 +34,11 @@ mod badges;
 mod badges_test;
 mod credit_score;
 #[cfg(test)]
+mod credit_score_completion_overflow_test;
+#[cfg(test)]
 mod credit_score_decay_overflow_test;
+#[cfg(test)]
+mod credit_score_fraud_overflow_test;
 #[cfg(test)]
 mod credit_score_test;
 mod sbt;
@@ -321,9 +325,23 @@ impl Reputation {
             credit_score::apply_decay(record.score, record.last_update, env.ledger().sequence());
 
         // Growth: a fraction of the remaining headroom to MAX_SCORE.
+        // `headroom` is a `u64` capped at `MAX_SCORE` (1_000) by the line
+        // above and `GROWTH_RATE_BPS` is 2_500, so their product never comes
+        // close to `u128::MAX`. The multiplication is checked rather than
+        // bare so the guard does not rely on the release profile's overflow
+        // checks; the failure arm states the precondition that keeps it
+        // provably in range.
         let headroom = MAX_SCORE - old_score;
-        let growth = (headroom as u128 * GROWTH_RATE_BPS as u128 / 10_000) as u64;
-        record.score = old_score + growth;
+        let growth = ((headroom as u128)
+            .checked_mul(GROWTH_RATE_BPS as u128)
+            .expect("headroom <= MAX_SCORE (1_000), so MAX_SCORE * GROWTH_RATE_BPS fits in u128")
+            / 10_000) as u64;
+        // `GROWTH_RATE_BPS` (2_500) sits under the 10_000 quotient, so
+        // `growth <= headroom` and the sum is at most `old_score + headroom
+        // == MAX_SCORE` — the same precondition discipline for the addition.
+        record.score = old_score
+            .checked_add(growth)
+            .expect("growth <= headroom, so old_score + growth <= MAX_SCORE fits in u64");
         record.completions += 1;
         record.last_update = env.ledger().sequence();
 
@@ -367,7 +385,15 @@ impl Reputation {
             credit_score::apply_decay(record.score, record.last_update, env.ledger().sequence());
 
         // Penalty: a fraction of the current score.
-        let penalty = (old_score as u128 * PENALTY_RATE_BPS as u128 / 10_000) as u64;
+        // The product of two `u64` values always fits in `u128`
+        // (`(2^64 - 1)^2 < 2^128`), so it is exact for every score. The
+        // multiplication is checked rather than bare so the guard does not
+        // rely on the release profile's overflow checks; the failure arm
+        // states the precondition that keeps it provably in range.
+        let penalty = ((old_score as u128)
+            .checked_mul(PENALTY_RATE_BPS as u128)
+            .expect("the product of two u64 values always fits in u128")
+            / 10_000) as u64;
         record.score = old_score - penalty;
         record.fraud_count += 1;
         record.last_update = env.ledger().sequence();
