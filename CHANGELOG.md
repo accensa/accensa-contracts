@@ -9,6 +9,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- test: assert the dispute, counter-evidence and claim event shapes (#895).
 - **`treasury` (issue #648): burn only buyback tokens actually delivered.**
   Buyback execution now measures the governance-token balance change around the
   DEX swap, rejects delivery below the slippage floor or the router's reported
