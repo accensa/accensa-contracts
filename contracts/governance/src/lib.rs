@@ -71,6 +71,7 @@ mod ragequit;
 mod ring_sig;
 pub mod simulation;
 mod timelock;
+mod vetoken;
 mod voting;
 
 pub use liquid_staking::{
@@ -252,13 +253,21 @@ pub struct RingSignature {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposal {
+    /// Address of the member who submitted the proposal.
     pub proposer: Address,
+    /// Address of the contract targeted by the proposed call.
     pub target: Address,
+    /// Function symbol to invoke on the target contract.
     pub function: Symbol,
+    /// Values passed as arguments to the proposed function.
     pub args: Vec<Val>,
+    /// Accumulated voting weight in favor of the proposal.
     pub yes_weight: u64,
+    /// Accumulated voting weight against the proposal.
     pub no_weight: u64,
+    /// Ledger number by which voting on the proposal ends.
     pub deadline_ledger: u32,
+    /// Whether the proposed call has been executed.
     pub executed: bool,
 }
 
@@ -1044,3 +1053,9 @@ pub struct DowngradeStrategy {
     pub fallback_protocol_version: u32,
     pub emergency_mode_enabled: bool,
 }
+
+// Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
+// feature is enabled (the budget CI job), so the normal test/clippy runs stay
+// free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;

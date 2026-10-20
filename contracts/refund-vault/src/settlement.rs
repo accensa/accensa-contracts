@@ -26,7 +26,7 @@
 //! left, and the three amounts always sum back to `amount + merchant_retained`
 //! exactly — no tokens are created or lost by the split.
 
-use accensa_common::Error;
+use accensa_common::{math::add_amounts, Error};
 use soroban_sdk::{contractimpl, contracttype, BytesN, Env};
 
 use crate::{refund_fee, DataKey, RefundRecord, RefundVault, RefundVaultArgs, RefundVaultClient};
@@ -60,8 +60,9 @@ pub struct RefundSettlement {
 ///
 /// # Errors
 ///
-/// [`Error::ExceedsPayment`] when the record ceiling is non-positive or the new
-/// cumulative total would pass it (including `i128` overflow).
+/// [`Error::MathOverflow`] when the cumulative sum itself overflows `i128`
+/// (issue #721), and [`Error::ExceedsPayment`] when the record ceiling is
+/// non-positive or the new cumulative total would pass it.
 pub(crate) fn resolve_ceiling(
     env: &Env,
     payment_ref: &BytesN<32>,
@@ -77,11 +78,16 @@ pub(crate) fn resolve_ceiling(
         None => (0i128, payment_amount),
     };
 
-    if previous_refunded.checked_add(amount).is_none()
-        || record_ceiling <= 0
-        || previous_refunded + amount > record_ceiling
-    {
-        return Err(Error::ExceedsPayment);
+    match add_amounts(previous_refunded, amount) {
+        Ok(cumulative) => {
+            // A non-positive ceiling can admit nothing: the cumulative total
+            // is a refund amount, so it is always strictly positive.
+            if cumulative > record_ceiling || record_ceiling <= 0 {
+                return Err(Error::ExceedsPayment);
+            }
+        }
+        // The overflow arm is the typed failure, not a host abort (issue #721).
+        Err(_) => return Err(Error::MathOverflow),
     }
 
     Ok((previous_refunded, record_ceiling))
@@ -136,7 +142,10 @@ impl RefundVault {
         // active rung's rate, so the preview matches what `refund` will charge.
         let fee_bps: u32 = crate::tiers::effective_fee_bps(&env);
         let (fee, recipient_amount) = split_amount(amount, fee_bps);
-        let cumulative_refunded = previous_refunded + amount;
+        // Checked: with `[profile.release]` setting `overflow-checks = true`
+        // and `panic = "abort"`, a bare `+` here would abort the host call
+        // (issue #722). `add_amounts` maps to `Error::MathOverflow` instead.
+        let cumulative_refunded = add_amounts(previous_refunded, amount)?;
 
         Ok(RefundSettlement {
             recipient_amount,

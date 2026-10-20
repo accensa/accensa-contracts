@@ -3,27 +3,47 @@ title: "Smart Contract Reference"
 description: "Soroban smart contracts for verifying receipts and executing refunds."
 ---
 
-Accensa relies on two purpose-built Soroban contracts deployed on the Stellar Testnet.
+The Accensa protocol workspace implements a suite of purpose-built Soroban smart contracts. Eleven contracts are compiled to standalone deployable WASM bytecode and tracked with size budgets in `.wasm-budget.json`:
 
-These contracts never touch the x402 payment path and are strictly non-custodial. They do not escrow funds between payers and merchants.
+- **`receipt_anchor`**: Stores batch commitments of settled payments, providing an immutable on-chain truth ledger for receipt verification.
+- **`refund_vault`**: Holds merchant refund float and executes policy-bounded, fee-adjusted refunds.
+- **`refund_policy_time`**: Evaluates ledger-window and time-based refund policy constraints.
+- **`refund_policy_vdf`**: Evaluates Verifiable Delay Function (VDF) delay proofs for time-locked refunds.
+- **`refund_vault_factory`**: Factory contract deploying standardized, parameterized `RefundVault` instances.
+- **`governance`**: DAO governance contract managing optimistic execution proposals, vetoes, and voting rights.
+- **`multisig_account`**: Multi-signature smart contract account with `m`-of-`n` threshold authorization and signer recovery.
+- **`receipt_shard`**: Sharded storage partition for receipt commitments to ensure high-throughput scaling without state contention.
+- **`state_channel`**: State channel contract supporting HTLCs, disputes, and cooperative off-chain payment settlement.
+- **`stream_vault`**: Streaming payment vault supporting continuous per-second and linear token disbursements.
+- **`upto_authorization`**: Pre-authorization scheme allowing buyers to sign an "up-to" cap with slippage protection for meter-based payments without locking full escrow.
+
+For the broader system architecture and auxiliary contract crates, see [docs/ARCHITECTURE.md](ARCHITECTURE.md). For deployed addresses across networks, refer to [DEPLOYMENTS.md](../DEPLOYMENTS.md).
+
+### Custody and Funds Safety
+
+Accensa contracts never touch the core off-chain x402 payment path. Custody models vary by contract role:
+- **`ReceiptAnchor`** (and `receipt_shard`) is strictly non-custodial: it stores cryptographic commitments (Merkle roots, ZK proofs) and never holds tokens or escrows funds between payers and merchants.
+- **`RefundVault`** is custodial by design: it holds merchant-deposited token float to guarantee automated refund fulfillment within merchant-defined policy bounds and optional yield deployments.
+- Other value-bearing contracts (`state_channel`, `stream_vault`) hold funds under their own explicit escrow and settlement rules; see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 
 ## ReceiptAnchor
 
 The `ReceiptAnchor` contract stores batch commitments of settled payments. It serves as an immutable, on-chain truth ledger for agent operators.
 
 ### `initialize`
-One-time setup binding the contract to the merchant address. Callable once; every later call fails with `AlreadyInitialized`.
+One-time setup binding the contract to the merchant address and registering the receipt shard WASM hash. Callable once; every later call fails with `AlreadyInitialized`.
 
 ```rust
-fn initialize(env: Env, merchant: Address) -> Result<(), Error>
+fn initialize(env: Env, merchant: Address, shard_wasm_hash: BytesN<32>) -> Result<(), Error>
 ```
 - **Authentication:** None (first caller sets the merchant; deploy and initialize in the same transaction).
 
 ### `anchor_batch`
-Writes a Merkle root representing a batch of payments to persistent storage and returns the assigned batch id (sequential, starting at 1).
+Writes a Merkle root representing a batch of payments to persistent storage for a specific shard partition and returns the assigned batch id (sequential, starting at 1).
 
 ```rust
-fn anchor_batch(env: Env, root: BytesN<32>, count: u32, period_start: u64, period_end: u64) -> Result<u64, Error>
+fn anchor_batch(env: Env, shard_id: u64, root: BytesN<32>, count: u32, period_start: u64, period_end: u64) -> Result<u64, Error>
 ```
 - **Authentication:** Requires the merchant's signature (`require_auth`).
 - **Emits:** `anchored` event carrying the batch id and the stored `BatchRecord`.
@@ -49,34 +69,34 @@ fn get_anchor_rate_limit(env: Env) -> RateLimitConfig
 ```
 
 ### `get_batch`
-Reads a stored batch commitment.
+Reads a stored batch commitment for a given shard.
 
 ```rust
-fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error>
+fn get_batch(env: Env, shard_id: u64, batch_id: u64) -> Result<BatchRecord, Error>
 ```
 - **Errors:** `BatchNotFound` if the id was never anchored.
 
 ### `verify_receipt`
-A read-only convenience function for on-chain receipt verification. Proof siblings are combined with sorted-pair SHA-256 hashing (the lexicographically smaller hash goes first), so proofs carry no left/right position flags. Note that the Accensa SDK performs the exact same verification locally off-chain to avoid RPC overhead.
+A read-only convenience function for on-chain receipt verification within a shard. Proof siblings are combined with sorted-pair SHA-256 hashing (the lexicographically smaller hash goes first), so proofs carry no left/right position flags. Note that the Accensa SDK performs the exact same verification locally off-chain to avoid RPC overhead.
 
 ```rust
-fn verify_receipt(env: Env, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> Result<bool, Error>
+fn verify_receipt(env: Env, shard_id: u64, batch_id: u64, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> Result<bool, Error>
 ```
 - **Errors:** `BatchNotFound` if the batch id does not exist. `ProofTooLong` if the proof exceeds the maximum valid length (derived from `MAX_BATCH_SIZE`; call `get_max_proof_len` to discover the limit at runtime).
 
 ### `verify_receipt_by_root`
-Verify a receipt against any root in the historical ring buffer. Returns `true` if the root is in the buffer AND the Merkle proof is valid. Useful for delayed off-chain processes that may not know the exact `batch_id`.
+Verify a receipt against any root in the historical ring buffer for a shard. Returns `true` if the root is in the buffer AND the Merkle proof is valid. Useful for delayed off-chain processes that may not know the exact `batch_id`.
 
 ```rust
-fn verify_receipt_by_root(env: Env, root: BytesN<32>, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> Result<bool, Error>
+fn verify_receipt_by_root(env: Env, shard_id: u64, root: BytesN<32>, leaf: BytesN<32>, proof: Vec<BytesN<32>>) -> Result<bool, Error>
 ```
 - **Errors:** `NotInitialized` if the contract has not been initialized. `RootNotFound` if the root is not in the ring buffer. `ProofTooLong` if the proof exceeds the maximum valid length.
 
 ### `get_root_buffer`
-Returns the current ring buffer of historical Merkle roots (read-only). The buffer is bounded to `ROOT_BUFFER_SIZE` entries; oldest roots are evicted when full.
+Returns the current ring buffer of historical Merkle roots for a shard (read-only). The buffer is bounded to `ROOT_BUFFER_SIZE` entries; oldest roots are evicted when full.
 
 ```rust
-fn get_root_buffer(env: Env) -> Vec<BytesN<32>>
+fn get_root_buffer(env: Env, shard_id: u64) -> Vec<BytesN<32>>
 ```
 
 ### `get_root_buffer_size`
@@ -100,25 +120,25 @@ fn get_max_proof_len(env: Env) -> u32
 The `RefundVault` contract holds merchant float and executes refunds according to self-declared policy bounds.
 
 ### `initialize`
-One-time setup binding the vault to the merchant, the refund token (any SEP-41 token contract address — the USDC SAC by default), and the refund window in ledgers. A window of `0` disables expiry entirely.
+One-time setup binding the vault according to `VaultInit` parameters (merchant, token, refund window, etc.). Callable once; every later call fails with `AlreadyInitialized`.
 
 ```rust
-fn initialize(env: Env, merchant: Address, token: Address, refund_window_ledgers: u32) -> Result<(), Error>
+fn initialize(env: Env, init: VaultInit) -> Result<(), Error>
 ```
 
 ### `deposit`
-Transfers refund float from the merchant's wallet to the contract. `from` must equal the merchant address; anything else fails with `Unauthorized`.
+Transfers refund float from the merchant's wallet to the contract, with optional coupon support. `from` must equal the merchant address; anything else fails with `Unauthorized`.
 
 ```rust
-fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error>
+fn deposit(env: Env, from: Address, amount: i128, coupon_id: Option<u64>) -> Result<(), Error>
 ```
 - **Authentication:** Requires the merchant's signature.
 
 ### `refund`
-Executes a refund to a specified address, provided it occurs within the merchant's declared refund window and wall-clock deadline.
+Executes a refund to a specified address, provided it occurs within the merchant's declared refund window, wall-clock deadline, and VDF delay proof (if enabled).
 
 ```rust
-fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, paid_at_ledger: u32, payment_amount: i128) -> Result<(), Error>
+fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, paid_at_ledger: u32, payment_amount: i128, vdf_proof: Option<BytesN<256>>, nonce: u64) -> Result<(), Error>
 ```
 - **Authentication:** Requires the merchant's signature.
 - **Constraints:** Fails with `ExceedsPayment` if cumulative refunds would exceed `payment_amount`, with `WindowExpired` if the current ledger exceeds `paid_at_ledger + window` (boundary ledger still refundable; skipped when the window is `0`), with `RefundExpired` if the policy deadline has strictly passed, and with `InsufficientFloat` if the vault balance cannot cover `amount`.
@@ -129,7 +149,7 @@ fn refund(env: Env, payment_ref: BytesN<32>, recipient: Address, amount: i128, p
 Refunds multiple claims in one transaction. Each claim is processed with exactly the same logic, checks and fees as a single `refund`, so the batch needs only one merchant signature and one reentrancy-lock acquisition. The batch is **atomic**: if any claim fails, the error is returned and the whole invocation — its transfers, storage writes and events — is reverted, so either every claim persists or none do.
 
 ```rust
-fn claim_batch(env: Env, claims: Vec<RefundClaim>) -> Result<(), Error>
+fn claim_batch(env: Env, claims: Vec<RefundClaim>, nonce: u64) -> Result<(), Error>
 ```
 
 - **Authentication:** Requires the merchant's signature (checked once for the whole batch).
@@ -139,21 +159,7 @@ fn claim_batch(env: Env, claims: Vec<RefundClaim>) -> Result<(), Error>
 - **Empty batch:** an empty `claims` vector succeeds as a no-op.
 
 ### `process_batch`
-Best-effort batch refunds: processes up to `MAX_REFUND_BATCH_SIZE` (100) claims in one transaction, returning a `Vec<bool>` with one entry per claim (`true` = the claim was applied, `false` = it failed). A failing claim does **not** abort the batch — the remaining claims are still processed, so valid items in a mixed batch complete. Each claim runs the identical per-claim logic as `refund` (via the shared `claim_single` helper), including the policy deadline check and the configured fee split.
-
-```rust
-fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error>
-```
-
-- **Authentication:** Requires the merchant's signature (checked once for the whole batch).
-- **`RefundParam` fields:** `payment_ref: BytesN<32>`, `recipient: Address`, `amount: i128`, `paid_at_ledger: u32`, `payment_amount: i128` — the same shape as `RefundClaim`.
-- **Errors (whole call):** `Paused`, missing admin, or `BatchTooLarge` when `refunds.len() > 100`. Per-item failures are reported through the returned booleans, never as a whole-call error.
-- **Emits:** one `RefundEvent` per successfully applied claim, in claim order.
-- **Atomicity:** non-atomic by design — a failing item leaves earlier successes intact. Use `claim_batch` when all-or-nothing semantics are required.
-- **Fees:** a configured fee applies per applied claim, exactly as in `refund` / `claim_batch`.
-
-### `process_batch`
-Processes up to `MAX_REFUND_BATCH_SIZE` (50) refund requests in a single
+Processes up to `MAX_BATCH_SIZE` (100) refund requests in a single
 transaction. Authentication is checked **once** for the whole batch, and the
 refund window, current ledger, token address and vault balance are loaded once
 into a shared context rather than once per item — the vault makes a single
@@ -163,11 +169,11 @@ compact `BatchRefundEvent` is emitted for the whole batch instead of one
 `RefundEvent` per item.
 
 ```rust
-fn process_batch(env: Env, refunds: Vec<RefundParam>) -> Result<Vec<bool>, Error>
+fn process_batch(env: Env, refunds: Vec<RefundParam>, nonce: u64) -> Result<Vec<bool>, Error>
 ```
 - **Authentication:** Requires the merchant's signature (the merchant may be a
   relayer contract account).
-- **Errors:** `BatchTooLarge` if more than 50 items, `Paused` if the vault is
+- **Errors:** `BatchTooLarge` if more than 100 items, `Paused` if the vault is
   paused.
 - **Returns:** one `bool` per refund in submission order — `true` = executed,
   `false` = that item failed validation (e.g. insufficient float, window
@@ -185,10 +191,10 @@ fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error>
 - **Errors:** `InsufficientFloat` if the vault balance is below `amount`.
 
 ### `propose_policy`
-Proposes a new refund policy: a window (in ledgers) plus a wall-clock deadline (Unix timestamp, `0` = no deadline). The change is not applied immediately; the admin must call `execute_policy` after the timelock (17,280 ledgers, ~24 hours) has elapsed. Proposing a new policy overwrites any existing pending proposal.
+Proposes a new refund policy: a window (in ledgers), a wall-clock deadline (Unix timestamp, `0` = no deadline), and a VDF delay (in ledgers, `0` = disabled). The change is not applied immediately; the admin must call `execute_policy` after the timelock (17,280 ledgers, ~24 hours) has elapsed. Proposing a new policy overwrites any existing pending proposal.
 
 ```rust
-fn propose_policy(env: Env, ledgers: u32, deadline: u64) -> Result<(), Error>
+fn propose_policy(env: Env, ledgers: u32, deadline: u64, vdf_delay: u32) -> Result<(), Error>
 ```
 - **Authentication:** Requires the merchant's signature.
 
@@ -212,7 +218,7 @@ fn get_pending_policy(env: Env) -> Option<PolicyProposal>
 Returns the policy timelock delay in ledgers (read-only).
 
 ```rust
-fn get_policy_timelock(env: Env) -> u32
+fn get_policy_timelock() -> u32
 ```
 
 ### `get_refund_deadline`

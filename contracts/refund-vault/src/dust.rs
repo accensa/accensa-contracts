@@ -39,6 +39,7 @@ pub struct DustSweptEvent {
     pub treasury: Address,
 }
 
+/// Returns the configured dust threshold, or the default when none is stored.
 pub(crate) fn dust_threshold(env: &Env) -> i128 {
     env.storage()
         .instance()
@@ -62,6 +63,12 @@ fn admin(env: &Env) -> Result<Address, Error> {
         .ok_or(Error::NotInitialized)
 }
 
+/// Set the positive dust threshold and treasury; requires admin authorization.
+///
+/// # Errors
+/// - `NotInitialized`: the vault admin is not configured.
+/// - `InvalidAmount`: `threshold` is not positive.
+/// - `SelfTransfer`: `treasury` is the vault contract itself.
 pub(crate) fn set_dust_config(env: &Env, threshold: i128, treasury: Address) -> Result<(), Error> {
     admin(env)?.require_auth();
     if threshold <= 0 {
@@ -87,6 +94,20 @@ fn closed_at(record: &RefundRecord, window: u32) -> u32 {
         .max(record.ledger)
 }
 
+/// Sweep an expired refund's residual below the configured threshold to treasury.
+///
+/// Requires admin authorization and an unpaused vault.
+///
+/// # Errors
+/// - `Paused`: the vault is paused.
+/// - `NotInitialized`: the vault admin or settlement token is not configured.
+/// - `RefundNotFound`: no refund record exists for `payment_ref`.
+/// - `MathOverflow`: the residual amount cannot be calculated.
+/// - `InvalidAmount`: the residual is negative or not below the dust threshold.
+/// - `TimelockNotExpired`: the dust sweep delay has not elapsed.
+/// - `SelfTransfer`: the treasury is the vault contract itself.
+/// - `InsufficientFloat`: the vault balance cannot cover the residual.
+/// - Errors returned by the reentrancy guard.
 pub(crate) fn sweep_dust(env: &Env, payment_ref: BytesN<32>) -> Result<i128, Error> {
     accensa_common::reentrancy::ReentrancyGuard::acquire(env)?;
 

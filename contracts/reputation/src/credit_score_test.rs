@@ -347,3 +347,242 @@ fn score_always_within_zero_to_max() {
         assert!(score <= MAX_SCORE);
     }
 }
+
+// ── Credit keys & event payload parity (issue #621) ─────────────────────
+
+/// Pins the storage/event surface of `credit_score.rs` that the tests above
+/// only ever observed through getters: the shared
+/// `CreditDataKey::Credit(Address)` entry, the
+/// `CreditDataKey::CompletionEscrow(u64)` replay tombstone — the guard that
+/// makes double-recording a completion impossible — and the full
+/// `CreditUpdatedEvent` payload.
+///
+/// Note: `env.events().all()` reflects only the last invocation, exactly as
+/// `contracts/cross-chain/src/layerzero_test.rs:130` documents — each test
+/// below captures a call's events before making any other contract call.
+mod credit_keys_and_event_parity {
+    use super::*;
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::Event;
+
+    /// Reads the raw `CreditDataKey::Credit(buyer)` storage entry — the one
+    /// `record_completion`, `record_fraud`, `get_credit_record` and
+    /// `get_score` all go through.
+    fn stored_record(s: &Setup) -> CreditRecord {
+        s.env
+            .as_contract(&s.client.address, || {
+                s.env
+                    .storage()
+                    .persistent()
+                    .get::<CreditDataKey, CreditRecord>(&CreditDataKey::Credit(s.buyer.clone()))
+            })
+            .expect("credit entry must be stored under Credit(Address)")
+    }
+
+    // ── CompletionEscrow replay guard ────────────────────────────────
+
+    #[test]
+    fn duplicate_escrow_id_is_a_noop_on_score_and_record() {
+        let s = setup();
+        let contract = s.client.address.clone();
+
+        let score = s.client.record_completion(&s.buyer, &7);
+        assert_eq!(score, 625);
+        let first = s.client.get_credit_record(&s.buyer).unwrap();
+
+        // The tombstone lives under the shared replay-protection key…
+        assert!(s.env.as_contract(&contract, || {
+            s.env
+                .storage()
+                .persistent()
+                .has(&CreditDataKey::CompletionEscrow(7))
+        }));
+
+        // …so replaying the same escrow_id is rejected outright.
+        assert_eq!(
+            s.client.try_record_completion(&s.buyer, &7),
+            Err(Ok(CreditError::EscrowAlreadyRecorded))
+        );
+
+        // The score changed exactly once: 500 → 625, then nothing.
+        assert_eq!(s.client.get_score(&s.buyer), 625);
+        // No-op on the stored record: the same Credit entry reads back
+        // identical, with the completion counted once.
+        assert_eq!(s.client.get_credit_record(&s.buyer).unwrap(), first);
+        assert_eq!(stored_record(&s), first);
+        assert_eq!(first.score, 625);
+        assert_eq!(first.completions, 1);
+        assert_eq!(first.fraud_count, 0);
+
+        // The rejected replay published no CreditUpdatedEvent.
+        // (`events().all()` now covers the failed invocation, which emitted
+        // nothing.)
+        assert!(s
+            .env
+            .events()
+            .all()
+            .filter_by_contract(&contract)
+            .events()
+            .is_empty());
+    }
+
+    // ── One shared Credit entry ──────────────────────────────────────
+
+    #[test]
+    fn fraud_and_completion_share_and_update_one_credit_entry() {
+        let s = setup();
+
+        s.client.record_completion(&s.buyer, &1); // 500 → 625
+        let after_completion = stored_record(&s);
+        assert_eq!(after_completion.score, 625);
+        assert_eq!(after_completion.completions, 1);
+        assert_eq!(after_completion.fraud_count, 0);
+
+        s.client.record_fraud(&s.buyer); // 625 − floor(625/2) = 313
+        let after_fraud = stored_record(&s);
+
+        // Same entry, updated in place: both paths' counters coexist, so
+        // fraud did not fork a second Credit record.
+        assert_eq!(after_fraud.score, 313);
+        assert_eq!(after_fraud.completions, 1);
+        assert_eq!(after_fraud.fraud_count, 1);
+
+        // The getters read that same entry.
+        let record = s.client.get_credit_record(&s.buyer).unwrap();
+        assert_eq!(record, after_fraud);
+        assert_eq!(s.client.get_score(&s.buyer), after_fraud.score);
+    }
+
+    // ── CreditUpdatedEvent payload ───────────────────────────────────
+
+    #[test]
+    fn completion_event_payload_agrees_with_record_and_getters() {
+        let s = setup();
+        let contract = s.client.address.clone();
+
+        s.client.record_completion(&s.buyer, &1); // 500 → 625
+
+        // Last invocation only: capture before any other contract call.
+        let events = s.env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = CreditUpdatedEvent {
+            buyer: s.buyer.clone(),
+            old_score: STARTING_SCORE,
+            new_score: 625,
+            reason: ScoreChangeReason::Completion,
+        };
+        // Full payload asserted by XDR comparison, in the style of
+        // contracts/state-channel/src/hashlock_test.rs:105-115.
+        assert_eq!(&events.events()[0], &expected.to_xdr(&s.env, &contract));
+
+        // Stored record and both getters agree with the event payload.
+        let record = s.client.get_credit_record(&s.buyer).unwrap();
+        assert_eq!(record.score, expected.new_score);
+        assert_eq!(s.client.get_score(&s.buyer), expected.new_score);
+    }
+
+    #[test]
+    fn fraud_event_payload_agrees_with_record_and_getters() {
+        let s = setup();
+        let contract = s.client.address.clone();
+
+        s.client.record_fraud(&s.buyer); // 500 → 250
+
+        // Last invocation only: capture before any other contract call.
+        let events = s.env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = CreditUpdatedEvent {
+            buyer: s.buyer.clone(),
+            old_score: STARTING_SCORE,
+            new_score: 250,
+            reason: ScoreChangeReason::Fraud,
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&s.env, &contract));
+
+        let record = s.client.get_credit_record(&s.buyer).unwrap();
+        assert_eq!(record.score, expected.new_score);
+        assert_eq!(record.fraud_count, 1);
+        assert_eq!(s.client.get_score(&s.buyer), expected.new_score);
+    }
+
+    #[test]
+    fn completion_and_fraud_publish_distinct_events() {
+        let s = setup();
+        let contract = s.client.address.clone();
+
+        s.client.record_completion(&s.buyer, &1); // 500 → 625
+                                                  // `events().all()` reflects only the last invocation, so the
+                                                  // completion's event is cloned here, before the fraud call.
+        let completion_events = s.env.events().all().filter_by_contract(&contract);
+        let completion_xdr = completion_events.events()[0].clone();
+
+        s.client.record_fraud(&s.buyer); // 625 → 313
+        let fraud_events = s.env.events().all().filter_by_contract(&contract);
+        assert_eq!(fraud_events.events().len(), 1);
+
+        let completion = CreditUpdatedEvent {
+            buyer: s.buyer.clone(),
+            old_score: 500,
+            new_score: 625,
+            reason: ScoreChangeReason::Completion,
+        };
+        let fraud = CreditUpdatedEvent {
+            buyer: s.buyer.clone(),
+            old_score: 625,
+            new_score: 313,
+            reason: ScoreChangeReason::Fraud,
+        };
+        assert_eq!(
+            completion_xdr,
+            completion.to_xdr(&s.env, &contract),
+            "completion path must publish its own payload"
+        );
+        assert_eq!(&fraud_events.events()[0], &fraud.to_xdr(&s.env, &contract));
+
+        // Same buyer, same contract — the two paths publish different events.
+        assert_ne!(
+            completion.to_xdr(&s.env, &contract),
+            fraud.to_xdr(&s.env, &contract)
+        );
+
+        // After the fraud path, the getters agree with the latest payload
+        // while keeping the completion's contribution.
+        let record = s.client.get_credit_record(&s.buyer).unwrap();
+        assert_eq!(record.score, fraud.new_score);
+        assert_eq!(record.completions, 1);
+        assert_eq!(record.fraud_count, 1);
+        assert_eq!(s.client.get_score(&s.buyer), fraud.new_score);
+    }
+
+    // ── Fee outcome stays in sync with the stored record ─────────────
+
+    #[test]
+    fn fee_bps_stays_in_sync_with_the_stored_credit_record() {
+        let s = setup();
+        let config = s.client.get_score_config();
+
+        // Grow past the gold tier: 500 → 625 → 718 → 788 → 841.
+        complete_n(&s, &s.buyer, 1, 4);
+        let record = s.client.get_credit_record(&s.buyer).unwrap();
+        assert_eq!(record.score, 841);
+        assert_eq!(s.client.get_score(&s.buyer), record.score);
+        // The fee lookup maps the same stored score: gold → half fee…
+        assert_eq!(s.client.get_fee_bps(&s.buyer, &100), 50);
+        assert_eq!(
+            s.client.get_fee_bps(&s.buyer, &100),
+            fee_bps_for(record.score, 100, &config)
+        );
+
+        // …and a fraud drop is visible immediately through the same entry:
+        // 841 − floor(841/2) = 421 → back below gold.
+        s.client.record_fraud(&s.buyer);
+        let record = s.client.get_credit_record(&s.buyer).unwrap();
+        assert_eq!(record.score, 421);
+        assert_eq!(s.client.get_score(&s.buyer), record.score);
+        assert_eq!(s.client.get_fee_bps(&s.buyer, &100), 100);
+        assert_eq!(
+            s.client.get_fee_bps(&s.buyer, &100),
+            fee_bps_for(record.score, 100, &config)
+        );
+    }
+}

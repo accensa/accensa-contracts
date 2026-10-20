@@ -133,21 +133,35 @@ impl ReceiptShard {
         count: u32,
         period_start: u64,
         period_end: u64,
-    ) {
-        assert!(Self::is_active(env.clone()), "shard is inactive");
-        let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
+    ) -> Result<(), Error> {
+        let active: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Active)
+            .ok_or(Error::NotInitialized)?;
+        if !active {
+            return Err(Error::Unauthorized);
+        }
+        let router: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Router)
+            .ok_or(Error::NotInitialized)?;
         router.require_auth();
 
         let start: u64 = env
             .storage()
             .instance()
             .get(&DataKey::StartBatchId)
-            .unwrap();
-        let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
-        assert!(
-            batch_id >= start && batch_id < end,
-            "batch_id out of shard range"
-        );
+            .ok_or(Error::NotInitialized)?;
+        let end: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
+        if batch_id < start || batch_id >= end {
+            return Err(Error::BatchNotFound);
+        }
 
         let record = BatchRecord {
             root,
@@ -170,6 +184,7 @@ impl ReceiptShard {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Batch(batch_id), TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
     }
 
     /// Reads this shard's record for `batch_id`. Read-only and
@@ -195,6 +210,8 @@ impl ReceiptShard {
         let batch = Self::get_batch(env, batch_id)?;
         let computed_hash = Self::fold_proof(leaf.to_array(), proof);
 
+        // Public-data comparison: both the folded proof and the stored Merkle
+        // root are public commitment data, so standard equality is intentional.
         Ok(computed_hash == batch.root.to_array())
     }
 
@@ -241,6 +258,12 @@ impl ReceiptShard {
     /// cursor and how many batches were pruned, so the router can decide
     /// whether to keep going within this shard or move to the next one.
     ///
+    /// Returns `Error::NotInitialized` when the instance carries none of the
+    /// construction-time state this function reads — `Router`, `EndBatchId`
+    /// or `PrunedUpTo` — the state a caller observes before the shard is
+    /// constructed, or after the instance entry has aged out. A missing key
+    /// is reported as that typed error instead of aborting the host call.
+    ///
     /// Router-gated: pruning order is a router-level invariant (a contiguous
     /// global prefix), so only the router may advance this shard's cursor.
     pub fn prune_batches(
@@ -248,15 +271,27 @@ impl ReceiptShard {
         before_ledger: u32,
         max_batches: u32,
         high_water_batch_id: u64,
-    ) -> (u64, u64) {
+    ) -> Result<(u64, u64), Error> {
         assert!(Self::is_active(env.clone()), "shard is inactive");
-        let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
+        let router: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Router)
+            .ok_or(Error::NotInitialized)?;
         router.require_auth();
 
-        let end_batch_id: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
+        let end_batch_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
         let ceiling = high_water_batch_id.min(end_batch_id);
 
-        let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
+        let mut cursor: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PrunedUpTo)
+            .ok_or(Error::NotInitialized)?;
         let mut pruned: u64 = 0;
         // Counters are settled once after the loop rather than per deletion.
         // `pruned` also counts already-absent ids, which never held a record,
@@ -294,7 +329,7 @@ impl ReceiptShard {
                 .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         }
 
-        (cursor, pruned)
+        Ok((cursor, pruned))
     }
 
     /// Returns the router address recorded at construction, or

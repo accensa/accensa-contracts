@@ -4,7 +4,8 @@
 
 use crate::diagnostics::{merkle_depth, ShardDiagnostics};
 use crate::pruning::RETENTION_LEDGERS;
-use crate::{ReceiptShard, ReceiptShardClient};
+use crate::{DataKey, ReceiptShard, ReceiptShardClient};
+use accensa_common::Error;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, BytesN, Env,
@@ -151,4 +152,70 @@ fn merkle_depth_is_ceil_log2() {
     assert_eq!(merkle_depth(1000), 10);
     assert_eq!(merkle_depth(1024), 10);
     assert_eq!(merkle_depth(1025), 11);
+}
+
+// Missing range keys must degrade to the typed failure instead of trapping
+// this read-only monitoring call (issue #615).
+
+#[test]
+fn ttl_evicted_range_keys_report_not_initialized_instead_of_trapping() {
+    let (env, client) = setup();
+
+    // In the testbed a stored instance entry is auto-restored on access rather
+    // than dropped when its TTL lapses, so the post-TTL state of an idle
+    // shard — the range keys gone from instance storage — is reproduced
+    // directly: remove exactly the entries that the eviction loses.
+    let contract_id = client.address.clone();
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::StartBatchId);
+        env.storage().instance().remove(&DataKey::EndBatchId);
+        assert!(!env.storage().instance().has(&DataKey::StartBatchId));
+        assert!(!env.storage().instance().has(&DataKey::EndBatchId));
+    });
+
+    // A healthy shard still answers; only the degraded one must give an `Err`,
+    // and it must be the typed variant, not a host trap.
+    assert_eq!(
+        client.try_get_shard_diagnostics(),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn healthy_shard_reports_consistent_range_across_population_and_drain() {
+    let (env, client) = setup();
+
+    // Populated state: anchor a few batches and pin the documented range
+    // invariants on the snapshot.
+    for id in 1..=4 {
+        anchor(&env, &client, id, 2);
+    }
+    let d = client.get_shard_diagnostics();
+    assert_eq!(d.start_batch_id, 1);
+    assert_eq!(d.end_batch_id, 1001);
+    assert_eq!(d.oldest_unpruned_batch_id, 1);
+    assert_eq!(d.high_water_batch_id, 5);
+    assert_eq!(d.live_batches, 4);
+    assert_eq!(d.live_leaves, 8);
+    assert!(d.start_batch_id <= d.oldest_unpruned_batch_id);
+    assert!(d.oldest_unpruned_batch_id <= d.end_batch_id);
+    assert!(d.live_batches <= d.total_leaves);
+    assert!(d.consistent);
+
+    // Drained state: every anchored batch pruned away; the snapshot must stay
+    // healthy with an empty live set inside the same `[start, end)` range.
+    advance(&env, 10);
+    client.prune_batches(&(BASE_LEDGER + 1), &10, &5);
+    let d = client.get_shard_diagnostics();
+    assert_eq!(d.start_batch_id, 1);
+    assert_eq!(d.end_batch_id, 1001);
+    assert_eq!(d.oldest_unpruned_batch_id, 5);
+    assert_eq!(d.high_water_batch_id, 5);
+    assert_eq!(d.live_batches, 0);
+    assert_eq!(d.live_leaves, 0);
+    assert_eq!(d.storage_entries, 0);
+    assert!(d.start_batch_id <= d.oldest_unpruned_batch_id);
+    assert!(d.oldest_unpruned_batch_id <= d.end_batch_id);
+    assert!(d.live_batches <= d.total_leaves);
+    assert!(d.consistent);
 }

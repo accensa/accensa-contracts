@@ -1,8 +1,8 @@
 #![no_std]
 
 use accensa_common::{
-    storage::extend_instance_ttl, Error, PolicyContext, RefundPolicyClient, TimePolicyParams,
-    VaultInit, VdfPolicyParams,
+    math::add_amounts, storage::extend_instance_ttl, Error, PolicyContext, RefundPolicyClient,
+    TimePolicyParams, VaultInit, VdfPolicyParams,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contractmeta, contracttype, token, xdr::ToXdr, Address,
@@ -26,10 +26,18 @@ contractmeta!(
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundParam {
+    /// Unique reference identifying the payment; refunds are recorded under
+    /// this key. Mirrors the `payment_ref` argument of [`RefundVault::refund`].
     pub payment_ref: BytesN<32>,
+    /// Address that receives the refund.
     pub recipient: Address,
+    /// Amount to refund in this call (before any configured fee is deducted).
     pub amount: i128,
+    /// Ledger at which the original payment occurred (window is measured from
+    /// here, never from a partial). Supplied fresh on every call.
     pub paid_at_ledger: u32,
+    /// The original payment amount — the hard ceiling on cumulative refunds —
+    /// supplied fresh on every call.
     pub payment_amount: i128,
     /// Wesolowski VDF proof, required when the policy carries a VDF delay
     /// (issue #138). The 256 bytes are the 128-byte big-endian output
@@ -250,10 +258,24 @@ pub struct RefundClaim {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YieldInfo {
+    /// Principal currently deployed to the active yield strategy. Maintained
+    /// by the strategy module's deploy and recall paths and read by the
+    /// per-deployment bounds checks.
     pub deployed_principal: i128,
+    /// Cumulative yield withdrawn from the strategy and left in the vault,
+    /// accumulated by [`RefundVault::harvest_yield`].
     pub harvested_yield: i128,
+    /// Address of the active yield strategy contract, set by
+    /// [`RefundVault::set_yield_strategy`]; `None` while no strategy is
+    /// configured.
     pub strategy: Option<Address>,
+    /// Minimum fraction of total vault value that must stay liquid, in basis
+    /// points (2000 = 20%). Set by [`RefundVault::set_reserve_ratio`] and
+    /// enforced by the deploy path.
     pub reserve_ratio: u32,
+    /// Maximum fraction of total vault value that may be deployed to yield,
+    /// in basis points (8000 = 80%). Set by
+    /// [`RefundVault::set_max_deploy_ratio`] and enforced by the deploy path.
     pub max_deploy_ratio: u32,
 }
 
@@ -389,6 +411,7 @@ pub struct YieldDeployedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when principal is withdrawn from a yield strategy.
 pub struct YieldWithdrawnEvent {
     #[topic]
     pub strategy: Address,
@@ -400,6 +423,7 @@ pub struct YieldWithdrawnEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when yield is harvested from a strategy.
 pub struct YieldHarvestedEvent {
     pub amount: i128,
     /// Monotonic nonce at the time of this operation (issue #136).
@@ -408,6 +432,7 @@ pub struct YieldHarvestedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when a new refund policy is proposed.
 pub struct PolicyProposedEvent {
     #[topic]
     pub window: u32,
@@ -418,6 +443,7 @@ pub struct PolicyProposedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted when a proposed refund policy is executed.
 pub struct PolicyExecutedEvent {
     #[topic]
     pub window: u32,
@@ -488,11 +514,19 @@ pub struct CommitRevealedEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CouponAppliedEvent {
     #[topic]
+    /// Id of the coupon NFT applied, as passed to [`RefundVault::deposit`].
     pub coupon_id: u64,
     #[topic]
+    /// Depositor who applied the coupon; must own `coupon_id`.
     pub holder: Address,
+    /// Deposit amount before the discount, as passed to
+    /// [`RefundVault::deposit`].
     pub original_amount: i128,
+    /// Amount actually transferred after the discount is subtracted;
+    /// computed by `coupons::apply_coupon`.
     pub effective_amount: i128,
+    /// Coupon discount in basis points (100 = 1%), copied from the coupon
+    /// record.
     pub discount_bps: u32,
 }
 
@@ -973,6 +1007,7 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
 const MAX_REFUND_BATCH_SIZE: u32 = 100;
 
 #[contract]
+/// Refund vault contract for holding settlement funds and processing refunds.
 pub struct RefundVault;
 
 const INITIAL_STORAGE_VERSION: u32 = 1;
@@ -1071,6 +1106,15 @@ impl RefundVault {
         current_user_nonce(&env, &caller)
     }
 
+    /// Deposit a positive amount from the vault admin, optionally applying a coupon.
+    ///
+    /// # Errors
+    /// - `Paused`: the vault is paused.
+    /// - `InvalidAmount`: `amount` is not positive.
+    /// - `NotInitialized`: the admin or settlement token is not configured.
+    /// - `Unauthorized`: `from` is not the vault admin.
+    /// - `CouponNotFound`: the supplied coupon ID does not exist.
+    /// - Errors returned by the reentrancy guard or while applying the coupon.
     pub fn deposit(
         env: Env,
         from: Address,
@@ -1166,6 +1210,13 @@ impl RefundVault {
         coupons::get_coupon(&env, coupon_id)
     }
 
+    /// Replace the settlement token when the vault has no token balance.
+    ///
+    /// Requires authorization from the configured merchant.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the vault admin is not configured.
+    /// - `FloatNotEmpty`: the current settlement token balance is nonzero.
     pub fn set_token(env: Env, new_token: Address) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
@@ -1413,6 +1464,17 @@ impl RefundVault {
         Ok(results)
     }
 
+    /// Withdraw a positive amount to `to`, recalling strategy funds if needed.
+    ///
+    /// Requires authorization from the configured merchant and an unpaused vault.
+    ///
+    /// # Errors
+    /// - `Paused`: the vault is paused.
+    /// - `InvalidAmount`: `amount` is not positive.
+    /// - `SelfTransfer`: `to` is the vault contract itself.
+    /// - `NotInitialized`: the merchant or settlement token is not configured.
+    /// - `InsufficientFloat`: available and recalled funds do not cover `amount`.
+    /// - Errors returned by the reentrancy guard or while ensuring liquidity.
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
@@ -2341,7 +2403,11 @@ impl RefundVault {
             return Err(Error::StrategyNotApproved);
         }
 
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_addr);
         let token_balance = token_client.balance(&env.current_contract_address());
 
@@ -2496,9 +2562,10 @@ impl RefundVault {
             .persistent()
             .get(&DataKey::HarvestedYield)
             .unwrap_or(0);
+        let total_harvested = add_amounts(harvested, yield_amount)?;
         env.storage()
             .persistent()
-            .set(&DataKey::HarvestedYield, &(harvested + yield_amount));
+            .set(&DataKey::HarvestedYield, &total_harvested);
         persist_yield_ttl(&env, &DataKey::HarvestedYield);
 
         let nonce = increment_nonce(&env);
@@ -2656,7 +2723,7 @@ impl RefundVault {
             .storage()
             .instance()
             .get(&DataKey::RefundWindow)
-            .unwrap();
+            .ok_or(Error::NotInitialized)?;
 
         let extend_to = refund_record_ttl_extend_to(&env, window, record.paid_at_ledger);
         // Threshold == extend_to: a caller invoking this well before expiry
@@ -2742,16 +2809,32 @@ impl RefundVault {
     }
 }
 
+/// Typed failure for the missing `DataKey::Token` in `deploy_to_yield` (issue #685).
+#[cfg(test)]
+mod deploy_to_yield_token_tests;
 #[cfg(test)]
 mod dust_tests;
+/// Typed failure for the missing `DataKey::RefundWindow` in `extend_refund_ttl`
+/// (issue #686).
+#[cfg(test)]
+mod extend_refund_ttl_window_tests;
 #[cfg(test)]
 mod flash_loan_tests;
 #[cfg(test)]
 mod fuzz_test;
+/// Boundary test for `harvest_yield`'s checked running total (issue #720).
+#[cfg(test)]
+mod harvest_yield_overflow_tests;
 #[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
+mod preview_settlement_overflow_tests;
+#[cfg(test)]
+mod recall_principal_overflow_tests;
+#[cfg(test)]
 mod reentrancy_tests;
+#[cfg(test)]
+mod settlement_ceiling_test;
 #[cfg(test)]
 mod settlement_test;
 /// Yield-bearing escrow strategy hook tests (issue #415).
@@ -2778,5 +2861,3 @@ mod commit_reveal_tests;
 // free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
 #[cfg(all(test, feature = "budget-assert"))]
 mod budget_test;
-mod dual_asset;
-pub use dual_asset::*;

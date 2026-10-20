@@ -142,12 +142,10 @@ fn validate(ladder: &Vec<MerchantTier>) -> Result<(), Error> {
 /// ladder that passed [`validate`] (rung 0 starts at `0`).
 fn tier_for_volume(ladder: &Vec<MerchantTier>, volume: i128) -> u32 {
     let mut active = 0u32;
-    let mut i = 0u32;
-    while i < ladder.len() {
-        if ladder.get(i).unwrap().min_settled <= volume {
-            active = i;
+    for (index, tier) in ladder.iter().enumerate() {
+        if tier.min_settled <= volume {
+            active = index as u32;
         }
-        i += 1;
     }
     active
 }
@@ -155,10 +153,11 @@ fn tier_for_volume(ladder: &Vec<MerchantTier>, volume: i128) -> u32 {
 /// The threshold of the rung after `tier`, or [`i128::MAX`] on the top rung.
 fn next_threshold(ladder: &Vec<MerchantTier>, tier: u32) -> i128 {
     let next = tier + 1;
-    if next < ladder.len() {
-        ladder.get(next).unwrap().min_settled
-    } else {
-        i128::MAX
+    // `get` answers `None` exactly when `next` is past the last rung, which is
+    // the top-rung case this arm already documents.
+    match ladder.get(next) {
+        Some(rung) => rung.min_settled,
+        None => i128::MAX,
     }
 }
 
@@ -252,7 +251,12 @@ impl RefundVault {
             .map_or(0, |state| state.settled_volume);
 
         let current_tier = tier_for_volume(&tiers, settled_volume);
-        let fee_bps = tiers.get(current_tier).unwrap().fee_bps;
+        // `current_tier` is always inside the ladder for a validated one, but
+        // keep the missing-rung arm typed instead of unwrapping the lookup.
+        let fee_bps = tiers
+            .get(current_tier)
+            .ok_or(Error::InvalidTierLadder)?
+            .fee_bps;
         let state = MerchantTierState {
             settled_volume,
             current_tier,

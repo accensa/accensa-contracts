@@ -777,10 +777,11 @@ fn prior_transparent_vote_prevents_that_member_from_entering_an_anonymous_ring()
     assert_eq!(h.gov.get_proposal(&id).yes_weight, 1);
 }
 
-// ── Missing configuration is a typed error, not a trap (#671, #673) ──────────
+// ── Missing configuration is a typed error, not a trap (#552, #671, #673) ───
 
 /// Remove one configuration entry from the governance contract's instance
-/// storage, the way a partially migrated deployment could be missing it.
+/// storage, the way a partially migrated deployment could be missing it or
+/// after instance storage TTL eviction (#552).
 fn remove_config(h: &Harness, key: crate::DataKey) {
     h.env.as_contract(&h.gov.address, || {
         h.env.storage().instance().remove(&key);
@@ -838,4 +839,161 @@ fn execute_without_voting_period_returns_typed_error() {
         execute_after_removing(crate::DataKey::VotingPeriod),
         Err(Error::InvalidVotingPeriod)
     );
+}
+
+#[test]
+fn propose_after_instance_ttl_eviction_returns_typed_error() {
+    let h = setup();
+    remove_config(&h, crate::DataKey::VotingPeriod);
+
+    let (target, function, args) = set_value_call(&h.env, &h.target, 7);
+    assert_eq!(
+        h.gov.try_propose(&h.m1, &target, &function, &args),
+        Err(Ok(Error::InvalidVotingPeriod))
+    );
+}
+
+#[test]
+fn execute_after_instance_ttl_eviction_returns_typed_error() {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 9);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    h.gov.vote(&h.m3, &id, &true);
+    h.gov.vote(&h.m1, &id, &true);
+
+    remove_config(&h, crate::DataKey::TotalWeight);
+    assert_eq!(h.gov.try_execute(&id), Err(Ok(Error::InvalidMembers)));
+}
+
+// ── Client-driven Optimistic Voting Tests (#586) ─────────────────────────────
+
+#[test]
+fn optimistic_submit_and_execute_after_challenge_window() {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 42);
+
+    // Pass path: member submits through GovernanceClient
+    let id = h.gov.optimistic_submit(&h.m1, &target, &function, &args);
+    let proposal = h.gov.get_optimistic_proposal(&id);
+    assert_eq!(proposal.proposer, h.m1);
+    assert_eq!(proposal.target, target);
+    assert!(!proposal.executed);
+    assert!(!proposal.vetoed);
+
+    // Advance ledger past the challenge window
+    let deadline = proposal.challenge_deadline_ledger;
+    h.env
+        .ledger()
+        .with_mut(|l| l.sequence_number = deadline + 1);
+
+    // After window, vetoes close with ChallengeWindowClosed
+    assert_eq!(
+        h.gov.try_veto_optimistic(&h.m2, &id),
+        Err(Ok(Error::ChallengeWindowClosed))
+    );
+
+    // Pass path: unvetoed proposal executes cleanly after challenge window
+    h.gov.execute_optimistic(&id);
+    let executed_proposal = h.gov.get_optimistic_proposal(&id);
+    assert!(executed_proposal.executed);
+    assert_eq!(TargetClient::new(&h.env, &h.target).get_value(), 42);
+}
+
+#[test]
+fn optimistic_submit_rejects_non_member() {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 10);
+    let outsider = Address::generate(&h.env);
+
+    // Deny path: non-member cannot submit through GovernanceClient
+    assert_eq!(
+        h.gov
+            .try_optimistic_submit(&outsider, &target, &function, &args),
+        Err(Ok(Error::NotAMember))
+    );
+}
+
+#[test]
+fn optimistic_veto_rejects_non_member_and_allows_member() {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 20);
+    let id = h.gov.optimistic_submit(&h.m1, &target, &function, &args);
+
+    let outsider = Address::generate(&h.env);
+    // Deny path: non-member cannot veto through GovernanceClient
+    assert_eq!(
+        h.gov.try_veto_optimistic(&outsider, &id),
+        Err(Ok(Error::NotAMember))
+    );
+
+    // Pass path: member casts veto within challenge window
+    h.gov.veto_optimistic(&h.m2, &id);
+    let p = h.gov.get_optimistic_proposal(&id);
+    assert_eq!(p.veto_weight, 1);
+    assert!(!p.vetoed);
+}
+
+#[test]
+fn execute_optimistic_fails_when_supermajority_vetoes() {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 30);
+    let id = h.gov.optimistic_submit(&h.m1, &target, &function, &args);
+
+    // m3 (weight 2) + m2 (weight 1) = 3 of 4 = 75% >= ~2/3 supermajority threshold
+    h.gov.veto_optimistic(&h.m3, &id);
+    h.gov.veto_optimistic(&h.m2, &id);
+    assert!(h.gov.get_optimistic_proposal(&id).vetoed);
+
+    // Deny path: execute_optimistic errors when vetoed
+    assert_eq!(
+        h.gov.try_execute_optimistic(&id),
+        Err(Ok(Error::OptimisticVetoed))
+    );
+}
+
+#[test]
+fn execute_optimistic_already_executed_fails() {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 55);
+    let id = h.gov.optimistic_submit(&h.m1, &target, &function, &args);
+
+    h.gov.execute_optimistic(&id);
+    assert!(h.gov.get_optimistic_proposal(&id).executed);
+
+    // Deny path: execute_optimistic errors if executed already
+    assert_eq!(
+        h.gov.try_execute_optimistic(&id),
+        Err(Ok(Error::AlreadyExecuted))
+    );
+}
+
+#[test]
+fn get_optimistic_proposal_unknown_id_fails() {
+    let h = setup();
+    // Deny path: unknown proposal id returns OptimisticNotFound
+    assert_eq!(
+        h.gov.try_get_optimistic_proposal(&999_999),
+        Err(Ok(Error::OptimisticNotFound))
+    );
+}
+
+#[test]
+fn optimistic_proposal_id_does_not_collide_with_standard_proposal() {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 100);
+
+    // Standard proposal allocates ID 1
+    let std_id = h.gov.propose(&h.m1, &target, &function, &args);
+    assert_eq!(std_id, 1);
+
+    // Optimistic proposal also allocates ID 1 on its own counter
+    let opt_id = h.gov.optimistic_submit(&h.m2, &target, &function, &args);
+    assert_eq!(opt_id, 1);
+
+    // Verify both exist with independent state and proposers
+    let std_prop = h.gov.get_proposal(&std_id);
+    assert_eq!(std_prop.proposer, h.m1);
+
+    let opt_prop = h.gov.get_optimistic_proposal(&opt_id);
+    assert_eq!(opt_prop.proposer, h.m2);
 }
