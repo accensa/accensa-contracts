@@ -79,7 +79,7 @@ fn config_getters_are_unset_before_initialize() {
     );
     // Uninitialized peer store simply has no bindings.
     let p = peer(&env, 9);
-    assert_eq!(client.is_trusted_peer(&p.chain_id, &p.sender), false);
+    assert!(!client.is_trusted_peer(&p.chain_id, &p.sender));
 }
 
 // ── Initialized reads and rebinds ────────────────────────────────────────
@@ -119,9 +119,9 @@ fn config_getters_read_the_written_values_and_follow_rebinds() {
     // Trusted peer: unset -> set -> rebound, the getter follows.
     let p1 = peer(&env, 1);
     let p2 = peer(&env, 2);
-    assert_eq!(client.is_trusted_peer(&p1.chain_id, &p1.sender), false);
+    assert!(!client.is_trusted_peer(&p1.chain_id, &p1.sender));
     client.set_trusted_peer(&admin, &p1);
-    assert_eq!(client.is_trusted_peer(&p1.chain_id, &p1.sender), true);
+    assert!(client.is_trusted_peer(&p1.chain_id, &p1.sender));
     client.set_trusted_peer(&admin, &p2);
     assert_eq!(
         client.is_trusted_peer(&p2.chain_id, &p2.sender),
@@ -129,7 +129,7 @@ fn config_getters_read_the_written_values_and_follow_rebinds() {
         "set_trusted_peer must register the rebound peer and is_trusted_peer must follow"
     );
     // Bindings are per (chain, sender): the earlier peer stays trusted.
-    assert_eq!(client.is_trusted_peer(&p1.chain_id, &p1.sender), true);
+    assert!(client.is_trusted_peer(&p1.chain_id, &p1.sender));
 }
 
 // ── Both require_admin verdicts, unmocked (issue #653) ───────────────────
