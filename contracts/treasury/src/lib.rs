@@ -58,6 +58,7 @@ mod liquidation_test;
 pub mod strategies;
 #[cfg(test)]
 mod strategies_test;
+pub mod sweep;
 #[cfg(test)]
 mod test;
 pub mod vesting;
