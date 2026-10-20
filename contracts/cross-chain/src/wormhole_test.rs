@@ -4,9 +4,14 @@ extern crate std;
 
 use accensa_common::Error;
 use k256::ecdsa::SigningKey;
-use soroban_sdk::{testutils::Address as _, vec, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    vec, Address, Bytes, BytesN, Env, Vec,
+};
 
 use crate::{
+    layerzero::PeerAddress,
+    outbound::{execute_withdrawal_to_evm, OutboundBridgePayload},
     wormhole::{
         hash_vaa_body, parse_vaa, pubkey_to_address, verify_vaa, GuardianAddress, GuardianSet,
         GuardianSignature,
@@ -180,6 +185,135 @@ fn test_verify_vaa_insufficient_quorum_rejected() {
     assert_eq!(
         verify_vaa(&env, &parsed, &guardian_set),
         Err(Error::InvalidProof)
+    );
+}
+
+// ── Direct unit coverage for untested public helpers (issue #695) ────────────
+//
+// These tests name and drive three public functions the VAA tests above never
+// reach: `outbound::execute_withdrawal_to_evm`, `get_destination_chain_id` and
+// `is_trusted_peer`.
+
+#[test]
+fn get_destination_chain_id_returns_configured_value_and_errors_when_unset() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CrossChainBridge, ());
+    let client = CrossChainBridgeClient::new(&env, &contract_id);
+
+    // Before `initialize` the key is absent: a typed, asserted error variant.
+    assert_eq!(
+        client.try_get_destination_chain_id(),
+        Err(Ok(Error::NotInitialized))
+    );
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.initialize(&admin, &token, &137);
+
+    // The configured chain id is returned verbatim.
+    assert_eq!(client.get_destination_chain_id(), 137);
+}
+
+#[test]
+fn is_trusted_peer_reflects_set_trusted_peer_registration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CrossChainBridge, ());
+    let client = CrossChainBridgeClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.initialize(&admin, &token, &1);
+
+    let src_eid = 101u32;
+    // Ethereum-style 20-byte peer address, left-padded into 32 bytes.
+    let mut peer_bytes = [0u8; 32];
+    peer_bytes[12..].copy_from_slice(&[0xab_u8; 20]);
+    let peer = BytesN::from_array(&env, &peer_bytes);
+    let stranger = BytesN::from_array(&env, &[0xcd_u8; 32]);
+
+    // Nothing is trusted until the admin registers a peer explicitly.
+    assert!(!client.is_trusted_peer(&src_eid, &peer));
+
+    client.set_trusted_peer(
+        &admin,
+        &PeerAddress {
+            chain_id: src_eid,
+            sender: peer.clone(),
+        },
+    );
+
+    // The registered `(chain_id, sender)` is trusted...
+    assert!(client.is_trusted_peer(&src_eid, &peer));
+    // ...while trust stays keyed on both the chain and the sender identity.
+    assert!(!client.is_trusted_peer(&102u32, &peer));
+    assert!(!client.is_trusted_peer(&src_eid, &stranger));
+}
+
+#[test]
+fn execute_withdrawal_to_evm_burns_wrapped_asset_and_returns_payload() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_700_000_000);
+
+    let contract_id = env.register(CrossChainBridge, ());
+
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let caller = Address::generate(&env);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_addr).mint(&caller, &10_000);
+
+    let evm_recipient: BytesN<20> = BytesN::from_array(&env, &[0xab; 20]);
+
+    let payload = env
+        .as_contract(&contract_id, || {
+            execute_withdrawal_to_evm(&env, &caller, &token_addr, &evm_recipient, 4_000, 1, 7)
+        })
+        .unwrap();
+
+    assert_eq!(
+        payload,
+        OutboundBridgePayload {
+            sequence: 7,
+            sender: caller.clone(),
+            evm_recipient: evm_recipient.clone(),
+            amount: 4_000,
+            destination_chain_id: 1,
+            token: token_addr.clone(),
+            timestamp: 1_700_000_000,
+        }
+    );
+
+    // The wrapped asset is burned from the caller, not merely transferred.
+    assert_eq!(
+        soroban_sdk::token::Client::new(&env, &token_addr).balance(&caller),
+        6_000
+    );
+}
+
+#[test]
+fn execute_withdrawal_to_evm_rejects_non_positive_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let caller = Address::generate(&env);
+    let token = Address::generate(&env);
+    let evm_recipient: BytesN<20> = BytesN::from_array(&env, &[0xcd; 20]);
+
+    // Zero and negative amounts fail with the typed error before any auth or
+    // token interaction, so no balance or contract context is needed.
+    assert_eq!(
+        execute_withdrawal_to_evm(&env, &caller, &token, &evm_recipient, 0, 1, 1),
+        Err(Error::InvalidAmount)
+    );
+    assert_eq!(
+        execute_withdrawal_to_evm(&env, &caller, &token, &evm_recipient, -1, 1, 1),
+        Err(Error::InvalidAmount)
     );
 }
 

@@ -173,7 +173,7 @@ mod tests {
     use crate::testutils::make_auth_entry_with_nonce;
     use crate::{Error, MultisigAccount, MultisigAccountClient};
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Events as _, Ledger as _},
         token::{StellarAssetClient, TokenClient},
         vec, Address, Env, IntoVal, Val,
     };
@@ -360,5 +360,70 @@ mod tests {
     fn setting_a_limit_requires_account_auth() {
         let fx = setup();
         fx.client().set_daily_limit(&fx.token, &5);
+    }
+
+    #[test]
+    fn daily_limit_set_emits_event_for_nonzero_allowance() {
+        let fx = setup();
+        let events = fx.env.events().all().filter_by_contract(&fx.account);
+        assert_eq!(events.events().len(), 1);
+        let mut event_data = soroban_sdk::Map::new(&fx.env);
+        event_data.set(soroban_sdk::Symbol::new(&fx.env, "limit"), LIMIT);
+        assert_eq!(
+            events,
+            vec![
+                &fx.env,
+                (
+                    fx.account.clone(),
+                    (
+                        soroban_sdk::Symbol::new(&fx.env, "daily_limit_set"),
+                        fx.token.clone()
+                    )
+                        .into_val(&fx.env),
+                    event_data.into_val(&fx.env)
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn daily_limit_set_clears_with_limit_zero() {
+        let fx = setup();
+        fx.env.mock_all_auths();
+        fx.client().set_daily_limit(&fx.token, &0);
+
+        let after = fx.env.events().all().filter_by_contract(&fx.account);
+        assert_eq!(after.events().len(), 1);
+        let mut event_data = soroban_sdk::Map::new(&fx.env);
+        event_data.set(soroban_sdk::Symbol::new(&fx.env, "limit"), 0i128);
+        assert_eq!(
+            after,
+            vec![
+                &fx.env,
+                (
+                    fx.account.clone(),
+                    (
+                        soroban_sdk::Symbol::new(&fx.env, "daily_limit_set"),
+                        fx.token.clone()
+                    )
+                        .into_val(&fx.env),
+                    event_data.into_val(&fx.env)
+                )
+            ]
+        );
+        assert_eq!(fx.client().get_daily_limit(&fx.token), 0);
+    }
+
+    #[test]
+    fn negative_limit_is_rejected_emits_no_new_event() {
+        let fx = setup();
+        fx.env.mock_all_auths();
+        assert_eq!(
+            fx.client().try_set_daily_limit(&fx.token, &-1),
+            Err(Ok(Error::InvalidLimit))
+        );
+
+        let events = fx.env.events().all().filter_by_contract(&fx.account);
+        assert_eq!(events.events().len(), 0);
     }
 }

@@ -473,6 +473,31 @@ fn test_unpause_requires_merchant_auth() {
     client.unpause();
 }
 
+#[test]
+#[should_panic]
+fn test_refund_requires_merchant_auth() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000, &None);
+    let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
+    let recipient = Address::generate(&env);
+
+    // Enforcing mode with no signatures: merchant.require_auth() must abort.
+    env.set_auths(&[]);
+    client.refund(&payment_ref, &recipient, &50, &0, &100, &None, &0);
+}
+
+#[test]
+fn test_deposit_from_non_merchant_fails() {
+    let (env, client, _merchant, token) = setup(100);
+    let non_merchant = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&non_merchant, &100);
+
+    assert_eq!(
+        client.try_deposit(&non_merchant, &100, &None),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
 // ── Paused-state invariant (issue #80) ────────────────────────────────────
 //
 // Holistic coverage for the emergency-stop guarantee: the vault is
@@ -2611,4 +2636,53 @@ fn test_process_batch_consumes_one_user_nonce_but_empty_does_not() {
         client.try_process_batch(&batch, &0),
         Err(Ok(Error::StaleState))
     );
+}
+
+// ── Config Getters Tests (#593) ─────────────────────────────────────────────
+
+mod config_getters_tests {
+    use super::*;
+
+    #[test]
+    fn test_initialized_config_getters() {
+        let (_env, client, merchant, token) = setup(100);
+
+        // All four getters return their initialized values
+        assert_eq!(client.get_admin(), merchant);
+        assert_eq!(client.try_get_admin(), Ok(Ok(merchant)));
+
+        assert_eq!(client.get_token(), token);
+        assert_eq!(client.try_get_token(), Ok(Ok(token)));
+
+        assert_eq!(client.get_refund_window(), 100);
+
+        assert!(!client.is_paused());
+        assert_eq!(client.try_is_paused(), Ok(Ok(false)));
+    }
+
+    #[test]
+    fn test_pause_unpause_flips_is_paused() {
+        let (_env, client, _merchant, _token) = setup(100);
+
+        assert!(!client.is_paused());
+
+        client.pause();
+        assert!(client.is_paused());
+        assert_eq!(client.try_is_paused(), Ok(Ok(true)));
+
+        client.unpause();
+        assert!(!client.is_paused());
+        assert_eq!(client.try_is_paused(), Ok(Ok(false)));
+    }
+
+    #[test]
+    fn test_uninitialized_is_paused_outcome() {
+        let (env, client, _merchant, _token) = setup(100);
+        env.as_contract(&client.address, || {
+            env.storage().instance().remove(&DataKey::Admin);
+        });
+
+        // As documented in README.md:196, missing admin => NotInitialized
+        assert_eq!(client.try_is_paused(), Err(Ok(Error::NotInitialized)));
+    }
 }

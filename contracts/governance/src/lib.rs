@@ -276,10 +276,25 @@ pub struct Proposal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposalCreated {
     #[topic]
+    /// Proposal id assigned by the creating path ([`Governance::propose`], or
+    /// `simulation::propose_with_simulation`): the incremented
+    /// `DataKey::ProposalCount`, starting at `1`. Published as the event topic
+    /// and used as the `DataKey::Proposal(id)` key by [`Governance::vote`],
+    /// [`Governance::execute`] and `get_proposal`.
     pub proposal_id: u64,
+    /// Address whose authorization the creating path required; also stored
+    /// unchanged as `Proposal::proposer`.
     pub proposer: Address,
+    /// Address of the contract the proposal calls: [`Governance::execute`]
+    /// invokes `function` on it.
     pub target: Address,
+    /// Symbol naming the target function that [`Governance::execute`]
+    /// invokes, with the args stored in the `Proposal` record.
     pub function: Symbol,
+    /// Last ledger on which votes count, as a ledger sequence number: the
+    /// creating path sets it to the ledger at creation plus the configured
+    /// `DataKey::VotingPeriod`, and [`Governance::vote`] rejects a vote at any
+    /// strictly later ledger.
     pub deadline_ledger: u32,
 }
 
