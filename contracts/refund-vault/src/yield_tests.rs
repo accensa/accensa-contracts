@@ -309,6 +309,8 @@ fn test_deploy_to_yield_happy_path() {
 
 #[test]
 fn test_deploy_without_strategy_fails() {
+    use soroban_sdk::{testutils::Events, Event};
+
     let env = Env::default();
     env.mock_all_auths();
 
@@ -326,11 +328,19 @@ fn test_deploy_without_strategy_fails() {
         vault_client.try_deploy_to_yield(&100_000),
         Err(Ok(Error::StrategyNotSet))
     );
+
+    // A rejected deploy publishes nothing: `events().all()` reflects only the
+    // last top-level invocation (the failed `try_deploy_to_yield`), and that
+    // invocation emitted no event at all.
+    let events = env.events().all().filter_by_contract(&vault_client.address);
+    assert_eq!(events.events().len(), 0);
 }
 
 #[test]
 fn test_deploy_insufficient_reserve_fails() {
-    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
+    use soroban_sdk::{testutils::Events, Event};
+
+    let (env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
 
     vault_client.deposit(&merchant, &5_000_000, &None);
 
@@ -338,6 +348,11 @@ fn test_deploy_insufficient_reserve_fails() {
         vault_client.try_deploy_to_yield(&4_500_000),
         Err(Ok(Error::InsufficientReserve))
     );
+
+    // The rejected deploy leaves no event behind either: the last top-level
+    // invocation (the failed `try_deploy_to_yield`) published nothing.
+    let events = env.events().all().filter_by_contract(&vault_client.address);
+    assert_eq!(events.events().len(), 0);
 }
 
 #[test]
@@ -995,4 +1010,91 @@ fn test_yield_info_survives_refund() {
     assert_eq!(info_before.strategy, info_after.strategy);
     assert_eq!(info_before.reserve_ratio, info_after.reserve_ratio);
     assert_eq!(info_before.max_deploy_ratio, info_after.max_deploy_ratio);
+}
+
+// ── Strategy approval / yield distribution event shape tests ───────────────
+//
+// `StrategyApprovalEvent` is the only on-chain record distinguishing an
+// approval from a revocation (the payload's `approved` flag), and
+// `YieldDistributedEvent` is the only record of how much yield actually moved
+// to the recipient. `env.events().all()` reflects only the last top-level
+// invocation, so each assertion reads the event list immediately after the
+// call under test. The comparison is the XDR form used by
+// `contracts/state-channel/src/hashlock_test.rs`.
+
+#[test]
+fn test_strategy_approval_event_distinguishes_approve_from_revoke() {
+    use soroban_sdk::{testutils::Events, Event};
+
+    let (env, vault_client, _merchant, _token, _strategy, _tc) = setup_with_strategy(2000, 8000);
+    let contract = vault_client.address.clone();
+    // A second, non-active strategy so revoking it can never hit the
+    // `StrategyHasPrincipal` guard.
+    let other = Address::generate(&env);
+
+    vault_client.approve_yield_strategy(&other);
+
+    let events = env.events().all().filter_by_contract(&contract);
+    assert_eq!(events.events().len(), 1);
+    let expected = crate::strategy::StrategyApprovalEvent {
+        strategy: other.clone(),
+        approved: true,
+    };
+    assert_eq!(&events.events()[0], &expected.to_xdr(&env, &contract));
+
+    vault_client.revoke_yield_strategy(&other);
+
+    // Same type, opposite transition: only the payload's `approved` flag
+    // distinguishes the two, and both are asserted in full here.
+    let events = env.events().all().filter_by_contract(&contract);
+    assert_eq!(events.events().len(), 1);
+    let expected = crate::strategy::StrategyApprovalEvent {
+        strategy: other.clone(),
+        approved: false,
+    };
+    assert_eq!(&events.events()[0], &expected.to_xdr(&env, &contract));
+}
+
+#[test]
+fn test_yield_distributed_event_amount_equals_tokens_moved() {
+    use soroban_sdk::{testutils::Events, Event};
+
+    let (env, vault_client, merchant, _token, strategy_addr, tc) = setup_with_strategy(0, 10_000);
+
+    vault_client.deposit(&merchant, &5_000_000, &None);
+    vault_client.deploy_to_yield(&3_000_000);
+    let strategy_client = MockYieldStrategyClient::new(&env, &strategy_addr);
+    strategy_client.simulate_yield(&200_000);
+    vault_client.harvest_yield();
+
+    // No yield recipient is configured, so the recipient falls back to the
+    // merchant (admin). Snapshot the balances before the call, then publish.
+    let recipient_before = tc.balance(&merchant);
+    let vault_before = tc.balance(&vault_client.address);
+
+    let moved = vault_client.distribute_yield();
+    // Read the event list before any further client call: `events().all()`
+    // reflects only the last top-level invocation (the distribute).
+    let events = env.events().all().filter_by_contract(&vault_client.address);
+
+    // The asserted amount is tied to the token balances moved by this call:
+    // what left the vault is what arrived at the recipient.
+    let recipient_after = tc.balance(&merchant);
+    let vault_after = tc.balance(&vault_client.address);
+    assert_eq!(recipient_after - recipient_before, moved);
+    assert_eq!(vault_before - vault_after, moved);
+    assert_eq!(moved, 200_000);
+
+    assert_eq!(events.events().len(), 1);
+    let expected = crate::strategy::YieldDistributedEvent {
+        recipient: merchant.clone(),
+        amount: moved,
+        // Nonce sequence in this flow: deposit (0), deploy (1), harvest (2),
+        // distribute (3).
+        nonce: 3,
+    };
+    assert_eq!(
+        &events.events()[0],
+        &expected.to_xdr(&env, &vault_client.address)
+    );
 }

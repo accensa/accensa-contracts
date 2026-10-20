@@ -105,21 +105,35 @@ impl ReceiptShard {
         count: u32,
         period_start: u64,
         period_end: u64,
-    ) {
-        assert!(Self::is_active(env.clone()), "shard is inactive");
-        let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
+    ) -> Result<(), Error> {
+        let active: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Active)
+            .ok_or(Error::NotInitialized)?;
+        if !active {
+            return Err(Error::Unauthorized);
+        }
+        let router: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Router)
+            .ok_or(Error::NotInitialized)?;
         router.require_auth();
 
         let start: u64 = env
             .storage()
             .instance()
             .get(&DataKey::StartBatchId)
-            .unwrap();
-        let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
-        assert!(
-            batch_id >= start && batch_id < end,
-            "batch_id out of shard range"
-        );
+            .ok_or(Error::NotInitialized)?;
+        let end: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
+        if batch_id < start || batch_id >= end {
+            return Err(Error::BatchNotFound);
+        }
 
         let record = BatchRecord {
             root,
@@ -142,6 +156,7 @@ impl ReceiptShard {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Batch(batch_id), TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
     }
 
     /// Reads this shard's record for `batch_id`. Read-only and
@@ -167,6 +182,8 @@ impl ReceiptShard {
         let batch = Self::get_batch(env, batch_id)?;
         let computed_hash = Self::fold_proof(leaf.to_array(), proof);
 
+        // Public-data comparison: both the folded proof and the stored Merkle
+        // root are public commitment data, so standard equality is intentional.
         Ok(computed_hash == batch.root.to_array())
     }
 
