@@ -95,6 +95,8 @@ use soroban_sdk::{
 };
 use std::{format, string::String, vec};
 
+use super::merkle::fold_proof;
+use super::zk_verifier::{verify_batch_zk_proof, ZkProof};
 use super::{DataKey, Error, ReceiptAnchor, ReceiptAnchorClient};
 
 /// Logical shard used by the fuzz model (single-stream). Cross-shard behavior
@@ -1124,4 +1126,101 @@ fn benchmark_gas_and_cpu_instructions() {
         max_mem_verify,
         mem_verify
     );
+}
+
+// ── Direct unit coverage for untested public helpers (issue #698) ───────────
+//
+// The property tests above only reach `zk_verifier::verify_batch_zk_proof`,
+// `merkle::fold_proof` and `ReceiptAnchor::get_min_anchor_interval`
+// indirectly. These tests call each one and pin its exact return value.
+
+/// Builds a `ZkProof` from raw component bytes, mirroring the `Bytes` fields
+/// `verify_batch_zk_proof` inspects.
+fn zk_proof(env: &Env, a: &[u8], b: &[u8], c: &[u8]) -> ZkProof {
+    ZkProof {
+        a: Bytes::from_slice(env, a),
+        b: Bytes::from_slice(env, b),
+        c: Bytes::from_slice(env, c),
+    }
+}
+
+#[test]
+fn verify_batch_zk_proof_rejects_bad_shape_and_accepts_wellformed() {
+    let env = test_env();
+    let state_root = BytesN::from_array(&env, &[0xAB; 32]);
+
+    // Zero count is rejected up front, before the proof is inspected.
+    let wellformed = zk_proof(&env, &[1u8; 32], &[2u8; 32], &[3u8; 32]);
+    assert_eq!(
+        verify_batch_zk_proof(&env, &state_root, &wellformed, 0),
+        Ok(false)
+    );
+
+    // Any empty component is rejected.
+    let empty_c = zk_proof(&env, &[1u8; 32], &[2u8; 32], &[]);
+    assert_eq!(
+        verify_batch_zk_proof(&env, &state_root, &empty_c, 4),
+        Ok(false)
+    );
+
+    // A component shorter than 32 bytes is rejected.
+    let short_b = zk_proof(&env, &[1u8; 32], &[2u8; 31], &[3u8; 32]);
+    assert_eq!(
+        verify_batch_zk_proof(&env, &state_root, &short_b, 4),
+        Ok(false)
+    );
+
+    // An all-zero G1 point is a forged proof and is rejected even at 32 bytes.
+    let zero_a = zk_proof(&env, &[0u8; 32], &[2u8; 32], &[3u8; 32]);
+    assert_eq!(
+        verify_batch_zk_proof(&env, &state_root, &zero_a, 4),
+        Ok(false)
+    );
+
+    // Non-empty, >=32-byte, non-zero components with count > 0 are accepted.
+    let big = zk_proof(&env, &[9u8; 64], &[8u8; 64], &[7u8; 64]);
+    assert_eq!(verify_batch_zk_proof(&env, &state_root, &big, 9), Ok(true));
+}
+
+#[test]
+fn fold_proof_returns_leaf_then_sorted_pair_root() {
+    let env = test_env();
+    let leaf = leaves_from_seed(42, 1)[0];
+    let sibling = leaves_from_seed(99, 1)[0];
+    let sibling2 = leaves_from_seed(1234, 1)[0];
+
+    // Empty proof: a single-leaf tree's root is the leaf itself.
+    let empty = to_svec(&env, std::vec::Vec::new());
+    assert_eq!(fold_proof(leaf, &empty), leaf);
+
+    // One sibling folds to the sorted-pair hash of leaf and sibling.
+    let one = to_svec(&env, std::vec![BytesN::from_array(&env, &sibling)]);
+    assert_eq!(fold_proof(leaf, &one), hash_pair(&env, &leaf, &sibling));
+
+    // Two siblings fold bottom-up, one sorted-pair hash per level.
+    let two = to_svec(
+        &env,
+        std::vec![
+            BytesN::from_array(&env, &sibling),
+            BytesN::from_array(&env, &sibling2),
+        ],
+    );
+    let expected = hash_pair(&env, &hash_pair(&env, &leaf, &sibling), &sibling2);
+    assert_eq!(fold_proof(leaf, &two), expected);
+}
+
+#[test]
+fn get_min_anchor_interval_reads_default_and_updated_value() {
+    let (_env, client, _merchant) = setup();
+
+    // Freshly initialized instance: the unset key reads as the documented 0.
+    assert_eq!(client.get_min_anchor_interval(), 0);
+
+    // A successful update is reflected on read-back.
+    client.set_min_anchor_interval(&120);
+    assert_eq!(client.get_min_anchor_interval(), 120);
+
+    // 0 is accepted and disables rate-limiting, reading back as 0.
+    client.set_min_anchor_interval(&0);
+    assert_eq!(client.get_min_anchor_interval(), 0);
 }

@@ -570,3 +570,86 @@ mod execute_batch_tests {
         assert_eq!(target_client.get_history(), soroban_sdk::vec![&t.env]);
     }
 }
+
+// ── Verify Ed25519 Tests (#592) ─────────────────────────────────────────────
+
+mod verify_ed25519_tests {
+    use super::*;
+    use crate::crypto::ED25519_ORDER_LE;
+    use ed25519_dalek::{Signer, SigningKey};
+    use soroban_sdk::{Bytes, BytesN};
+
+    /// Little-endian 256-bit addition (no overflow for the values used here).
+    fn add_le(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let mut carry = 0u16;
+        for i in 0..32 {
+            let sum = a[i] as u16 + b[i] as u16 + carry;
+            out[i] = sum as u8;
+            carry = sum >> 8;
+        }
+        out
+    }
+
+    /// Returns `(public_key, message, signature)` for the golden test vector in crypto.rs.
+    fn golden_signed(env: &Env) -> (BytesN<32>, Bytes, [u8; 64]) {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let msg = b"accensa multisig payload";
+        let sig = sk.sign(msg).to_bytes();
+        (
+            BytesN::from_array(env, &sk.verifying_key().to_bytes()),
+            Bytes::from_slice(env, msg),
+            sig,
+        )
+    }
+
+    /// Malleates signature by adding group order L to the s scalar (bytes 32..64).
+    fn malleate(sig: &[u8; 64]) -> [u8; 64] {
+        let mut s = [0u8; 32];
+        s.copy_from_slice(&sig[32..]);
+        let mut out = *sig;
+        out[32..].copy_from_slice(&add_le(&s, &ED25519_ORDER_LE));
+        out
+    }
+
+    #[test]
+    fn valid_signature_returns_normally() {
+        let t = setup();
+        let (pk, msg, sig) = golden_signed(&t.env);
+        let sig_bytes = BytesN::from_array(&t.env, &sig);
+
+        // Entry point returns normally
+        t.client().verify_ed25519(&pk, &msg, &sig_bytes);
+        assert_eq!(
+            t.client().try_verify_ed25519(&pk, &msg, &sig_bytes),
+            Ok(Ok(()))
+        );
+    }
+
+    #[test]
+    fn non_canonical_s_signature_returns_typed_error() {
+        let t = setup();
+        let (pk, msg, sig) = golden_signed(&t.env);
+        let malleated = BytesN::from_array(&t.env, &malleate(&sig));
+
+        assert_eq!(
+            t.client().try_verify_ed25519(&pk, &msg, &malleated),
+            Err(Ok(Error::NonCanonicalSignature))
+        );
+    }
+
+    #[test]
+    fn invalid_signature_traps() {
+        let t = setup();
+        let (pk, msg, mut sig) = golden_signed(&t.env);
+        sig[0] ^= 0x01;
+        let invalid_sig = BytesN::from_array(&t.env, &sig);
+
+        let res = t.client().try_verify_ed25519(&pk, &msg, &invalid_sig);
+        assert!(
+            matches!(res, Err(Err(_))),
+            "expected host trap represented as Err(Err(..)), got {:?}",
+            res
+        );
+    }
+}
