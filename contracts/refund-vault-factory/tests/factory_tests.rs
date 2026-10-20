@@ -622,3 +622,164 @@ fn get_tvl_drops_by_the_refunded_amount() {
 
     assert_eq!(factory.get_tvl(&token), FLOAT - 100_000);
 }
+
+// ── initialize alias tests (issue #591) ──────────────────────────────────────
+
+mod initialize_alias {
+    use super::*;
+    use soroban_sdk::{contract, contractimpl};
+
+    #[contract]
+    pub struct FreshFactory;
+
+    #[contractimpl]
+    impl FreshFactory {
+        pub fn initialize(
+            env: Env,
+            admin: Address,
+            vault_wasm_hash: BytesN<32>,
+            time_policy: Option<Address>,
+            vdf_policy: Option<Address>,
+        ) -> Result<(), Error> {
+            RefundVaultFactory::initialize(env, admin, vault_wasm_hash, time_policy, vdf_policy)
+        }
+
+        pub fn get_admin(env: Env) -> Option<Address> {
+            RefundVaultFactory::get_admin(env)
+        }
+
+        pub fn get_vault_wasm(env: Env) -> Option<BytesN<32>> {
+            RefundVaultFactory::get_vault_wasm(env)
+        }
+
+        pub fn get_time_policy_contract(env: Env) -> Option<Address> {
+            RefundVaultFactory::get_time_policy_contract(env)
+        }
+
+        pub fn get_vdf_policy_contract(env: Env) -> Option<Address> {
+            RefundVaultFactory::get_vdf_policy_contract(env)
+        }
+
+        pub fn get_next_salt(env: Env) -> u128 {
+            RefundVaultFactory::get_next_salt(env)
+        }
+    }
+
+    fn fresh_factory(
+        env: &Env,
+    ) -> (
+        RefundVaultFactoryClient<'static>,
+        Address,
+        BytesN<32>,
+        Option<Address>,
+        Option<Address>,
+    ) {
+        let admin = Address::generate(env);
+        let wasm_hash = BytesN::from_array(env, &[42u8; 32]);
+        let time_policy = Some(Address::generate(env));
+        let vdf_policy = Some(Address::generate(env));
+        let factory_id = env.register(FreshFactory, ());
+        let client = RefundVaultFactoryClient::new(env, &factory_id);
+        (client, admin, wasm_hash, time_policy, vdf_policy)
+    }
+
+    #[test]
+    fn initialize_alias_succeeds_and_matches_constructor_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate()
+            .budget()
+            .reset_limits(500_000_000, 500_000_000);
+
+        let (client, admin, wasm_hash, time_policy, vdf_policy) = fresh_factory(&env);
+
+        // Before initialize, stored keys are empty.
+        assert_eq!(client.get_admin(), None);
+        assert_eq!(client.get_vault_wasm(), None);
+        assert_eq!(client.get_time_policy_contract(), None);
+        assert_eq!(client.get_vdf_policy_contract(), None);
+
+        // Initialize alias succeeds.
+        client.initialize(&admin, &wasm_hash, &time_policy, &vdf_policy);
+
+        // State matches initialized values.
+        assert_eq!(client.get_admin(), Some(admin.clone()));
+        assert_eq!(client.get_vault_wasm(), Some(wasm_hash.clone()));
+        assert_eq!(client.get_time_policy_contract(), time_policy.clone());
+        assert_eq!(client.get_vdf_policy_contract(), vdf_policy.clone());
+
+        // And matches a constructor-derived instance with identical inputs.
+        let constructor_factory_id = env.register(
+            RefundVaultFactory,
+            (
+                admin.clone(),
+                wasm_hash.clone(),
+                time_policy.clone(),
+                vdf_policy.clone(),
+            ),
+        );
+        let constructor_client = RefundVaultFactoryClient::new(&env, &constructor_factory_id);
+        assert_eq!(client.get_admin(), constructor_client.get_admin());
+        assert_eq!(client.get_vault_wasm(), constructor_client.get_vault_wasm());
+        assert_eq!(
+            client.get_time_policy_contract(),
+            constructor_client.get_time_policy_contract()
+        );
+        assert_eq!(
+            client.get_vdf_policy_contract(),
+            constructor_client.get_vdf_policy_contract()
+        );
+        assert_eq!(client.get_next_salt(), constructor_client.get_next_salt());
+    }
+
+    #[test]
+    fn initialize_alias_double_init_reverts_and_preserves_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate()
+            .budget()
+            .reset_limits(500_000_000, 500_000_000);
+
+        let (client, admin, wasm_hash, time_policy, vdf_policy) = fresh_factory(&env);
+
+        client.initialize(&admin, &wasm_hash, &time_policy, &vdf_policy);
+
+        // Attempting to re-initialize with different parameters reverts with AlreadyInitialized.
+        let other_admin = Address::generate(&env);
+        let other_wasm_hash = BytesN::from_array(&env, &[99u8; 32]);
+        let other_time = Some(Address::generate(&env));
+        let other_vdf = Some(Address::generate(&env));
+
+        assert_eq!(
+            client.try_initialize(&other_admin, &other_wasm_hash, &other_time, &other_vdf,),
+            Err(Ok(Error::AlreadyInitialized))
+        );
+
+        // Stored values remain completely untouched by the reverted second call.
+        assert_eq!(client.get_admin(), Some(admin));
+        assert_eq!(client.get_vault_wasm(), Some(wasm_hash));
+        assert_eq!(client.get_time_policy_contract(), time_policy);
+        assert_eq!(client.get_vdf_policy_contract(), vdf_policy);
+    }
+
+    #[test]
+    fn initialize_alias_denies_call_without_admin_auth_under_recording_auth() {
+        let env = Env::default();
+        env.cost_estimate()
+            .budget()
+            .reset_limits(500_000_000, 500_000_000);
+
+        // Enforce recording auth without admin auth.
+        env.set_auths(&[]);
+
+        let (client, admin, wasm_hash, time_policy, vdf_policy) = fresh_factory(&env);
+
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = client.initialize(&admin, &wasm_hash, &time_policy, &vdf_policy);
+        }));
+        assert!(
+            res.is_err(),
+            "calling initialize without admin authorization must be denied"
+        );
+    }
+}

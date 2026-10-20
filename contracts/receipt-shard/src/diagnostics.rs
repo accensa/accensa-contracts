@@ -65,10 +65,15 @@ pub struct ShardDiagnostics {
 #[contracttype]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShardStats {
+    /// Live batches in storage; updated by `record_anchor`, `record_removals`, `record_migration`.
     pub live_batches: u64,
+    /// Sum of live batch leaves; updated by `record_anchor`, `record_removals`, `record_migration`.
     pub live_leaves: u64,
+    /// Lifetime cumulative leaves; incremented by `record_anchor` and `record_migration`.
     pub total_leaves: u64,
+    /// One past highest batch id anchored; updated by `record_anchor` and `record_migration`.
     pub high_water: u64,
+    /// Largest batch leaf count anchored; updated by `record_anchor` and `record_migration`.
     pub max_batch_count: u32,
 }
 

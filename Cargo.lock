@@ -1015,6 +1015,7 @@ dependencies = [
 name = "governance"
 version = "0.1.0"
 dependencies = [
+ "budget-macros",
  "curve25519-dalek 5.0.0",
  "receipt-anchor",
  "soroban-sdk",
@@ -1624,6 +1625,7 @@ name = "refund-policy-vdf"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "budget-macros",
  "crypto-bigint",
  "soroban-sdk",
 ]
@@ -2207,6 +2209,7 @@ name = "state-channel"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "budget-macros",
  "ed25519-dalek 3.0.0",
  "soroban-sdk",
 ]
@@ -2277,6 +2280,7 @@ name = "stream-vault"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "budget-macros",
  "proptest",
  "soroban-sdk",
 ]
@@ -2471,6 +2475,7 @@ checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 name = "upto-authorization"
 version = "0.1.0"
 dependencies = [
+ "budget-macros",
  "ed25519-dalek 3.0.0",
  "proptest",
  "soroban-sdk",

@@ -2233,3 +2233,110 @@ fn test_verify_receipt_leaf_agrees_with_shard_verifier() {
         assert!(by_root && by_batch, "leaf {i}");
     }
 }
+
+// zk_verifier structural-pre-filter boundary table. Every accept/reject arm
+// pinned so the "shape validation only, no pairing" contract is visible in
+// failing-test form, not prose alone. Mirrors the accept/reject arms of
+// verify_groth16 and verify_batch_zk_proof in src/zk_verifier.rs.
+#[test]
+fn zk_verifier_boundary_table() {
+    let env = Env::default();
+
+    fn proof(env: &Env, a: &[u8], b: &[u8], c: &[u8]) -> zk_verifier::ZkProof {
+        zk_verifier::ZkProof {
+            a: Bytes::from_slice(env, a),
+            b: Bytes::from_slice(env, b),
+            c: Bytes::from_slice(env, c),
+        }
+    }
+
+    fn vk(env: &Env, ic_count: usize) -> zk_verifier::VerifyingKey {
+        let mut ic = Vec::new(env);
+        for _ in 0..ic_count {
+            ic.push_back(Bytes::from_slice(env, &[1u8; 32]));
+        }
+        zk_verifier::VerifyingKey {
+            alpha_g1: Bytes::from_slice(env, &[2u8; 32]),
+            beta_g2: Bytes::from_slice(env, &[3u8; 32]),
+            gamma_g2: Bytes::from_slice(env, &[4u8; 32]),
+            delta_g2: Bytes::from_slice(env, &[5u8; 32]),
+            ic,
+        }
+    }
+
+    fn inputs(env: &Env, n: usize) -> Vec<BytesN<32>> {
+        let mut v = Vec::new(env);
+        for i in 0..n {
+            v.push_back(BytesN::from_array(env, &[i as u8; 32]));
+        }
+        v
+    }
+
+    let good_proof = proof(&env, &[9u8; 32], &[9u8; 32], &[9u8; 32]);
+    let good_vk = vk(&env, 2);
+    let good_inputs = inputs(&env, 1);
+
+    // 1. IC-count mismatch: vk.ic.len() (1) != public_inputs.len() + 1 (2) -> false
+    let bad_ic_vk = vk(&env, 1);
+    assert!(!zk_verifier::verify_groth16(&env, &good_proof, &bad_ic_vk, &good_inputs).unwrap());
+
+    // 2. Empty proof field (a) -> false
+    let empty_a_proof = proof(&env, &[], &[9u8; 32], &[9u8; 32]);
+    assert!(!zk_verifier::verify_groth16(&env, &empty_a_proof, &good_vk, &good_inputs).unwrap());
+
+    // 3. Sub-32-byte point (a, 16 bytes) -> false
+    let short_proof = proof(&env, &[9u8; 16], &[9u8; 32], &[9u8; 32]);
+    assert!(!zk_verifier::verify_groth16(&env, &short_proof, &good_vk, &good_inputs).unwrap());
+
+    // 4. All-zero point (a) -> false
+    let zero_proof = proof(&env, &[0u8; 32], &[9u8; 32], &[9u8; 32]);
+    assert!(!zk_verifier::verify_groth16(&env, &zero_proof, &good_vk, &good_inputs).unwrap());
+
+    // 5. Shaped-but-forged proof -> true (shape validation passes, no pairing check)
+    assert!(zk_verifier::verify_groth16(&env, &good_proof, &good_vk, &good_inputs).unwrap());
+
+    // verify_batch_zk_proof: count == 0 -> false
+    assert!(!zk_verifier::verify_batch_zk_proof(
+        &env,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &good_proof,
+        0,
+    )
+    .unwrap());
+
+    // verify_batch_zk_proof: empty proof field -> false
+    assert!(!zk_verifier::verify_batch_zk_proof(
+        &env,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &empty_a_proof,
+        1,
+    )
+    .unwrap());
+
+    // verify_batch_zk_proof: sub-32-byte point -> false
+    assert!(!zk_verifier::verify_batch_zk_proof(
+        &env,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &short_proof,
+        1,
+    )
+    .unwrap());
+
+    // verify_batch_zk_proof: all-zero point -> false
+    assert!(!zk_verifier::verify_batch_zk_proof(
+        &env,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &zero_proof,
+        1,
+    )
+    .unwrap());
+
+    // verify_batch_zk_proof: shaped-but-forged proof -> true
+    assert!(zk_verifier::verify_batch_zk_proof(
+        &env,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &good_proof,
+        1,
+    )
+    .unwrap());
+}

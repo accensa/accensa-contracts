@@ -571,6 +571,8 @@ impl UptoAuthorization {
     }
 }
 
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;
 mod fuzz_test;
 mod inactivity_test;
 mod test;
