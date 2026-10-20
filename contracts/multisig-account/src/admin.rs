@@ -114,6 +114,9 @@ pub fn set_guardian(env: &Env, guardian: Option<Address>) {
 /// whose sole error arm is `Error::Unauthorized`.
 pub fn pause(env: &Env, caller: Address) -> Result<(), Error> {
     require_pause_authority(env, &caller)?;
+    if is_paused(env) {
+        return Err(Error::Paused);
+    }
     env.storage().instance().set(&DataKey::Paused, &true);
 
     PausedEvent {
@@ -166,5 +169,72 @@ pub fn is_allowed_while_paused(env: &Env, context: &Context) -> bool {
                     .any(|name| c.fn_name == Symbol::new(env, name))
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MultisigAccount;
+    use soroban_sdk::{
+        testutils::{Address as _, Events as _},
+        vec, Address, BytesN, Env, Event,
+    };
+
+    #[test]
+    fn pause_unpause_and_guardian_events_match_their_payloads() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let signer = Address::generate(&env);
+        let contract = env.register(MultisigAccount, (vec![&env, signer], 1u32));
+        let client = crate::MultisigAccountClient::new(&env, &contract);
+        let guardian = Address::generate(&env);
+
+        client.set_guardian(&Some(guardian.clone()));
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = GuardianSetEvent {
+            previous: None,
+            new: Some(guardian.clone()),
+        }
+        .to_xdr(&env, &contract);
+        assert_eq!(&events.events()[0], &expected);
+
+        client.pause(&guardian);
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected_pause = PausedEvent {
+            ledger: env.ledger().sequence(),
+            by: guardian.clone(),
+        }
+        .to_xdr(&env, &contract);
+        assert_eq!(&events.events()[0], &expected_pause);
+
+        assert_eq!(client.try_pause(&guardian), Err(Ok(Error::Paused)));
+        let events = env.events().all().filter_by_contract(&contract);
+        assert!(events.events().iter().all(|event| event != &expected_pause));
+
+        client.unpause(&guardian);
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = UnpausedEvent {
+            ledger: env.ledger().sequence(),
+            by: guardian.clone(),
+        }
+        .to_xdr(&env, &contract);
+        assert_eq!(&events.events()[0], &expected);
+
+        let recorded_guardian = client.get_guardian().unwrap();
+        assert_eq!(recorded_guardian, guardian);
+        env.as_contract(&contract, || {
+            let queue_id = crate::timelock::queue_transaction(
+                &env,
+                BytesN::from_array(&env, &[1u8; 32]),
+                10,
+                1,
+                recorded_guardian,
+            );
+            assert!(crate::timelock::cancel_queued_transaction(&env, queue_id, &guardian).is_ok());
+        });
     }
 }
