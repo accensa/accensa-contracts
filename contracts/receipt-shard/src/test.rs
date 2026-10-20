@@ -59,21 +59,39 @@ fn test_get_batch_missing_fails() {
 }
 
 #[test]
-#[should_panic]
-fn test_anchor_batch_requires_router_auth() {
-    let (env, client, ..) = setup();
-    env.set_auths(&[]);
-    let root = BytesN::from_array(&env, &[1u8; 32]);
-    client.anchor_batch(&1, &root, &1, &0, &1);
-}
-
-#[test]
-#[should_panic(expected = "batch_id out of shard range")]
 fn test_anchor_batch_rejects_out_of_range_id() {
     let (env, client, ..) = setup();
     let root = BytesN::from_array(&env, &[1u8; 32]);
-    // This shard's range is [1, 1001); 1001 belongs to the next shard.
-    client.anchor_batch(&1001, &root, &1, &0, &1);
+    assert_eq!(
+        client.try_anchor_batch(&1001, &root, &1, &0, &1),
+        Err(Ok(Error::BatchNotFound))
+    );
+}
+
+#[test]
+fn test_anchor_batch_missing_instance_keys_returns_not_initialized() {
+    for missing_key in [DataKey::Router, DataKey::StartBatchId, DataKey::EndBatchId] {
+        let (env, client, ..) = setup();
+        let root = BytesN::from_array(&env, &[1u8; 32]);
+        env.as_contract(&client.address, || {
+            env.storage().instance().remove(&missing_key);
+        });
+        assert_eq!(
+            client.try_anchor_batch(&1, &root, &1, &0, &1),
+            Err(Ok(Error::NotInitialized))
+        );
+    }
+}
+
+#[test]
+fn test_anchor_batch_requires_router_auth() {
+    let (env, client, ..) = setup();
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    env.set_auths(&[]);
+    assert!(matches!(
+        client.try_anchor_batch(&1, &root, &1, &0, &1),
+        Err(Err(_))
+    ));
 }
 
 #[test]

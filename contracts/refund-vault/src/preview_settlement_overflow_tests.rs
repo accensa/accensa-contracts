@@ -9,10 +9,10 @@
 //! `Error::MathOverflow`.
 //!
 //! The tests below pin **both** operands of that sum at `i128::MAX`. The
-//! ceiling gate in `resolve_ceiling` rejects a non-representable cumulative
-//! total before the sum is computed (`Error::ExceedsPayment`), so every
-//! overflowing input resolves to a typed variant — never a panic — and the
-//! `add_amounts` guard behind it is the defensive backstop.
+//! sum itself is unrepresentable in `i128`, so it resolves to the typed
+//! arithmetic failure `Error::MathOverflow` — never a panic — with the
+//! ceiling gate in `resolve_ceiling` as the defensive backstop for
+//! representable sums that merely exceed a record's ceiling.
 
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
 
@@ -61,7 +61,7 @@ fn an_unrepresentable_cumulative_sum_is_a_typed_error_not_a_host_abort() {
     seed_record(&env, &vault, &pref_max_previous, i128::MAX, i128::MAX);
     assert_eq!(
         client.try_preview_settlement(&pref_max_previous, &1, &i128::MAX),
-        Err(Ok(Error::ExceedsPayment))
+        Err(Ok(Error::MathOverflow))
     );
 
     // Second operand pinned at the ceiling: an amount of `i128::MAX` added to
@@ -71,6 +71,6 @@ fn an_unrepresentable_cumulative_sum_is_a_typed_error_not_a_host_abort() {
     seed_record(&env, &vault, &pref_max_amount, 1, i128::MAX);
     assert_eq!(
         client.try_preview_settlement(&pref_max_amount, &i128::MAX, &i128::MAX),
-        Err(Ok(Error::ExceedsPayment))
+        Err(Ok(Error::MathOverflow))
     );
 }

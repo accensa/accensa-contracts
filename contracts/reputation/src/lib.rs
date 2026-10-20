@@ -511,7 +511,7 @@ impl Reputation {
         if sbt::get_sbt_impl(&env, &merchant).is_none() {
             return Err(SbtError::SbtNotFound);
         }
-        let credential = sbt::burn(&env, &merchant);
+        let credential = sbt::burn(&env, &merchant)?;
 
         SbtRevokedEvent {
             token_id: credential.token_id,

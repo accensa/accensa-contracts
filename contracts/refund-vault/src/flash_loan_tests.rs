@@ -1,13 +1,13 @@
 //! Flash loan tests (issue #442).
 
 use super::*;
-use crate::flash_loan::{flash_loan_fee, FLASH_LOAN_FEE_BPS};
+use crate::flash_loan::{flash_loan_fee, FlashLoanEvent, FLASH_LOAN_FEE_BPS};
 use crate::test_helpers::vault_init;
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    testutils::Address as _,
+    testutils::{Address as _, Events as _},
     token::{StellarAssetClient, TokenClient},
-    Address, Bytes, Env,
+    Address, Bytes, Env, Event, IntoVal, Symbol, Val, Vec,
 };
 
 const FLOAT: i128 = 1_000_000;
@@ -33,6 +33,7 @@ pub enum Mode {
 enum ReceiverKey {
     Vault,
     Mode,
+    Received,
 }
 
 #[contract]
@@ -43,6 +44,16 @@ impl MockReceiver {
     pub fn setup(env: Env, vault: Address, mode: Mode) {
         env.storage().instance().set(&ReceiverKey::Vault, &vault);
         env.storage().instance().set(&ReceiverKey::Mode, &mode);
+    }
+
+    /// The receiver's token balance while the loan was outstanding, recorded
+    /// so tests can derive the principal from the tokens moved rather than
+    /// from the amount argument.
+    pub fn received(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&ReceiverKey::Received)
+            .unwrap_or(0)
     }
 
     pub fn on_flash_loan(
@@ -58,7 +69,12 @@ impl MockReceiver {
         let token = TokenClient::new(&env, &token);
         let me = env.current_contract_address();
         match mode {
-            Mode::Repay => token.transfer(&me, &vault, &(amount + fee)),
+            Mode::Repay => {
+                env.storage()
+                    .instance()
+                    .set(&ReceiverKey::Received, &token.balance(&me));
+                token.transfer(&me, &vault, &(amount + fee));
+            }
             Mode::RepayPrincipal => token.transfer(&me, &vault, &amount),
             Mode::Default => {}
             Mode::Reenter => {
@@ -140,6 +156,41 @@ fn repaid_loan_charges_fee_to_treasury() {
 }
 
 #[test]
+fn repaid_loan_emits_the_flash_loan_event() {
+    let s = setup(Mode::Repay);
+    let treasury = Address::generate(&s.env);
+    s.client.set_fee_recipient(&treasury);
+
+    let amount = 500_000;
+    let treasury_before = s.token.balance(&treasury);
+
+    let fee = s.client.flash_loan(&s.receiver, &amount, &data(&s.env));
+    // `events().all()` covers the last invocation only: the loan itself.
+    let events = s.env.events().all().filter_by_contract(&s.vault);
+
+    // Fee and principal are read off the balances this invocation moved, not
+    // off the 9 bps constant or the value `flash_loan` returned.
+    let fee_moved = s.token.balance(&treasury) - treasury_before;
+    let principal_moved = MockReceiverClient::new(&s.env, &s.receiver).received() - RECEIVER_FUNDS;
+    assert_eq!(fee_moved, fee);
+    assert_eq!(principal_moved, amount);
+
+    assert_eq!(events.events().len(), 1);
+    let expected = FlashLoanEvent {
+        receiver: s.receiver.clone(),
+        amount: principal_moved,
+        fee: fee_moved,
+        treasury: treasury.clone(),
+    };
+    // Exact topic tuple: ("flash_loan_event", receiver).
+    let expected_topics: Vec<Val> =
+        (Symbol::new(&s.env, "flash_loan_event"), s.receiver.clone()).into_val(&s.env);
+    assert_eq!(expected.topics(&s.env), expected_topics);
+    // And the payload, in the XDR form the other event tests compare.
+    assert_eq!(&events.events()[0], &expected.to_xdr(&s.env, &s.vault));
+}
+
+#[test]
 fn entire_float_can_be_borrowed() {
     let s = setup(Mode::Repay);
     let fee = s.client.flash_loan(&s.receiver, &FLOAT, &data(&s.env));
@@ -184,6 +235,41 @@ fn principal_without_fee_reverts() {
     );
     assert_eq!(s.token.balance(&s.vault), FLOAT);
     assert_eq!(s.token.balance(&s.receiver), RECEIVER_FUNDS);
+}
+
+#[test]
+fn non_repayment_leaves_no_flash_loan_event() {
+    let s = setup(Mode::Default);
+    assert_eq!(
+        s.client
+            .try_flash_loan(&s.receiver, &500_000, &data(&s.env)),
+        Err(Ok(Error::InsufficientFloat))
+    );
+    // A failed invocation publishes nothing: no borrow was announced.
+    assert!(s
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&s.vault)
+        .events()
+        .is_empty());
+}
+
+#[test]
+fn principal_without_fee_leaves_no_flash_loan_event() {
+    let s = setup(Mode::RepayPrincipal);
+    assert_eq!(
+        s.client
+            .try_flash_loan(&s.receiver, &500_000, &data(&s.env)),
+        Err(Ok(Error::InsufficientFloat))
+    );
+    assert!(s
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&s.vault)
+        .events()
+        .is_empty());
 }
 
 #[test]
