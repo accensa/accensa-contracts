@@ -66,6 +66,7 @@ mod test;
 
 mod liquid_staking;
 mod math;
+mod qf;
 mod quorum;
 mod ragequit;
 mod ring_sig;
