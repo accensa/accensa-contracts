@@ -540,3 +540,227 @@ proptest! {
         prop_assert_eq!(streamed_amount(&s, stop), deposit);
     }
 }
+
+// ── Lifecycle events (issue #607) ────────────────────────────────────────
+
+mod lifecycle_events {
+    use super::*;
+    use soroban_sdk::{testutils::Events as _, Event};
+
+    /// Walks a stream through create, partial claim, pause, resume and cancel,
+    /// asserting each emitted event's exact XDR form after every call using the
+    /// pattern at `contracts/state-channel/src/hashlock_test.rs:105-115`.
+    #[test]
+    fn test_stream_lifecycle_events_exact_xdr_walkthrough() {
+        let s = setup();
+
+        // 1. Create stream
+        let stream_id = s
+            .client
+            .create_stream(&s.buyer, &START, &STOP, &RATE, &DEPOSIT);
+        assert_eq!(stream_id, 0);
+
+        // `events().all()` reflects only the last top-level invocation (as
+        // contracts/cross-chain/src/layerzero_test.rs:130 notes), so capture the
+        // event before any other contract call.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 1);
+        let expected_created = StreamCreatedEvent {
+            stream_id,
+            buyer: s.buyer.clone(),
+            start_ledger: START,
+            stop_ledger: STOP,
+            rate_per_ledger: RATE,
+            deposit: DEPOSIT,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_created.to_xdr(&s.env, &s.vault)
+        );
+
+        // 2. Partial claim at START + 25 (25 ledgers elapsed * RATE = 250)
+        at(&s, START + 25);
+        let claimed = s.client.claim_stream(&stream_id);
+        assert_eq!(claimed, 25 * RATE);
+
+        // `events().all()` reflects only the last top-level invocation.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 1);
+        let expected_claimed = StreamClaimedEvent {
+            stream_id,
+            amount: 25 * RATE,
+            total_claimed: 25 * RATE,
+            closed: false,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_claimed.to_xdr(&s.env, &s.vault)
+        );
+
+        // 3. Pause stream at START + 40
+        at(&s, START + 40);
+        s.client.pause_stream(&stream_id);
+
+        // `events().all()` reflects only the last top-level invocation.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 1);
+        let expected_paused = StreamPausedEvent {
+            stream_id,
+            ledger: START + 40,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_paused.to_xdr(&s.env, &s.vault)
+        );
+
+        // 4. Resume stream at START + 60 (paused for 20 ledgers; schedule shifted by 20)
+        at(&s, START + 60);
+        s.client.resume_stream(&stream_id);
+
+        // `events().all()` reflects only the last top-level invocation.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 1);
+        let expected_resumed = StreamResumedEvent {
+            stream_id,
+            ledger: START + 60,
+            stop_ledger: STOP + 20,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_resumed.to_xdr(&s.env, &s.vault)
+        );
+
+        // 5. Cancel stream at START + 70 (mid-term, both merchant and buyer amounts non-zero)
+        at(&s, START + 70);
+        let stream_before_cancel = s.client.get_stream(&stream_id).unwrap();
+        let streamed = streamed_amount(&stream_before_cancel, START + 70);
+        assert_eq!(streamed, 500);
+
+        let (merchant_amount, buyer_amount) = s.client.cancel_stream(&stream_id);
+
+        // Both sides of the mid-term cancel split are non-zero.
+        assert!(merchant_amount > 0);
+        assert!(buyer_amount > 0);
+        assert_eq!(merchant_amount, 250);
+        assert_eq!(buyer_amount, 500);
+
+        // Assert split amounts sum to remaining deposit and match streamed_amount.
+        let remaining_deposit = stream_before_cancel.deposit - stream_before_cancel.claimed;
+        assert_eq!(merchant_amount + buyer_amount, remaining_deposit);
+        assert_eq!(merchant_amount, streamed - stream_before_cancel.claimed);
+        assert_eq!(buyer_amount, stream_before_cancel.deposit - streamed);
+        assert_eq!(merchant_amount + stream_before_cancel.claimed, streamed);
+
+        // `events().all()` reflects only the last top-level invocation.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 1);
+        let expected_cancelled = StreamCancelledEvent {
+            stream_id,
+            merchant_amount,
+            buyer_amount,
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_cancelled.to_xdr(&s.env, &s.vault)
+        );
+    }
+
+    /// The mid-term cancel case asserts the split amounts sum to the remaining deposit
+    /// and match streamed_amount (contracts/stream-vault/src/lib.rs:195) for that ledger,
+    /// with both sides of the merchant_amount/buyer_amount split non-zero.
+    #[test]
+    fn test_mid_term_cancel_split_matches_streamed_amount_and_conserves_deposit() {
+        let s = setup();
+        let stream_id = open(&s);
+        let stream = s.client.get_stream(&stream_id).unwrap();
+
+        let cancel_ledger = START + 35;
+        at(&s, cancel_ledger);
+
+        let streamed = streamed_amount(&stream, cancel_ledger);
+        assert_eq!(streamed, 35 * RATE);
+
+        let (merchant_amount, buyer_amount) = s.client.cancel_stream(&stream_id);
+
+        // Both sides of the split are non-zero.
+        assert!(merchant_amount > 0);
+        assert!(buyer_amount > 0);
+        assert_eq!(merchant_amount, 350);
+        assert_eq!(buyer_amount, 650);
+
+        // Split amounts sum to the remaining deposit and match streamed_amount.
+        let remaining_deposit = stream.deposit - stream.claimed;
+        assert_eq!(merchant_amount + buyer_amount, remaining_deposit);
+        assert_eq!(merchant_amount, streamed - stream.claimed);
+        assert_eq!(buyer_amount, stream.deposit - streamed);
+        assert_eq!(merchant_amount + stream.claimed, streamed);
+
+        // `events().all()` reflects only the last top-level invocation.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 1);
+        let expected = StreamCancelledEvent {
+            stream_id,
+            merchant_amount,
+            buyer_amount,
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&s.env, &s.vault));
+    }
+
+    /// A claim of an already-exhausted stream emits no StreamClaimedEvent,
+    /// pinning the zero-payout path.
+    #[test]
+    fn test_claim_of_exhausted_stream_emits_no_stream_claimed_event() {
+        let s = setup();
+        let stream_id = open(&s);
+
+        // Fully claim and close stream at STOP ledger.
+        at(&s, STOP);
+        let payout = s.client.claim_stream(&stream_id);
+        assert_eq!(payout, DEPOSIT);
+
+        // Verify that the final claim emitted StreamClaimedEvent.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 1);
+        let expected = StreamClaimedEvent {
+            stream_id,
+            amount: DEPOSIT,
+            total_claimed: DEPOSIT,
+            closed: true,
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&s.env, &s.vault));
+
+        // The stream is now closed and exhausted. A subsequent claim fails.
+        assert_eq!(
+            s.client.try_claim_stream(&stream_id),
+            Err(Ok(Error::StreamNotFound))
+        );
+
+        // `events().all()` reflects only the last top-level invocation:
+        // No StreamClaimedEvent is emitted on the failed claim of an exhausted stream.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 0);
+    }
+
+    /// A claim invocation when zero funds have accrued since the last claim
+    /// (the zero-payout path where `amount <= 0`) fails with NothingToWithdraw
+    /// and emits no StreamClaimedEvent.
+    #[test]
+    fn test_zero_payout_claim_emits_no_stream_claimed_event() {
+        let s = setup();
+        let stream_id = open(&s);
+
+        at(&s, START + 25);
+        s.client.claim_stream(&stream_id);
+
+        // Same ledger, zero accrual since previous claim -> zero-payout path.
+        assert_eq!(
+            s.client.try_claim_stream(&stream_id),
+            Err(Ok(Error::NothingToWithdraw))
+        );
+
+        // `events().all()` reflects only the last top-level invocation:
+        // No StreamClaimedEvent is emitted when nothing can be claimed.
+        let events = s.env.events().all().filter_by_contract(&s.vault);
+        assert_eq!(events.events().len(), 0);
+    }
+}

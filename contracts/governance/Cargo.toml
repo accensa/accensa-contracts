@@ -15,10 +15,20 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 testutils = ["soroban-sdk/testutils"]
+# Enables the Tier A budget-assertion tests in `src/budget_test.rs`. Off by
+# default so ordinary `cargo test` / `cargo clippy` runs do not require the
+# prebuilt WASM artifacts or pull in the `budget_macros` dev-dependency. The
+# budget CI job enables it explicitly after building the contract to WASM.
+budget-assert = ["dep:budget_macros"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
 curve25519-dalek = { version = "5.0.0", default-features = false }
+# Tollcraft/soroban-budget-assert — Tier A local assertion macros, used only
+# by the `#[cfg(test)]`-gated `budget_test` module. Cargo does not allow
+# optional *dev*-dependencies, so this lives here, optional, gated by the
+# `budget-assert` feature; it never links into a real (non-test) build.
+budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git", branch = "main", package = "budget-macros", optional = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

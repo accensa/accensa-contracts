@@ -21,6 +21,17 @@
 //! contract's control. Use it for the comparisons where a byte-level prefix
 //! leak is the threat — MACs, bearer tokens, commitment/digest equality — and
 //! keep the surrounding interface from branching on the result where possible.
+//!
+//! # Active Call Sites
+//!
+//! - `contracts/state-channel/src/htlc.rs`: Verifies HTLC preimages against
+//!   hash locks in constant time to prevent timing leakage on secret-derived
+//!   preimage bytes.
+//!
+//! Note: other audited comparison sites compare purely public data and
+//! intentionally use standard equality: the guardian-address check in
+//! `contracts/cross-chain/src/wormhole.rs` and the Merkle-root check in
+//! `contracts/receipt-shard/src/lib.rs`.
 
 use core::hint::black_box;
 
@@ -90,6 +101,38 @@ mod tests {
     }
 
     #[test]
+    fn empty_inputs_are_equal() {
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"", b"a"));
+        assert!(!constant_time_eq(b"a", b""));
+    }
+
+    #[test]
+    fn first_byte_difference_is_detected() {
+        let a = [0x11, 0x22, 0x33, 0x44];
+        let b = [0x99, 0x22, 0x33, 0x44];
+        assert!(!constant_time_eq(&a, &b));
+        assert!(!constant_time_eq(&b, &a));
+    }
+
+    #[test]
+    fn last_byte_difference_is_detected() {
+        let a = [0x11, 0x22, 0x33, 0x44];
+        let b = [0x11, 0x22, 0x33, 0x99];
+        assert!(!constant_time_eq(&a, &b));
+        assert!(!constant_time_eq(&b, &a));
+    }
+
+    #[test]
+    fn length_mismatch_both_directions_detected() {
+        assert!(!constant_time_eq(b"", b"\x00"));
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(!constant_time_eq(b"abcd", b"abc"));
+        assert!(!constant_time_eq(b"key", b"key\x00"));
+        assert!(!constant_time_eq(b"key\x00", b"key"));
+    }
+
+    #[test]
     fn a_difference_at_every_position_is_detected() {
         // Flip each byte in turn: no position may be missed.
         let base = [0x5au8; 32];
@@ -104,16 +147,6 @@ mod tests {
             probe[i] = base[i];
         }
         assert!(constant_time_eq(&base, &probe));
-    }
-
-    #[test]
-    fn length_mismatch_is_detected() {
-        assert!(!constant_time_eq(b"", b"\x00"));
-        assert!(!constant_time_eq(b"abc", b"abcd"));
-        assert!(!constant_time_eq(b"abcd", b"abc"));
-        // A prefix must never compare equal to its extension, even when the
-        // extra bytes are zero.
-        assert!(!constant_time_eq(b"key", b"key\x00"));
     }
 
     #[test]

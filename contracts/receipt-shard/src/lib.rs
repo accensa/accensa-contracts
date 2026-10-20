@@ -182,6 +182,8 @@ impl ReceiptShard {
         let batch = Self::get_batch(env, batch_id)?;
         let computed_hash = Self::fold_proof(leaf.to_array(), proof);
 
+        // Public-data comparison: both the folded proof and the stored Merkle
+        // root are public commitment data, so standard equality is intentional.
         Ok(computed_hash == batch.root.to_array())
     }
 
