@@ -63,6 +63,9 @@ const ALLOWED_WHILE_PAUSED: [&str; 4] = [
     "rotate_signers_and_threshold",
 ];
 
+/// Whether the emergency circuit breaker is currently engaged.
+///
+/// Reads the `Paused` instance-storage flag, defaulting to `false` when unset.
 pub fn is_paused(env: &Env) -> bool {
     env.storage()
         .instance()
@@ -79,6 +82,9 @@ pub fn require_not_paused(env: &Env) -> Result<(), Error> {
     Ok(())
 }
 
+/// The designated security guardian, or `None` when no guardian is set.
+///
+/// Reads the `PauseGuardian` instance-storage key maintained by `set_guardian`.
 pub fn get_guardian(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::PauseGuardian)
 }
@@ -101,8 +107,16 @@ pub fn set_guardian(env: &Env, guardian: Option<Address>) {
     .publish(env);
 }
 
+/// Engage the circuit breaker: store `Paused = true` and emit [`PausedEvent`].
+///
+/// Pre-condition: `caller` is the account itself (threshold signers) or the
+/// guardian, and authorizes the call — enforced by `require_pause_authority`,
+/// whose sole error arm is `Error::Unauthorized`.
 pub fn pause(env: &Env, caller: Address) -> Result<(), Error> {
     require_pause_authority(env, &caller)?;
+    if is_paused(env) {
+        return Err(Error::Paused);
+    }
     env.storage().instance().set(&DataKey::Paused, &true);
 
     PausedEvent {
@@ -113,6 +127,11 @@ pub fn pause(env: &Env, caller: Address) -> Result<(), Error> {
     Ok(())
 }
 
+/// Lift the circuit breaker: store `Paused = false` and emit [`UnpausedEvent`].
+///
+/// Pre-condition and error arms are identical to `pause`: `caller` must be the
+/// account itself or the guardian and must authorize, else `Error::Unauthorized`
+/// from `require_pause_authority`.
 pub fn unpause(env: &Env, caller: Address) -> Result<(), Error> {
     require_pause_authority(env, &caller)?;
     env.storage().instance().set(&DataKey::Paused, &false);
@@ -150,5 +169,72 @@ pub fn is_allowed_while_paused(env: &Env, context: &Context) -> bool {
                     .any(|name| c.fn_name == Symbol::new(env, name))
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MultisigAccount;
+    use soroban_sdk::{
+        testutils::{Address as _, Events as _},
+        vec, Address, BytesN, Env, Event,
+    };
+
+    #[test]
+    fn pause_unpause_and_guardian_events_match_their_payloads() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let signer = Address::generate(&env);
+        let contract = env.register(MultisigAccount, (vec![&env, signer], 1u32));
+        let client = crate::MultisigAccountClient::new(&env, &contract);
+        let guardian = Address::generate(&env);
+
+        client.set_guardian(&Some(guardian.clone()));
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = GuardianSetEvent {
+            previous: None,
+            new: Some(guardian.clone()),
+        }
+        .to_xdr(&env, &contract);
+        assert_eq!(&events.events()[0], &expected);
+
+        client.pause(&guardian);
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected_pause = PausedEvent {
+            ledger: env.ledger().sequence(),
+            by: guardian.clone(),
+        }
+        .to_xdr(&env, &contract);
+        assert_eq!(&events.events()[0], &expected_pause);
+
+        assert_eq!(client.try_pause(&guardian), Err(Ok(Error::Paused)));
+        let events = env.events().all().filter_by_contract(&contract);
+        assert!(events.events().iter().all(|event| event != &expected_pause));
+
+        client.unpause(&guardian);
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = UnpausedEvent {
+            ledger: env.ledger().sequence(),
+            by: guardian.clone(),
+        }
+        .to_xdr(&env, &contract);
+        assert_eq!(&events.events()[0], &expected);
+
+        let recorded_guardian = client.get_guardian().unwrap();
+        assert_eq!(recorded_guardian, guardian);
+        env.as_contract(&contract, || {
+            let queue_id = crate::timelock::queue_transaction(
+                &env,
+                BytesN::from_array(&env, &[1u8; 32]),
+                10,
+                1,
+                recorded_guardian,
+            );
+            assert!(crate::timelock::cancel_queued_transaction(&env, queue_id, &guardian).is_ok());
+        });
     }
 }

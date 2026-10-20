@@ -139,13 +139,21 @@ pub mod actions {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GranularEventPayload {
+    /// Account that initiated the operation, when provided by the emitter.
     pub sender: Option<Address>,
+    /// Account receiving the operation's value, when provided by the emitter.
     pub receiver: Option<Address>,
+    /// Address of the affected asset contract, when provided by the emitter.
     pub asset: Option<Address>,
+    /// Amount associated with the event, in the emitting operation's units.
     pub amount: i128,
+    /// Fee associated with the event, in the emitting operation's units.
     pub fee: i128,
+    /// Timestamp associated with the event, in seconds.
     pub timestamp: u64,
+    /// Sequence value associated with the event, as supplied by the emitter.
     pub sequence: u64,
+    /// Optional opaque event metadata supplied by the emitter.
     pub metadata: Option<Bytes>,
 }
 
@@ -165,12 +173,19 @@ pub struct TransferEventPayload {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundEventPayload {
+    /// Merchant address supplied to `emit_refund`.
     pub merchant: Address,
+    /// Address receiving the refund, supplied to `emit_refund`.
     pub recipient: Address,
+    /// Address of the refunded asset, supplied to `emit_refund`.
     pub asset: Address,
+    /// Amount supplied to `emit_refund`, in the caller's units.
     pub amount: i128,
+    /// Fee supplied to `emit_refund`, in the caller's units.
     pub fee: i128,
+    /// 32-byte reference for the payment being refunded.
     pub payment_ref: BytesN<32>,
+    /// Ledger timestamp captured by `emit_refund` when it creates the payload.
     pub timestamp: u64,
 }
 
@@ -178,13 +193,21 @@ pub struct RefundEventPayload {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelStatePayload {
+    /// Identifier of the channel whose state is being emitted.
     pub channel_id: u64,
+    /// Address of the channel sender supplied to `emit_channel_state`.
     pub sender: Address,
+    /// Address of the channel receiver supplied to `emit_channel_state`.
     pub receiver: Address,
+    /// Channel asset address, or `None` when no asset is specified.
     pub asset: Option<Address>,
+    /// Channel balance supplied to `emit_channel_state`, in the asset's units.
     pub balance: i128,
+    /// Channel nonce supplied to `emit_channel_state`.
     pub nonce: u64,
+    /// Channel fee supplied to `emit_channel_state`, in the asset's units.
     pub fee: i128,
+    /// Ledger timestamp in seconds, set by `emit_channel_state`.
     pub timestamp: u64,
 }
 

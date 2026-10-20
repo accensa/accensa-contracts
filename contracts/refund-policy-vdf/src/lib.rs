@@ -122,3 +122,9 @@ impl VdfPolicy {
 
 mod fallback;
 pub use fallback::*;
+
+// Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
+// feature is enabled (the budget CI job), so the normal test/clippy runs stay
+// free of the prebuilt-WASM requirement and the `budget_macros` dependency.
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;

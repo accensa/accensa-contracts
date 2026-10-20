@@ -363,3 +363,130 @@ proptest! {
         prop_assert!(info.deployed_principal >= 0 && info.harvested_yield >= 0);
     }
 }
+
+// ── Per-strategy approval key semantics (issue #620) ───────────────────────
+//
+// `DataKey::ApprovedStrategy(Address)` (lib.rs:161) is a per-address
+// persistent key, not one shared whitelist flag. These tests pin that
+// property directly: two strategies keep independent approval state across
+// deployments and a revoke, an address that was never approved cannot receive
+// a deployment, and re-approving is a set insert rather than a counter (one
+// revoke clears it). The mock and setup are the ones this file already uses;
+// the ledger steps use the crate's own TTL constants so the approval keys are
+// asserted while they are still live.
+mod per_strategy_approval_key {
+    use super::{register_mock_strategy, setup_with_strategy};
+    use crate::{DataKey, Error, TTL_EXTEND, TTL_THRESHOLD};
+    use soroban_sdk::testutils::storage::Persistent as _;
+    use soroban_sdk::testutils::Ledger as _;
+
+    /// Two approved strategies hold independent state. Deploying to the first,
+    /// recalling it, and switching to the second leaves both approvals intact;
+    /// revoking the first then changes only its own key, so the second still
+    /// receives deployments. A single shared flag would unapprove both.
+    #[test]
+    fn two_strategies_hold_independent_approval_state() {
+        let (env, vault, merchant, token, first, _tc) = setup_with_strategy(0, 10_000);
+        let second = register_mock_strategy(&env, &vault, &token);
+        vault.approve_yield_strategy(&second);
+
+        assert!(vault.is_strategy_approved(&first));
+        assert!(vault.is_strategy_approved(&second));
+
+        // Each address has its own persistent approval key, each extended to
+        // the crate's flat TTL budget.
+        for strategy in [&first, &second] {
+            let ttl = env.as_contract(&vault.address, || {
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::ApprovedStrategy((*strategy).clone()))
+            });
+            assert!(
+                ttl >= TTL_EXTEND,
+                "ApprovedStrategy({strategy:?}) TTL ({ttl}) must be >= TTL_EXTEND ({TTL_EXTEND})"
+            );
+        }
+
+        // A whole TTL_THRESHOLD of ledgers later both approvals are still live.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += TTL_THRESHOLD);
+        assert!(vault.is_strategy_approved(&first));
+        assert!(vault.is_strategy_approved(&second));
+
+        // Deploy to both strategies: first as active, recall, then second.
+        vault.deposit(&merchant, &1_000_000, &None);
+        vault.deploy_to_yield(&400_000);
+        assert_eq!(vault.get_yield_info().deployed_principal, 400_000);
+        vault.withdraw_from_yield(&400_000);
+        vault.set_yield_strategy(&second);
+        vault.deploy_to_yield(&400_000);
+        assert_eq!(vault.get_yield_info().deployed_principal, 400_000);
+
+        // Revoking the first touches only its own key. The second is still
+        // approved, still active, and still accepts a deployment.
+        vault.revoke_yield_strategy(&first);
+        assert!(!vault.is_strategy_approved(&first));
+        assert!(vault.is_strategy_approved(&second));
+        assert_eq!(vault.get_yield_info().strategy, Some(second.clone()));
+
+        vault.deploy_to_yield(&100_000);
+        assert_eq!(vault.get_yield_info().deployed_principal, 500_000);
+    }
+
+    /// An address that was never approved can neither be registered as the
+    /// active strategy nor receive a deployment; both paths surface the
+    /// crate's typed `StrategyNotApproved` error.
+    #[test]
+    fn unapproved_strategy_address_cannot_receive_a_deployment() {
+        let (env, vault, _merchant, token, approved, _tc) = setup_with_strategy(0, 10_000);
+        let unapproved = register_mock_strategy(&env, &vault, &token);
+
+        assert!(!vault.is_strategy_approved(&unapproved));
+        assert_eq!(
+            vault.try_set_yield_strategy(&unapproved),
+            Err(Ok(Error::StrategyNotApproved))
+        );
+        // The rejected registration did not disturb the approved strategy.
+        assert_eq!(vault.get_yield_info().strategy, Some(approved));
+
+        // The public setter already refuses the address, so force it into the
+        // active slot to reach `deploy_to_yield`'s own approval gate: an
+        // unapproved strategy must still be refused before any tokens move.
+        env.as_contract(&vault.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::YieldStrategy, &unapproved);
+        });
+        assert_eq!(
+            vault.try_deploy_to_yield(&1_000),
+            Err(Ok(Error::StrategyNotApproved))
+        );
+    }
+
+    /// Re-approving is a set insert, not an increment: the second approval
+    /// does not double the deployment or leave a reference behind, so a single
+    /// revoke clears the address while the other strategy's approval survives.
+    #[test]
+    fn reapproving_a_strategy_is_idempotent_not_additive() {
+        let (env, vault, merchant, token, first, _tc) = setup_with_strategy(0, 10_000);
+        let second = register_mock_strategy(&env, &vault, &token);
+        vault.approve_yield_strategy(&second);
+
+        vault.deposit(&merchant, &1_000_000, &None);
+        vault.approve_yield_strategy(&first);
+        assert!(vault.is_strategy_approved(&first));
+        assert_eq!(vault.get_yield_info().strategy, Some(first.clone()));
+
+        // Deployment books its amount exactly once, unaffected by the repeat.
+        vault.deploy_to_yield(&400_000);
+        assert_eq!(vault.get_yield_info().deployed_principal, 400_000);
+
+        vault.withdraw_from_yield(&400_000);
+        vault.revoke_yield_strategy(&first);
+
+        // One revoke is enough to clear two approvals.
+        assert!(!vault.is_strategy_approved(&first));
+        assert_eq!(vault.get_yield_info().strategy, None);
+        assert!(vault.is_strategy_approved(&second));
+    }
+}

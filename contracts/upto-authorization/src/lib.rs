@@ -66,10 +66,22 @@ pub enum DataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorizeEvent {
     #[topic]
+    /// Caller-chosen payment identifier: the event's second topic, and the
+    /// key under which `authorize*` stores the authorization record.
     pub payment_id: BytesN<32>,
+    /// Buyer whose auth `authorize*` requires and from whose SEP-41
+    /// allowance `settle` draws the payment.
     pub from: Address,
+    /// Recipient bound by the authorization; `settle` transfers the charged
+    /// amount to it.
     pub to: Address,
+    /// Payment ceiling in the settlement token's smallest unit; without
+    /// slippage `settle` is capped at exactly this (`cap <= 0` is rejected
+    /// at authorization).
     pub cap: i128,
+    /// Ledger sequence after which the authorization can no longer be
+    /// settled (`settle` fails `Expired`); also the expiry ledger granted
+    /// to the contract's token allowance.
     pub expiry: u32,
     /// Slippage tolerated above `cap`, in basis points (`0` = none).
     pub max_slippage_bps: u32,
@@ -559,6 +571,8 @@ impl UptoAuthorization {
     }
 }
 
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;
 mod fuzz_test;
 mod inactivity_test;
 mod test;
