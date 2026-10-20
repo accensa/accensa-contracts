@@ -8,6 +8,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- docs(factory): rustdoc for 7 public items in refund-vault-factory/lib… (#880).
 - **`stream-vault` (issue #603): add Tier A budget assertions for claim, cancel, create, and pause/resume.**
   Adds `budget_test` module with Tier A budget ceilings covering stream creation, partial and full claims, pause/resume cycles, and cancellations. Test-only — no contract behavior change.
 - **`treasury` (issue #606): assert buyback and fee-liquidation events and their config key.**
