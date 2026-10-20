@@ -1,11 +1,46 @@
 # Architecture
 
-Visual overview of how `ReceiptAnchor` and `RefundVault` interact on testnet.
-Both contracts are independent on-chain programs that share no storage — they
-are linked only by a common identifier (`payment_ref` = receipt leaf hash).
+System overview of the Accensa contracts workspace. The workspace builds the
+nineteen members listed in the root `Cargo.toml`: seventeen deployable
+contracts, plus `common` (a shared library crate) and `testutils` (a
+test-support crate excluded from the wasm build). The
+[Contract Inventory](#contract-inventory) table below names every member with
+a one-line role. The sections after it keep the detailed walkthrough of the
+two headline contracts, `ReceiptAnchor` and `RefundVault`: both are
+independent on-chain programs that share no storage — they are linked only by
+a common identifier (`payment_ref` = receipt leaf hash).
 
 For the threat model, see [SECURITY_MODEL.md](SECURITY_MODEL.md).
 For live contract IDs and verification commands, see [DEPLOYMENTS.md](../DEPLOYMENTS.md).
+
+## Contract Inventory
+
+Every member listed in `Cargo.toml` `members`, with a one-line role:
+
+| Crate | Role |
+|---|---|
+| `contracts/common` | Shared library: event definitions and types used by the contract crates; not deployed on its own. |
+| `contracts/cross-chain` | Cross-chain messaging: Wormhole VAA, Axelar and LayerZero verification plus outbound bridge payloads. |
+| `contracts/governance` | Proposals, timelocks and voting, plus the `stACC` liquid-staking derivative. |
+| `contracts/insurance` | Insurance pool with Compound-style supply/borrow interest accrual. |
+| `contracts/multisig-account` | Multisig account with batched execution. |
+| `contracts/oracle` | Price oracle with admin-managed rounds and staleness bounds. |
+| `contracts/privacy` | Groth16-verified escrow of concealed amounts against commitments. |
+| `contracts/receipt-anchor` | Headline contract: anchors Merkle roots of payment-receipt batches and verifies receipts. |
+| `contracts/receipt-shard` | Stores anchored receipt batches with TTL extension, pruning and decommission. |
+| `contracts/reputation` | Reputation SBT: issue/revoke/slash badges plus fraud and completion scoring. |
+| `contracts/refund-policy-time` | Refund policy bounded by ledger windows and wall-clock deadlines. |
+| `contracts/refund-policy-vdf` | Refund policy gated by a VDF delay proof, with an oracle fallback path. |
+| `contracts/refund-vault` | Headline contract: merchant-funded vault executing policy-bounded refunds, fees and yield. |
+| `contracts/refund-vault-factory` | Deploys and tracks per-merchant refund vaults. |
+| `contracts/state-channel` | Payment state channels with HTLC reservations. |
+| `contracts/stream-vault` | Streaming payments: create, claim and cancel streams. |
+| `contracts/testutils` | Test-support crate (`publish = false`); excluded from the wasm build, compiled by `cargo test`/`clippy --workspace`. |
+| `contracts/treasury` | Treasury: vesting schedules, buybacks, fee liquidation and revenue sweeping. |
+| `contracts/upto-authorization` | `upto` payment authorization with caps and expiry (x402-style flows). |
+
+The walkthrough below keeps its original focus on `ReceiptAnchor` and
+`RefundVault`, the two contracts deployed on testnet.
 
 ## System Overview
 
@@ -102,8 +137,9 @@ sequenceDiagram
 
 ## Cross-Contract Relationship
 
-The two contracts share no storage and have no direct function calls. They are
-linked by a single shared key:
+The two headline contracts, `ReceiptAnchor` and `RefundVault`, share no
+storage and have no direct function calls. They are linked by a single shared
+key:
 
 | Contract | Field | Value |
 |---|---|---|

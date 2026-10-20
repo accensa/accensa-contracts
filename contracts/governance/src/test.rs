@@ -777,10 +777,11 @@ fn prior_transparent_vote_prevents_that_member_from_entering_an_anonymous_ring()
     assert_eq!(h.gov.get_proposal(&id).yes_weight, 1);
 }
 
-// ── Missing configuration is a typed error, not a trap (#671, #673) ──────────
+// ── Missing configuration is a typed error, not a trap (#552, #671, #673) ───
 
 /// Remove one configuration entry from the governance contract's instance
-/// storage, the way a partially migrated deployment could be missing it.
+/// storage, the way a partially migrated deployment could be missing it or
+/// after instance storage TTL eviction (#552).
 fn remove_config(h: &Harness, key: crate::DataKey) {
     h.env.as_contract(&h.gov.address, || {
         h.env.storage().instance().remove(&key);
@@ -838,6 +839,30 @@ fn execute_without_voting_period_returns_typed_error() {
         execute_after_removing(crate::DataKey::VotingPeriod),
         Err(Error::InvalidVotingPeriod)
     );
+}
+
+#[test]
+fn propose_after_instance_ttl_eviction_returns_typed_error() {
+    let h = setup();
+    remove_config(&h, crate::DataKey::VotingPeriod);
+
+    let (target, function, args) = set_value_call(&h.env, &h.target, 7);
+    assert_eq!(
+        h.gov.try_propose(&h.m1, &target, &function, &args),
+        Err(Ok(Error::InvalidVotingPeriod))
+    );
+}
+
+#[test]
+fn execute_after_instance_ttl_eviction_returns_typed_error() {
+    let h = setup();
+    let (target, function, args) = set_value_call(&h.env, &h.target, 9);
+    let id = h.gov.propose(&h.m3, &target, &function, &args);
+    h.gov.vote(&h.m3, &id, &true);
+    h.gov.vote(&h.m1, &id, &true);
+
+    remove_config(&h, crate::DataKey::TotalWeight);
+    assert_eq!(h.gov.try_execute(&id), Err(Ok(Error::InvalidMembers)));
 }
 
 // ── Client-driven Optimistic Voting Tests (#586) ─────────────────────────────

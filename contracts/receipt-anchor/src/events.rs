@@ -50,13 +50,21 @@ impl ReceiptAction {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnchorPayload {
+    /// Version number of the anchor payload schema.
     pub schema_version: u32,
+    /// Timestamp recorded for this anchor event.
     pub timestamp: u64,
+    /// 32-byte root carried by this anchor payload.
     pub root: BytesN<32>,
+    /// Identifier of the shard represented by this anchor.
     pub shard_id: u64,
+    /// Count recorded for this anchor.
     pub count: u32,
+    /// Start of the period represented by this anchor.
     pub period_start: u64,
+    /// End of the period represented by this anchor.
     pub period_end: u64,
+    /// Ledger number recorded for this anchor.
     pub anchored_ledger: u32,
 }
 

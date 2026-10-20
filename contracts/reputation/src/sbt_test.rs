@@ -9,8 +9,8 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     events::Event as _,
-    testutils::{Address as _, EnvTestConfig, Events as _},
-    String as SdkString,
+    testutils::{Address as _, EnvTestConfig, Events as _, MockAuth, MockAuthInvoke},
+    IntoVal, String as SdkString,
 };
 
 /// Assert the last invocation emitted exactly `events` (nothing else), in
@@ -341,6 +341,249 @@ fn slash_requires_governance_auth() {
     s.env.set_auths(&[]);
     s.client
         .slash(&s.merchant, &SdkString::from_str(&s.env, "fraud"));
+}
+
+/// An environment with no blanket auth mocking: `initialize` is unauthenticated,
+/// so the contract can be set up while every later call must present real auth.
+fn setup_without_mocked_auth() -> Setup {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let contract_id = env.register(Reputation, ());
+    let client = ReputationClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    Setup {
+        env,
+        client,
+        admin,
+        merchant,
+    }
+}
+
+/// Authorise exactly one `issue(merchant, class)` call by the bound authority.
+fn mock_issue_auth(s: &Setup, merchant: &Address, class: u32) {
+    s.env.mock_auths(&[MockAuth {
+        address: &s.admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "issue",
+            args: (merchant.clone(), class).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    }]);
+}
+
+fn mock_sbt_auth(
+    s: &Setup,
+    signer: &Address,
+    fn_name: &str,
+    args: soroban_sdk::Vec<soroban_sdk::Val>,
+) {
+    s.env.mock_auths(&[MockAuth {
+        address: signer,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name,
+            args,
+            sub_invokes: &[],
+        },
+    }]);
+}
+
+fn sbt_count(env: &Env, contract: &Address) -> Option<u64> {
+    env.as_contract(contract, || {
+        env.storage().instance().get(&SbtDataKey::SbtCount)
+    })
+}
+
+fn revoked_present(env: &Env, contract: &Address, owner: &Address) -> bool {
+    env.as_contract(contract, || {
+        env.storage()
+            .persistent()
+            .has(&SbtDataKey::Revoked(owner.clone()))
+    })
+}
+
+// ── Unauthorized SBT authority (issue #657) ──────────────────────────────
+
+#[test]
+fn issue_without_sbt_authority_auth_is_rejected() {
+    let s = setup_without_mocked_auth();
+
+    assert!(matches!(s.client.try_issue(&s.merchant, &1), Err(Err(_))));
+
+    // Nothing was minted and the counter did not move.
+    assert_eq!(s.client.total_sbt(), 0);
+    assert_eq!(s.client.get_sbt(&s.merchant), None);
+    assert!(!sbt_present(&s.env, &s.client.address, &s.merchant));
+}
+
+#[test]
+fn revoke_without_sbt_authority_auth_is_rejected() {
+    let s = setup_without_mocked_auth();
+    mock_issue_auth(&s, &s.merchant, 1);
+    assert_eq!(s.client.issue(&s.merchant, &1), 0);
+
+    // Drop the authority's authorization again before the call under test.
+    s.env.mock_auths(&[]);
+    assert!(matches!(s.client.try_revoke(&s.merchant), Err(Err(_))));
+
+    // The credential is still present and was not burned.
+    assert_eq!(s.client.total_sbt(), 1);
+    assert_eq!(s.client.get_sbt(&s.merchant).unwrap().token_id, 0);
+    assert!(sbt_present(&s.env, &s.client.address, &s.merchant));
+}
+
+#[test]
+fn slash_without_sbt_authority_auth_is_rejected() {
+    let s = setup_without_mocked_auth();
+    mock_issue_auth(&s, &s.merchant, 1);
+    assert_eq!(s.client.issue(&s.merchant, &1), 0);
+
+    s.env.mock_auths(&[]);
+    let reason = SdkString::from_str(&s.env, "fraud");
+    assert!(matches!(
+        s.client.try_slash(&s.merchant, &reason),
+        Err(Err(_))
+    ));
+
+    // The credential was not flagged and nothing was written.
+    let sbt = s.client.get_sbt(&s.merchant).unwrap();
+    assert!(!sbt.slashed);
+    assert_eq!(sbt.slashed_at, None);
+    assert_eq!(sbt.reason, None);
+    assert_eq!(s.client.total_sbt(), 1);
+}
+
+// ── Non-authority SBT callers (issue #651) ───────────────────────────────
+
+#[test]
+fn issue_rejects_a_different_valid_signer_without_changing_storage() {
+    let s = setup_without_mocked_auth();
+    let signer = Address::generate(&s.env);
+    mock_sbt_auth(
+        &s,
+        &signer,
+        "issue",
+        (s.merchant.clone(), 1u32).into_val(&s.env),
+    );
+
+    assert!(matches!(s.client.try_issue(&s.merchant, &1), Err(Err(_))));
+    assert_eq!(sbt_count(&s.env, &s.client.address), Some(0));
+    assert_eq!(s.client.total_sbt(), 0);
+    assert_eq!(s.client.get_sbt(&s.merchant), None);
+    assert!(!sbt_present(&s.env, &s.client.address, &s.merchant));
+    assert!(!revoked_present(&s.env, &s.client.address, &s.merchant));
+}
+
+#[test]
+fn revoke_rejects_a_different_valid_signer_without_changing_storage() {
+    let s = setup_without_mocked_auth();
+    mock_issue_auth(&s, &s.merchant, 1);
+    assert_eq!(s.client.issue(&s.merchant, &1), 0);
+    let credential = s.client.get_sbt(&s.merchant).unwrap();
+    let count = sbt_count(&s.env, &s.client.address);
+    let signer = Address::generate(&s.env);
+    mock_sbt_auth(
+        &s,
+        &signer,
+        "revoke",
+        (s.merchant.clone(),).into_val(&s.env),
+    );
+
+    assert!(matches!(s.client.try_revoke(&s.merchant), Err(Err(_))));
+    assert_eq!(sbt_count(&s.env, &s.client.address), count);
+    assert_eq!(s.client.total_sbt(), 1);
+    assert_eq!(s.client.get_sbt(&s.merchant), Some(credential.clone()));
+    assert!(sbt_present(&s.env, &s.client.address, &s.merchant));
+    assert!(!revoked_present(&s.env, &s.client.address, &s.merchant));
+}
+
+#[test]
+fn slash_rejects_a_different_valid_signer_without_changing_storage() {
+    let s = setup_without_mocked_auth();
+    mock_issue_auth(&s, &s.merchant, 1);
+    assert_eq!(s.client.issue(&s.merchant, &1), 0);
+    let credential = s.client.get_sbt(&s.merchant).unwrap();
+    let count = sbt_count(&s.env, &s.client.address);
+    let signer = Address::generate(&s.env);
+    let reason = SdkString::from_str(&s.env, "fraud");
+    mock_sbt_auth(
+        &s,
+        &signer,
+        "slash",
+        (s.merchant.clone(), reason.clone()).into_val(&s.env),
+    );
+
+    assert!(matches!(
+        s.client.try_slash(&s.merchant, &reason),
+        Err(Err(_))
+    ));
+    assert_eq!(sbt_count(&s.env, &s.client.address), count);
+    assert_eq!(s.client.total_sbt(), 1);
+    assert_eq!(s.client.get_sbt(&s.merchant), Some(credential));
+    assert!(sbt_present(&s.env, &s.client.address, &s.merchant));
+    assert!(!revoked_present(&s.env, &s.client.address, &s.merchant));
+}
+
+#[test]
+fn bound_authority_can_issue_revoke_and_slash() {
+    let s = setup_without_mocked_auth();
+
+    mock_sbt_auth(
+        &s,
+        &s.admin,
+        "issue",
+        (s.merchant.clone(), 1u32).into_val(&s.env),
+    );
+    assert_eq!(s.client.issue(&s.merchant, &1), 0);
+    assert_eq!(sbt_count(&s.env, &s.client.address), Some(1));
+    assert_eq!(s.client.total_sbt(), 1);
+
+    let revoked_owner = Address::generate(&s.env);
+    mock_sbt_auth(
+        &s,
+        &s.admin,
+        "issue",
+        (revoked_owner.clone(), 1u32).into_val(&s.env),
+    );
+    assert_eq!(s.client.issue(&revoked_owner, &1), 1);
+    mock_sbt_auth(
+        &s,
+        &s.admin,
+        "revoke",
+        (revoked_owner.clone(),).into_val(&s.env),
+    );
+    assert_eq!(s.client.revoke(&revoked_owner), 1);
+    assert!(revoked_present(&s.env, &s.client.address, &revoked_owner));
+    assert_eq!(sbt_count(&s.env, &s.client.address), Some(2));
+
+    let slashed_owner = Address::generate(&s.env);
+    mock_sbt_auth(
+        &s,
+        &s.admin,
+        "issue",
+        (slashed_owner.clone(), 1u32).into_val(&s.env),
+    );
+    assert_eq!(s.client.issue(&slashed_owner, &1), 2);
+    let reason = SdkString::from_str(&s.env, "fraud");
+    mock_sbt_auth(
+        &s,
+        &s.admin,
+        "slash",
+        (slashed_owner.clone(), reason.clone()).into_val(&s.env),
+    );
+    assert_eq!(s.client.slash(&slashed_owner, &reason), 2);
+    assert_eq!(
+        s.client.get_sbt(&slashed_owner).unwrap().reason,
+        Some(reason)
+    );
+    assert_eq!(sbt_count(&s.env, &s.client.address), Some(3));
+    assert_eq!(s.client.total_sbt(), 3);
 }
 
 // ── NotInitialized ───────────────────────────────────────────────────────
