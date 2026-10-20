@@ -8,6 +8,21 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`governance` (issue #476): per-bounty community donations with quadratic
+  treasury matching.** New `qf` module (`contracts/governance/src/qf.rs`).
+  `qf_open_bounty` / `qf_complete_bounty` are gated like `set_treasury_token`
+  (contract-address auth, reachable only through an approved proposal), so
+  bounty creation and the payout require existing governance approval.
+  `qf_donate` custodies the configured `TreasuryToken` and tracks each
+  donor's cumulative contribution per `u64` bounty id; the match is the
+  quadratic-funding formula `(Σ⌊√(cᵢ·10¹⁴)⌋)²/10¹⁴ − Σcᵢ` in deterministic
+  fixed-point integer arithmetic (floored at every step, clamped at zero),
+  with the per-bounty square-root sum maintained incrementally so completion
+  is O(1). `qf_complete_bounty` pays donations plus match to the recorded
+  recipient exactly once, charges only the match to the treasury, and fails
+  closed with `InsufficientTreasury` when the balance cannot cover it.
+  Voting weights, vote counting and quorum behaviour are unchanged; errors
+  are a module-local `QfError` so the shared `Error` spec does not grow.
 - **`stream-vault` (issue #603): add Tier A budget assertions for claim, cancel, create, and pause/resume.**
   Adds `budget_test` module with Tier A budget ceilings covering stream creation, partial and full claims, pause/resume cycles, and cancellations. Test-only — no contract behavior change.
 - **`treasury` (issue #606): assert buyback and fee-liquidation events and their config key.**
