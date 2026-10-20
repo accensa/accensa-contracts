@@ -473,6 +473,31 @@ fn test_unpause_requires_merchant_auth() {
     client.unpause();
 }
 
+#[test]
+#[should_panic]
+fn test_refund_requires_merchant_auth() {
+    let (env, client, merchant, _token) = setup(100);
+    client.deposit(&merchant, &500_000, &None);
+    let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
+    let recipient = Address::generate(&env);
+
+    // Enforcing mode with no signatures: merchant.require_auth() must abort.
+    env.set_auths(&[]);
+    client.refund(&payment_ref, &recipient, &50, &0, &100, &None, &0);
+}
+
+#[test]
+fn test_deposit_from_non_merchant_fails() {
+    let (env, client, _merchant, token) = setup(100);
+    let non_merchant = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&non_merchant, &100);
+
+    assert_eq!(
+        client.try_deposit(&non_merchant, &100, &None),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
 // ── Paused-state invariant (issue #80) ────────────────────────────────────
 //
 // Holistic coverage for the emergency-stop guarantee: the vault is
