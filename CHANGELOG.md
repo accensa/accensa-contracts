@@ -8,6 +8,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- chore(accensa-common): drop two no-op modules from the public API (#571) (#852).
 ### Changed
 - Remove two no-op modules from the `accensa-common` public API.
 - fix(refund-vault,refund-policy-vdf): guard four amount paths with checked math (closes #716, #717, #718, #719) (#896).
