@@ -536,6 +536,7 @@ pub mod dust;
 pub mod flash_loan;
 pub mod nft_escrow;
 pub mod oracle;
+pub mod permit;
 pub mod settlement;
 
 pub mod strategy;

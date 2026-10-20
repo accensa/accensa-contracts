@@ -27,6 +27,7 @@
 - [x] Document the publicly exported fields of `YieldInfo` in refund-vault (#785)
 - [x] Document the publicly exported fields of `CouponAppliedEvent` in refund-vault (#783)
 - [x] Document the publicly exported fields of `HtlcAddedEvent` in state-channel (#786)
+- [x] Document the publicly exported fields of `ProposalCreated` in governance (#774)
 - [x] Document the publicly exported fields of `OptimisticQueuedEvent` in governance (#775)
 ## Issue #660: PR template verification step runs the full workspace suite
 
@@ -117,6 +118,27 @@
   - `contracts/refund-vault/src/settlement.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` — boundary test pins both operands at `i128::MAX` and asserts the returned error variant
 
+## Issue #652: test: Pin the oracle admin getter and the round staleness bound
+
+- [x] Pin `get_admin` unset/bound states, the typed `AlreadyInitialized` double-initialize guard, and the inclusive staleness boundary in `contracts/oracle/src/staleness_test.rs` (#652)
+
+## Issue #653: test: Cover the cross-chain config getters' uninitialized arms
+
+- [x] Cover all four config getters unset/set/rebound and both `require_admin` verdicts without mocked auth in `contracts/cross-chain/src/config_readers_test.rs` (#653)
+
+## Issue #654: test: Cover the factory's already-tracked address branch on deploy
+
+- [x] Drive the already-tracked address collision branch and pin registry/salt invariants in `contracts/refund-vault-factory/tests/tracked_address.rs` (#654)
+
+## Issue #656: test: Assert treasury schedule entries keep their TTL across claims
+
+- [x] Assert schedule TTL at registration, re-bump after decay on a successful claim, and no shortening on a rejected claim in `contracts/treasury/tests/schedule_ttl.rs` (#656)
+## Issue #741: rustdoc for refund-vault-factory/lib's 7 public items
+
+- [x] Document `Error`, `RefundVaultFactory`, `get_admin`, `get_vault_wasm`, `get_time_policy_contract`, `get_vdf_policy_contract` and `get_next_salt` (#741)
+  - `contracts/refund-vault-factory/src/lib.rs` — doc comments only, no signature, body or ordering change
+
+
 ## Issue #740: rustdoc for `common/events`' 8 module symbols
 
 - [x] Document `vault`, `channel`, `receipt`, `bridge`, `gov`, `treasury`, `multisig` and `auth` (#740)
@@ -151,6 +173,14 @@
 
 ## Issue #687: walk the fee ladder in `tier_for_volume` without indexing
 
+- [x] Route both `recall_principal` sums through `add_amounts` (#723)
+  - `contracts/refund-vault/src/strategy.rs` — typed `Error::MathOverflow` instead of a host abort
+  - `contracts/refund-vault/src/recall_principal_overflow_tests.rs` — boundary tests drive both sums to `i128::MAX`
+
+## Issue #779: rustdoc for `ShardCreatedEvent`'s 5 exported fields
+
+- [x] Document `shard_id`, `shard_index`, `shard_address`, `start_batch_id` and `end_batch_id` (#779)
+  - `contracts/receipt-anchor/src/lib.rs` — doc comments only; struct layout, field types and topic tuple unchanged
 - [x] Iterate the ladder in `tier_for_volume` instead of `ladder.get(i).unwrap()` (#687)
   - `contracts/refund-vault/src/tiers.rs` — enumerated iteration, no trap path, unchanged behaviour
 
@@ -203,6 +233,11 @@
 - [x] Route `deploy_to_yield`'s totals, ratios and post-deployment sum through the checked `accensa_common::math` helpers (#719)
   - `contracts/refund-vault/src/lib.rs` — `add_amounts`/`sub_amounts`/`mul_ratio` instead of bare operators
   - `contracts/refund-vault/src/deploy_to_yield_overflow_tests.rs` — boundary tests drive the total, reserve-ratio product and max-deploy product to the type's maximum
+## Issue #777: Add /// to BatchRecord's exported fields
+
+- [x] Add `///` doc comments to `BatchRecord`'s five exported fields (#777)
+  - Documented `root`, `count`, `period_start`, `period_end`, and `anchored_ledger` in `contracts/receipt-anchor/src/lib.rs`
+  - Verified `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked --workspace`, and rustdoc rendering
 ## Issue #787: rustdoc for `ChannelOpenedEvent`'s 5 public fields
 
 - [x] Document the struct's 5 public fields (#787)
@@ -257,3 +292,8 @@
 
 - [x] Add `///` rustdoc to `MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open` and `get` (#751)
   - `contracts/state-channel/src/multi_asset.rs` — doc comments only; role, pre-conditions and each `Error` arm documented, signatures and bodies unchanged
+
+## Issue #776: Document the public fields of `PrunePayload`
+
+- [x] Add `///` rustdoc to `schema_version`, `timestamp`, `shard_id`, `start_batch_id` and `end_batch_id` (#776)
+  - `contracts/receipt-anchor/src/events.rs` — one doc line per field stating its domain and the `prune_batches` call site that writes it; field/type/order/derives unchanged

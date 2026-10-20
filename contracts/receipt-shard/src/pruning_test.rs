@@ -289,3 +289,39 @@ fn router_cursor_pruning_and_policy_pruning_coexist() {
         2 * PRUNE_BOUNTY_PER_BATCH
     );
 }
+
+// ── Diagnostics record_migration coverage (#700) ─────────────────────────────
+
+#[test]
+fn test_record_migration_updates_diagnostics() {
+    let fx = setup();
+
+    let before = fx.client.get_shard_diagnostics();
+    assert_eq!(before.live_batches, 0);
+    assert_eq!(before.live_leaves, 0);
+    assert_eq!(before.total_leaves, 0);
+    assert_eq!(before.high_water_batch_id, 1);
+    assert_eq!(before.max_merkle_depth, 0);
+
+    fx.env.as_contract(&fx.client.address, || {
+        crate::diagnostics::record_migration(&fx.env, 10, 50);
+    });
+
+    let after1 = fx.client.get_shard_diagnostics();
+    assert_eq!(after1.live_batches, 1);
+    assert_eq!(after1.live_leaves, 50);
+    assert_eq!(after1.total_leaves, 50);
+    assert_eq!(after1.high_water_batch_id, 11);
+    assert_eq!(after1.max_merkle_depth, 6);
+
+    fx.env.as_contract(&fx.client.address, || {
+        crate::diagnostics::record_migration(&fx.env, 25, 100);
+    });
+
+    let after2 = fx.client.get_shard_diagnostics();
+    assert_eq!(after2.live_batches, 2);
+    assert_eq!(after2.live_leaves, 150);
+    assert_eq!(after2.total_leaves, 150);
+    assert_eq!(after2.high_water_batch_id, 26);
+    assert_eq!(after2.max_merkle_depth, 7);
+}
