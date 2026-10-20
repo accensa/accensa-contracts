@@ -82,11 +82,17 @@ pub struct Htlc {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HtlcAddedEvent {
     #[topic]
+    /// Id of the channel whose escrow this hop reserves.
     pub channel_id: u64,
     #[topic]
+    /// Per-channel id assigned to the new hop by `htlc::add`.
     pub htlc_id: u64,
+    /// SHA-256 digest that the resolving preimage must hash to.
     pub hash_lock: BytesN<32>,
+    /// Escrow amount reserved from the channel for this hop.
     pub amount: i128,
+    /// Ledger after which the hop expires; when a parent hop is supplied,
+    /// this must be strictly smaller than the parent's `timeout_ledger`.
     pub timeout_ledger: u32,
     /// Upstream hop channel id, or `0` when this is a route's first hop.
     pub parent_channel_id: u64,
@@ -246,7 +252,15 @@ pub(crate) fn add(
         parent_htlc_id,
     };
     store(env, &htlc);
-    set_reserved(env, channel_id, already_reserved + amount);
+    // The escrow check above already guarantees `balance + already_reserved +
+    // amount <= channel.amount`, so with a non-negative `balance` this sum is
+    // in range. `add_amounts` makes that explicit: if the precondition is ever
+    // violated the call returns `Error::MathOverflow` instead of trapping.
+    set_reserved(
+        env,
+        channel_id,
+        accensa_common::math::add_amounts(already_reserved, amount)?,
+    );
 
     HtlcAddedEvent {
         channel_id,
@@ -275,7 +289,11 @@ pub(crate) fn resolve(
         return Err(Error::HtlcNotPending);
     }
     let digest: BytesN<32> = env.crypto().sha256(&preimage).into();
-    if digest != htlc.hash_lock {
+    // Constant-time check: the hash-lock preimage is secret-derived bytes.
+    if !accensa_common::constant_time::constant_time_eq(
+        &digest.to_array(),
+        &htlc.hash_lock.to_array(),
+    ) {
         return Err(Error::InvalidPreimage);
     }
 

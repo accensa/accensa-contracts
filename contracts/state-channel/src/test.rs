@@ -1150,3 +1150,161 @@ fn test_balance_regression_rejected_with_fresh_nonce() {
         Err(Ok(Error::StaleState))
     );
 }
+
+// ── Verify ZK Commitment Tests (#587) ───────────────────────────────────────
+
+mod verify_zk_commitment_tests {
+    use super::*;
+    use soroban_sdk::xdr::ToXdr;
+
+    fn make_commitment(env: &Env, value: i128, blinding_factor: &BytesN<32>) -> BytesN<32> {
+        let mut payload = soroban_sdk::Bytes::new(env);
+        payload.append(&value.to_xdr(env));
+        payload.append(&blinding_factor.clone().into());
+        env.crypto().sha256(&payload).into()
+    }
+
+    #[test]
+    fn valid_commitment_on_open_channel_returns_ok() {
+        let (env, sender, receiver, token, sk) = setup();
+        let contract = env.register(StateChannel, ());
+        let client = StateChannelClient::new(&env, &contract);
+        client.initialize(&token);
+
+        let pk = pubkey_from_signing_key(&env, &sk);
+        let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+        let state = StateUpdate {
+            nonce: 1,
+            balance: 500,
+        };
+        let sig = sign_state(&env, &sk, &pk, &state);
+        client.update_state(&channel_id, &state, &sig);
+
+        let value = 400i128;
+        let blinding_factor = BytesN::from_array(&env, &[7u8; 32]);
+        let commitment = make_commitment(&env, value, &blinding_factor);
+
+        assert_eq!(
+            client.try_verify_zk_commitment(&channel_id, &commitment, &value, &blinding_factor),
+            Ok(Ok(()))
+        );
+        client.verify_zk_commitment(&channel_id, &commitment, &value, &blinding_factor);
+    }
+
+    #[test]
+    fn commitment_on_closed_channel_returns_channel_not_open() {
+        let (env, sender, receiver, token, sk) = setup();
+        let contract = env.register(StateChannel, ());
+        let client = StateChannelClient::new(&env, &contract);
+        client.initialize(&token);
+
+        let pk = pubkey_from_signing_key(&env, &sk);
+        let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+        let close_state = StateUpdate {
+            nonce: 1,
+            balance: 500,
+        };
+        let close_sig = sign_state(&env, &sk, &pk, &close_state);
+        client.close_channel(&channel_id, &close_state, &close_sig);
+        assert_eq!(client.get_channel(&channel_id).phase, ChannelPhase::Closed);
+
+        let value = 400i128;
+        let blinding_factor = BytesN::from_array(&env, &[7u8; 32]);
+        let commitment = make_commitment(&env, value, &blinding_factor);
+
+        assert_eq!(
+            client.try_verify_zk_commitment(&channel_id, &commitment, &value, &blinding_factor),
+            Err(Ok(Error::ChannelNotOpen))
+        );
+    }
+
+    /// Commitment mismatch currently surfaces as `InvalidSignature` so downstream
+    /// consumers can rely on the pinned behavior until a dedicated error variant is added.
+    #[test]
+    fn flipped_blinding_factor_byte_returns_invalid_signature() {
+        let (env, sender, receiver, token, sk) = setup();
+        let contract = env.register(StateChannel, ());
+        let client = StateChannelClient::new(&env, &contract);
+        client.initialize(&token);
+
+        let pk = pubkey_from_signing_key(&env, &sk);
+        let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+        let state = StateUpdate {
+            nonce: 1,
+            balance: 500,
+        };
+        let sig = sign_state(&env, &sk, &pk, &state);
+        client.update_state(&channel_id, &state, &sig);
+
+        let value = 400i128;
+        let blinding_factor = BytesN::from_array(&env, &[7u8; 32]);
+        let commitment = make_commitment(&env, value, &blinding_factor);
+
+        // Flip one byte of the blinding factor to corrupt the hash preimage
+        let mut corrupted = [7u8; 32];
+        corrupted[0] ^= 0x01;
+        let corrupted_blinding = BytesN::from_array(&env, &corrupted);
+
+        assert_eq!(
+            client.try_verify_zk_commitment(&channel_id, &commitment, &value, &corrupted_blinding),
+            Err(Ok(Error::InvalidSignature))
+        );
+    }
+
+    #[test]
+    fn value_exceeding_channel_balance_returns_invalid_amount() {
+        let (env, sender, receiver, token, sk) = setup();
+        let contract = env.register(StateChannel, ());
+        let client = StateChannelClient::new(&env, &contract);
+        client.initialize(&token);
+
+        let pk = pubkey_from_signing_key(&env, &sk);
+        let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+        let state = StateUpdate {
+            nonce: 1,
+            balance: 500,
+        };
+        let sig = sign_state(&env, &sk, &pk, &state);
+        client.update_state(&channel_id, &state, &sig);
+
+        let value = 501i128; // channel balance is 500
+        let blinding_factor = BytesN::from_array(&env, &[7u8; 32]);
+        let commitment = make_commitment(&env, value, &blinding_factor);
+
+        assert_eq!(
+            client.try_verify_zk_commitment(&channel_id, &commitment, &value, &blinding_factor),
+            Err(Ok(Error::InvalidAmount))
+        );
+    }
+
+    #[test]
+    fn negative_value_returns_invalid_amount() {
+        let (env, sender, receiver, token, sk) = setup();
+        let contract = env.register(StateChannel, ());
+        let client = StateChannelClient::new(&env, &contract);
+        client.initialize(&token);
+
+        let pk = pubkey_from_signing_key(&env, &sk);
+        let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+        let state = StateUpdate {
+            nonce: 1,
+            balance: 500,
+        };
+        let sig = sign_state(&env, &sk, &pk, &state);
+        client.update_state(&channel_id, &state, &sig);
+
+        let value = -1i128;
+        let blinding_factor = BytesN::from_array(&env, &[7u8; 32]);
+        let commitment = make_commitment(&env, value, &blinding_factor);
+
+        assert_eq!(
+            client.try_verify_zk_commitment(&channel_id, &commitment, &value, &blinding_factor),
+            Err(Ok(Error::InvalidAmount))
+        );
+    }
+}

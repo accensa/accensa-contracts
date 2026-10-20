@@ -207,3 +207,77 @@ fn unknown_hop_is_not_found() {
     let c1 = client.open_channel(&alice, &bob, &pk(&env), &1_000, &720);
     assert_eq!(client.try_get_htlc(&c1, &999), Err(Ok(Error::HtlcNotFound)));
 }
+
+#[cfg(test)]
+mod lifecycle_event_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Events as _, Event};
+
+    #[test]
+    fn add_and_resolve_events_match_the_htlc_payload() {
+        let (env, client, _token, alice, bob, _charlie) = setup();
+        let contract = client.address.clone();
+        let channel_id = client.open_channel(&alice, &bob, &pk(&env), &1_000, &720);
+        let preimage = b"event-secret";
+        let hash_lock = hash(&env, preimage);
+        let amount = 250;
+        let timeout_ledger = 100;
+
+        let htlc_id = client.add_htlc(&channel_id, &hash_lock, &amount, &timeout_ledger, &None);
+        // `events().all()` covers the last invocation only: the add itself.
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = crate::htlc::HtlcAddedEvent {
+            channel_id,
+            htlc_id,
+            hash_lock: hash_lock.clone(),
+            amount,
+            timeout_ledger,
+            parent_channel_id: 0,
+            parent_htlc_id: 0,
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&env, &contract));
+
+        client.resolve_htlc(&channel_id, &htlc_id, &bytes(&env, preimage));
+        // The preimage matches the hash lock used to open this HTLC.
+        assert_eq!(hash(&env, preimage), hash_lock);
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = crate::htlc::HtlcResolvedEvent {
+            channel_id,
+            htlc_id,
+            amount,
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&env, &contract));
+        assert!(events.events().iter().all(|event| event
+            != &crate::htlc::HtlcRefundedEvent {
+                channel_id,
+                htlc_id,
+                amount,
+            }
+            .to_xdr(&env, &contract)));
+    }
+
+    #[test]
+    fn timeout_emits_the_refund_event() {
+        let (env, client, _token, alice, bob, _charlie) = setup();
+        let contract = client.address.clone();
+        let channel_id = client.open_channel(&alice, &bob, &pk(&env), &1_000, &720);
+        let hash_lock = hash(&env, b"expired-secret");
+        let amount = 175;
+        let htlc_id = client.add_htlc(&channel_id, &hash_lock, &amount, &100, &None);
+
+        env.ledger().set_sequence_number(101);
+        client.refund_htlc(&channel_id, &htlc_id);
+
+        // `events().all()` covers the last invocation only: the refund itself.
+        let events = env.events().all().filter_by_contract(&contract);
+        assert_eq!(events.events().len(), 1);
+        let expected = crate::htlc::HtlcRefundedEvent {
+            channel_id,
+            htlc_id,
+            amount,
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&env, &contract));
+    }
+}

@@ -13,6 +13,8 @@ use crate::{
 use accensa_common::Error;
 use soroban_sdk::{contractclient, contractevent, contractimpl, Address, Env, Vec};
 
+pub use accensa_common::Error as ConsolidationError;
+
 #[contractclient(name = "ConsolidationTargetClient")]
 pub trait ConsolidationTargetInterface {
     fn insert_migrated_batch(
@@ -56,12 +58,11 @@ impl ReceiptShard {
         source_shard_id: u64,
         destination_shard_id: u64,
         batch_ids: Vec<u64>,
-    ) -> u32 {
+    ) -> Result<u32, Error> {
         Self::require_active_and_router(&env);
-        assert!(
-            destination != env.current_contract_address(),
-            "destination must differ from source"
-        );
+        if destination == env.current_contract_address() {
+            return Err(Error::DestinationMismatch);
+        }
 
         let mut migrated = 0u32;
         let source = env.current_contract_address();
@@ -72,10 +73,16 @@ impl ReceiptShard {
                 .storage()
                 .persistent()
                 .get(&DataKey::Batch(batch_id))
-                .unwrap_or_else(|| panic!("batch not found"));
+                .ok_or(Error::BatchNotFound)?;
 
-            let stored = target.insert_migrated_batch(&source, &batch_id, &record);
-            assert!(stored == record, "migrated batch record mismatch");
+            let stored = target
+                .try_insert_migrated_batch(&source, &batch_id, &record)
+                .map_err(|_| Error::ShardCallFailed)?
+                .map_err(|_| Error::ShardCallFailed)?;
+
+            if stored != record {
+                return Err(Error::RoundTripMismatch);
+            }
 
             env.storage().persistent().remove(&DataKey::Batch(batch_id));
             crate::diagnostics::record_removals(&env, 1, record.count as u64);
@@ -95,7 +102,7 @@ impl ReceiptShard {
             .publish(&env);
         }
 
-        migrated
+        Ok(migrated)
     }
 
     /// Inserts an exact batch record into a destination shard.

@@ -445,3 +445,128 @@ fn rejected_pause_emits_no_event() {
     let none: soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)> = vec![&t.env];
     assert_eq!(t.env.events().all().filter_by_contract(&t.account), none);
 }
+
+// ── Execute Batch (#585) ────────────────────────────────────────────────────
+
+#[contract]
+struct StatefulTarget;
+
+#[contractimpl]
+impl StatefulTarget {
+    pub fn push(env: Env, val: u32) -> u32 {
+        let key = Symbol::new(&env, "history");
+        let mut history: soroban_sdk::Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(soroban_sdk::vec![&env]);
+        history.push_back(val);
+        env.storage().instance().set(&key, &history);
+        val * 10
+    }
+
+    pub fn get_history(env: Env) -> soroban_sdk::Vec<u32> {
+        let key = Symbol::new(&env, "history");
+        env.storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(soroban_sdk::vec![&env])
+    }
+
+    pub fn trap(_env: Env) -> u32 {
+        panic!("trap in batch");
+    }
+}
+
+mod execute_batch_tests {
+    use super::*;
+    use crate::Call;
+    use soroban_sdk::TryFromVal;
+
+    #[test]
+    fn execute_batch_runs_calls_in_order_and_returns_results() {
+        let t = setup();
+        let target_id = t.env.register(StatefulTarget, ());
+        let target_client = StatefulTargetClient::new(&t.env, &target_id);
+
+        let call1 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "push"),
+            args: soroban_sdk::vec![&t.env, 1u32.into_val(&t.env)],
+        };
+        let call2 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "push"),
+            args: soroban_sdk::vec![&t.env, 2u32.into_val(&t.env)],
+        };
+        let calls = soroban_sdk::vec![&t.env, call1, call2];
+
+        let args = [calls.clone().into_val(&t.env)];
+        let delegates = [t.s1.clone(), t.s2.clone()];
+        t.authorize(&t.account, "execute_batch", &args, &delegates, 1);
+
+        let results = t.client().execute_batch(&calls);
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            u32::try_from_val(&t.env, &results.get(0).unwrap()).unwrap(),
+            10
+        );
+        assert_eq!(
+            u32::try_from_val(&t.env, &results.get(1).unwrap()).unwrap(),
+            20
+        );
+
+        assert_eq!(
+            target_client.get_history(),
+            soroban_sdk::vec![&t.env, 1u32, 2u32]
+        );
+    }
+
+    #[test]
+    fn execute_batch_external_without_auth_fails() {
+        let t = setup();
+        let target_id = t.env.register(StatefulTarget, ());
+        let target_client = StatefulTargetClient::new(&t.env, &target_id);
+
+        let call1 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "push"),
+            args: soroban_sdk::vec![&t.env, 1u32.into_val(&t.env)],
+        };
+        let calls = soroban_sdk::vec![&t.env, call1];
+
+        // Do not authorize the call on behalf of the account
+        let res = t.client().try_execute_batch(&calls);
+        assert!(res.is_err());
+        assert_eq!(target_client.get_history(), soroban_sdk::vec![&t.env]);
+    }
+
+    #[test]
+    fn execute_batch_reverts_state_when_call_traps() {
+        let t = setup();
+        let target_id = t.env.register(StatefulTarget, ());
+        let target_client = StatefulTargetClient::new(&t.env, &target_id);
+
+        let call1 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "push"),
+            args: soroban_sdk::vec![&t.env, 99u32.into_val(&t.env)],
+        };
+        let call2 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "trap"),
+            args: soroban_sdk::vec![&t.env],
+        };
+        let calls = soroban_sdk::vec![&t.env, call1, call2];
+
+        let args = [calls.clone().into_val(&t.env)];
+        let delegates = [t.s1.clone(), t.s2.clone()];
+        t.authorize(&t.account, "execute_batch", &args, &delegates, 1);
+
+        let res = t.client().try_execute_batch(&calls);
+        assert!(res.is_err());
+
+        // Partial state written by the first call must be cleanly reverted
+        assert_eq!(target_client.get_history(), soroban_sdk::vec![&t.env]);
+    }
+}
