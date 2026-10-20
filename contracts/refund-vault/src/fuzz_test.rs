@@ -59,7 +59,7 @@ use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, EnvTestConfig, Ledger},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env,
+    Address, Bytes, BytesN, Env,
 };
 use std::{
     format,
@@ -126,6 +126,152 @@ fn payment_ref(env: &Env, slot: u32) -> BytesN<32> {
     arr[0] = slot as u8;
     arr[1] = 0xAB;
     BytesN::from_array(env, &arr)
+}
+
+/// Reads the reentrancy lock flag that backs the flash-loan guard (the
+/// `ReentrancyGuard::acquire` at the top of `flash_loan`) from the vault's
+/// instance storage.
+fn reentrancy_lock_held(env: &Env, vault: &Address) -> bool {
+    env.as_contract(vault, || {
+        env.storage()
+            .instance()
+            .get(&accensa_common::reentrancy::ReentrancyDataKey::Lock)
+            .unwrap_or(false)
+    })
+}
+
+/// `dust_threshold` is infallible: it returns the stored
+/// `DataKey::DustThreshold`, or `DEFAULT_DUST_THRESHOLD` when the key is
+/// absent, so no `Error` variant is reachable from it.
+#[test]
+fn test_dust_threshold_returns_default_then_exact_configured_value() {
+    let (env, client, _, _) = setup(100);
+    let vault = client.address.clone();
+
+    // Fresh vault: the key is absent, so both the direct crate-internal call
+    // and the public getter fall back to the compiled default.
+    assert_eq!(crate::dust::DEFAULT_DUST_THRESHOLD, 100);
+    let direct = env.as_contract(&vault, || crate::dust::dust_threshold(&env));
+    assert_eq!(direct, crate::dust::DEFAULT_DUST_THRESHOLD);
+    assert_eq!(
+        client.get_dust_threshold(),
+        crate::dust::DEFAULT_DUST_THRESHOLD
+    );
+
+    // Configured storage is returned verbatim: no clamping, rounding, or
+    // reinterpretation, at the smallest positive boundary and a typical value.
+    let treasury = Address::generate(&env);
+    client.set_dust_config(&1, &treasury);
+    let direct = env.as_contract(&vault, || crate::dust::dust_threshold(&env));
+    assert_eq!(direct, 1);
+    assert_eq!(client.get_dust_threshold(), 1);
+
+    client.set_dust_config(&250, &treasury);
+    let direct = env.as_contract(&vault, || crate::dust::dust_threshold(&env));
+    assert_eq!(direct, 250);
+    assert_eq!(client.get_dust_threshold(), 250);
+
+    // Upper boundary: the threshold is stored and read back exactly.
+    client.set_dust_config(&i128::MAX, &treasury);
+    assert_eq!(client.get_dust_threshold(), i128::MAX);
+}
+
+/// `dust_treasury` returns an `Address` and is infallible: explicit
+/// `DataKey::DustTreasury`, else the active fee recipient, else the admin, so
+/// no `Error` variant is reachable from it.
+#[test]
+fn test_dust_treasury_falls_back_through_fee_recipient_then_honors_explicit_treasury() {
+    let (env, client, merchant, _) = setup(100);
+    let vault = client.address.clone();
+
+    // Neither dust treasury nor fee recipient set: falls back to the merchant.
+    let direct = env.as_contract(&vault, || crate::dust::dust_treasury(&env));
+    assert_eq!(direct, merchant);
+    assert_eq!(client.get_dust_treasury(), merchant);
+
+    // An explicit fee recipient becomes the fallback destination.
+    let fee_recipient = Address::generate(&env);
+    client.set_fee_recipient(&fee_recipient);
+    let direct = env.as_contract(&vault, || crate::dust::dust_treasury(&env));
+    assert_eq!(direct, fee_recipient);
+    assert_eq!(client.get_dust_treasury(), fee_recipient);
+
+    // An explicit dust treasury overrides the fee-recipient fallback...
+    let treasury = Address::generate(&env);
+    client.set_dust_config(&100, &treasury);
+    let direct = env.as_contract(&vault, || crate::dust::dust_treasury(&env));
+    assert_eq!(direct, treasury);
+    assert_eq!(client.get_dust_treasury(), treasury);
+
+    // ...and later fee-recipient changes do not move the explicit treasury.
+    let other = Address::generate(&env);
+    client.set_fee_recipient(&other);
+    assert_eq!(client.get_dust_treasury(), treasury);
+}
+
+/// The flash-loan guard is the reentrancy lock `flash_loan` takes before its
+/// first external call (`contracts/common/src/reentrancy.rs`; the old
+/// no-op `src/guard.rs::flash_loan_guard` was deleted in #849 and never
+/// entered a build). Its only reachable failure is `ReentrancyBlocked`.
+#[test]
+fn test_flash_loan_guard_blocks_reentry_and_allows_reacquisition() {
+    let (env, client, merchant, token) = setup(100);
+    let vault = client.address.clone();
+
+    // Guard semantics: the first acquire takes the lock, the nested acquire
+    // is rejected while it is held, and after release the lock is free for
+    // re-acquisition.
+    let guard_results = env.as_contract(&vault, || {
+        let first_acquire = accensa_common::reentrancy::ReentrancyGuard::acquire(&env);
+        let nested_acquire = accensa_common::reentrancy::ReentrancyGuard::acquire(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
+        let reacquire = accensa_common::reentrancy::ReentrancyGuard::acquire(&env);
+        accensa_common::reentrancy::ReentrancyGuard::release(&env);
+        (first_acquire, nested_acquire, reacquire)
+    });
+    assert_eq!(
+        guard_results,
+        (Ok(()), Err(Error::ReentrancyBlocked), Ok(()))
+    );
+    assert!(!reentrancy_lock_held(&env, &vault));
+
+    // Through the contract interface: while the lock is held, `flash_loan`
+    // fails with the guard's exact variant before any other check runs...
+    env.as_contract(&vault, || {
+        env.storage()
+            .instance()
+            .set(&accensa_common::reentrancy::ReentrancyDataKey::Lock, &true);
+    });
+    let blocked_receiver = Address::generate(&env);
+    assert_eq!(
+        client.try_flash_loan(&blocked_receiver, &1, &Bytes::new(&env)),
+        Err(Ok(Error::ReentrancyBlocked))
+    );
+    // ...without releasing its caller's lock and without moving any funds.
+    assert!(reentrancy_lock_held(&env, &vault));
+    assert_eq!(TokenClient::new(&env, &token).balance(&vault), 0);
+
+    // Normal permitted path: with the lock free, `flash_loan` acquires the
+    // guard, runs the receiver's repayment callback, forwards the premium to
+    // the fee recipient (the merchant), and releases the lock.
+    env.as_contract(&vault, || {
+        accensa_common::reentrancy::ReentrancyGuard::release(&env)
+    });
+    let amount: i128 = 1_000_000;
+    client.deposit(&merchant, &amount, &None);
+    let receiver = env.register(crate::flash_loan_tests::MockReceiver, ());
+    crate::flash_loan_tests::MockReceiverClient::new(&env, &receiver)
+        .setup(&vault, &crate::flash_loan_tests::Mode::Repay);
+    // 9 bps of 1_000_000, computed exactly: 900.
+    let fee: i128 = 900;
+    StellarAssetClient::new(&env, &token).mint(&receiver, &fee);
+
+    let charged = client.flash_loan(&receiver, &amount, &Bytes::new(&env));
+    assert_eq!(charged, fee);
+    assert!(!reentrancy_lock_held(&env, &vault));
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&vault), amount);
+    assert_eq!(token_client.balance(&merchant), FLOAT - amount + fee);
 }
 
 /// The test's conformance oracle for the vault's observable state.
