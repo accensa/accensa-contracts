@@ -74,10 +74,15 @@ pub struct AnchorPayload {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrunePayload {
+    /// Payload layout version; `prune_batches` writes it as [`SCHEMA_VERSION`].
     pub schema_version: u32,
+    /// Ledger timestamp of the prune call, captured by `prune_batches` from `env.ledger().timestamp()`.
     pub timestamp: u64,
+    /// Logical shard whose stream was pruned — the `shard_id` argument `prune_batches` receives.
     pub shard_id: u64,
+    /// First batch id deleted: inclusive lower bound of the pruned range, set by `prune_batches`.
     pub start_batch_id: u64,
+    /// Last batch id deleted: inclusive upper bound (`cursor - 1`), set by `prune_batches`.
     pub end_batch_id: u64,
 }
 

@@ -8,6 +8,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- docs(factory): rustdoc for 7 public items in refund-vault-factory/lib… (#880).
+- **Documentation (#776):** Documented all 5 public fields of receipt-anchor's `PrunePayload` (`schema_version`, `timestamp`, `shard_id`, `start_batch_id`, `end_batch_id`) in `contracts/receipt-anchor/src/events.rs`, each with a `///` line stating its domain and the `prune_batches` call site that writes it, so an off-chain decoder can read the published `prune` payload without reading the contract source; doc comments only, no field, type, order or derive change.
+- docs: Add /// to BatchRecord's exported fields (#777) (#901).
 - **`stream-vault` (issue #603): add Tier A budget assertions for claim, cancel, create, and pause/resume.**
   Adds `budget_test` module with Tier A budget ceilings covering stream creation, partial and full claims, pause/resume cycles, and cancellations. Test-only — no contract behavior change.
 - **`treasury` (issue #606): assert buyback and fee-liquidation events and their config key.**
@@ -224,6 +227,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **Internal tests (#651, #655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`, including rejection of non-authority callers without changing storage.
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 - **Documentation (#788, #792):** Documented the five public fields of state-channel `MultiAssetChannel` (`sender`, `receiver`, `phase`, `opened_at`, `challenge_period`) and the five of upto-authorization `AuthorizeEvent` (`payment_id`, `from`, `to`, `cap`, `expiry`) for off-chain decoders; comments only, no code change.
+- **Documentation (#774):** Documented the five public fields of governance `ProposalCreated` (`proposal_id`, `proposer`, `target`, `function`, `deadline_ledger`) for off-chain decoders; comments only, no code change. New `contracts/governance/tests/proposal_created_event.rs` pins the published payload and the inclusive deadline.
 - **Documentation (#775):** Documented the five public fields of governance `OptimisticQueuedEvent` (`proposal_id`, `proposer`, `target`, `function`, `challenge_deadline_ledger`) for off-chain decoders; comments only, no code change.
 - **`refund-vault` / `state-channel` (issues #128, #460):** Add commit-reveal, mock-yield and channel-splicing test suites. New `contracts/refund-vault/src/commit_reveal_tests.rs` pins the commit-reveal front-running mitigation (delayed reveal, single-use commitment, hash-mismatch rejection, merchant-only access); new `contracts/refund-vault/src/yield_tests.rs` adds a mock yield strategy harness covering strategy set/deposit/withdraw/harvest; new `contracts/state-channel/src/splice_test.rs` covers splice-in/splice-out capacity changes, reserved-escrow guards, non-positive amounts and unknown-channel errors. Test-only — no contract behavior change.
 - **Documentation (#787):** Documented the five public fields of state-channel `ChannelOpenedEvent` (`channel_id`, `sender`, `receiver`, `amount`, `challenge_period`) for off-chain decoders; comments only, no code change.
@@ -334,6 +338,8 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   setter/getter round-trip. Test-only — no contract behavior change.
 - **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
   Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
+- **`receipt-shard` (issue #700): unit tests for record_migration.**
+  Extended `contracts/receipt-shard/src/pruning_test.rs` with coverage for `record_migration` and diagnostic metrics progression.
 - **`refund-policy-time` (issue #701): unit tests for check_time_gates.**
   Extended `contracts/refund-policy-time/src/oracle_test.rs` with coverage for `check_time_gates` window and deadline gates.
 - **`receipt-shard` (issue #699): unit tests for decommission, record_anchor, and record_removals.**

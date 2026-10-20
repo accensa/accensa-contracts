@@ -46,6 +46,7 @@ pub struct VaultDeployedEvent {
     pub vault: Address,
 }
 
+/// Error variants returned by the refund vault factory.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -62,6 +63,7 @@ pub enum Error {
     FeeExceedsHardcap = 6,
 }
 
+/// Factory contract that deploys policy-bounded refund vault instances for merchants.
 #[contract]
 pub struct RefundVaultFactory;
 
@@ -209,18 +211,22 @@ impl RefundVaultFactory {
         Ok(())
     }
 
+    /// Returns the factory admin address, or `None` if uninitialized.
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&KEY_ADMIN)
     }
 
+    /// Returns the WASM hash used for deploying new vault instances, or `None` if not set.
     pub fn get_vault_wasm(env: Env) -> Option<BytesN<32>> {
         env.storage().persistent().get(&KEY_VAULT_WASM)
     }
 
+    /// Returns the default time-policy contract address, or `None` if not configured.
     pub fn get_time_policy_contract(env: Env) -> Option<Address> {
         env.storage().persistent().get(&KEY_TIME)
     }
 
+    /// Returns the default VDF-policy contract address, or `None` if not configured.
     pub fn get_vdf_policy_contract(env: Env) -> Option<Address> {
         env.storage().persistent().get(&KEY_VDF)
     }
@@ -232,6 +238,7 @@ impl RefundVaultFactory {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Returns the monotonic counter used to derive deterministic deployment salts.
     pub fn get_next_salt(env: Env) -> u128 {
         env.storage()
             .persistent()
