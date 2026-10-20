@@ -26,7 +26,12 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 ## Submitting a Pull Request
 
 - Ensure your code follows the existing Rust style conventions.
-- Run all local build and test commands (e.g., `cargo build --target wasm32v1-none --release`, `cargo test`) before submitting.
+- Run all local build and test commands before submitting:
+  ```bash
+  cargo build --workspace --exclude testutils --target wasm32v1-none --release
+  cargo test --workspace
+  ```
+  A bare `cargo build`/`cargo test` only covers the narrower `default-members` set, so pass `--workspace` to match CI.
 - Provide a clear and descriptive PR title and description.
 - Link to any relevant open issues in your PR description (e.g. `Closes #123`).
 - **Changelog Enforcement**: Any PR modifying contract source code (`contracts/**/src/**`) must include an entry in [`CHANGELOG.md`](CHANGELOG.md) under `## [Unreleased]`.
