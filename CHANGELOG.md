@@ -8,6 +8,8 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`stream-vault` (issue #603): add Tier A budget assertions for claim, cancel, create, and pause/resume.**
+  Adds `budget_test` module with Tier A budget ceilings covering stream creation, partial and full claims, pause/resume cycles, and cancellations. Test-only — no contract behavior change.
 - **`treasury` (issue #606): assert buyback and fee-liquidation events and their config key.**
   Field-by-field XDR shape assertions for `BuybackConfiguredEvent`, `BuybackExecutedEvent`, and `FeesLiquidatedEvent`, including AMM round-trip reconfiguration tests and no-event checks for rejected swaps. Test-only — no contract behavior change.
 - **`refund-policy-vdf` (issue #601): Tier A CPU ceilings for the VDF delay
@@ -22,6 +24,15 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 
+- **`receipt-shard` / `upto-authorization` (issues #781, #793): rustdoc for
+  the undocumented public fields of `BatchRecord` and `AuthorizationRecord`.**
+  Each of the 5 fields of `BatchRecord` in `contracts/receipt-shard/src/lib.rs`
+  (`root`, `count`, `period_start`, `period_end`, `anchored_ledger`) and each
+  of the 5 named fields of `AuthorizationRecord` in
+  `contracts/upto-authorization/src/types.rs` (`from`, `to`, `cap`, `expiry`,
+  `consumed`) now carries a `///` stating the unit or domain of the value and
+  the code paths that write and read it. Doc comments only — no field, type,
+  order or derive change, and no behavior change.
 - **`state-channel` (issue #728): compute the HTLC reservation total with
   checked arithmetic.** `htlc::add` now combines `already_reserved` and the
   new hop's `amount` through `accensa_common::math::add_amounts`, so an
@@ -281,6 +292,8 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   setter/getter round-trip. Test-only — no contract behavior change.
 - **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
   Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
+- **`refund-policy-time` (issue #701): unit tests for check_time_gates.**
+  Extended `contracts/refund-policy-time/src/oracle_test.rs` with coverage for `check_time_gates` window and deadline gates.
 - **`receipt-shard` (issue #699): unit tests for decommission, record_anchor, and record_removals.**
   Extended `contracts/receipt-shard/src/consolidation_test.rs` with coverage for shard decommissioning and diagnostics counter updates.
 - **`stream-vault` / `multisig-account` (issues #752, #754): rustdoc coverage
