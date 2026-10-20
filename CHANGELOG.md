@@ -8,21 +8,23 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
-- **`governance` (issue #476): per-bounty community donations with quadratic
-  treasury matching.** New `qf` module (`contracts/governance/src/qf.rs`).
-  `qf_open_bounty` / `qf_complete_bounty` are gated like `set_treasury_token`
-  (contract-address auth, reachable only through an approved proposal), so
-  bounty creation and the payout require existing governance approval.
-  `qf_donate` custodies the configured `TreasuryToken` and tracks each
-  donor's cumulative contribution per `u64` bounty id; the match is the
-  quadratic-funding formula `(Σ⌊√(cᵢ·10¹⁴)⌋)²/10¹⁴ − Σcᵢ` in deterministic
-  fixed-point integer arithmetic (floored at every step, clamped at zero),
-  with the per-bounty square-root sum maintained incrementally so completion
-  is O(1). `qf_complete_bounty` pays donations plus match to the recorded
-  recipient exactly once, charges only the match to the treasury, and fails
-  closed with `InsufficientTreasury` when the balance cannot cover it.
-  Voting weights, vote counting and quorum behaviour are unchanged; errors
-  are a module-local `QfError` so the shared `Error` spec does not grow.
+### Changed
+- Remove two no-op modules from the `accensa-common` public API.
+- fix(refund-vault,refund-policy-vdf): guard four amount paths with checked math (closes #716, #717, #718, #719) (#896).
+- docs: rustdoc for 8 public items in refund-vault/lib (#739) (#878).
+- feat: resolve #550, #480, #479, and #478 (#866).
+- docs(factory): rustdoc for 7 public items in refund-vault-factory/lib… (#880).
+- **Documentation (#776):** Documented all 5 public fields of receipt-anchor's `PrunePayload` (`schema_version`, `timestamp`, `shard_id`, `start_batch_id`, `end_batch_id`) in `contracts/receipt-anchor/src/events.rs`, each with a `///` line stating its domain and the `prune_batches` call site that writes it, so an off-chain decoder can read the published `prune` payload without reading the contract source; doc comments only, no field, type, order or derive change.
+- docs: Add /// to BatchRecord's exported fields (#777) (#901).
+- **`governance` (issue #743): rustdoc for `liquid_staking.rs`'s 6 undocumented
+  public items.** `contracts/governance/src/liquid_staking.rs` now documents
+  `LiquidStakingError`, the `Mint` and `Burn` events (each field's role),
+  `ExchangeRate`, `UserData` and the `LiquidStaking` contract struct. Doc
+  comments only — no signature, body, ordering or test change, and
+  `missing_docs` is deliberately not enabled.
+- Issue #572: Removed the uncompiled, unreferenced source files `contracts/governance/src/liquid_staking_impl.rs`, `contracts/refund-vault/src/guard.rs`, and `contracts/refund-vault/src/test/test/refund_vectors.rs`. No compiled contract behavior changed.
+  
+### Removed
 - **`stream-vault` (issue #603): add Tier A budget assertions for claim, cancel, create, and pause/resume.**
   Adds `budget_test` module with Tier A budget ceilings covering stream creation, partial and full claims, pause/resume cycles, and cancellations. Test-only — no contract behavior change.
 - **`treasury` (issue #606): assert buyback and fee-liquidation events and their config key.**
@@ -37,8 +39,65 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   zero-delay no-gate path is gated separately and much tighter. Test-only —
   the modulus, `MR_BASES`, delay types and contract behaviour are unchanged.
 - **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
+- docs(governance): document the 4 public items in lib.rs (closes #746) (#850).
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 
+- **`multisig-account` (issue #413): daily spending limits for sub-threshold
+  signers.** Governance can configure a per-token daily allowance for routine
+  transfers authorized by fewer than the full threshold. Spending is tracked
+  per signer and token in 24-hour ledger-time windows; other calls and spends
+  beyond the remaining allowance still require the full threshold.
+- **`multisig-account` / `refund-vault` (issues #592, #593): pin verify_ed25519 trap semantics and refund-vault config getters.**
+  Added unit test coverage for `verify_ed25519` in `contracts/multisig-account/src/test.rs`, asserting that valid signatures return normally, malleated non-canonical `s` scalar signatures return typed `Error::NonCanonicalSignature`, and invalid signatures trap the host VM (`Err(Err(_))`). Extended `contracts/refund-vault/src/test.rs` to exercise unexercised config getters (`get_admin`, `get_token`, `get_refund_window`, and `is_paused`), verifying configured values, pause/unpause boolean transitions, and `Error::NotInitialized` when called on an uninitialized instance. Test-only — no contract behavior changes.
+
+- **`receipt-anchor` (issue #779): document `ShardCreatedEvent`'s exported
+  fields.** `contracts/receipt-anchor/src/lib.rs` now carries a `///` comment
+  on each of `shard_id`, `shard_index`, `shard_address`, `start_batch_id` and
+  `end_batch_id`, stating the value's domain and the code path that writes it
+  so an off-chain decoder can read the event without inferring either from the
+  field name. Doc comments only — struct layout, field types and the topic
+  tuple are unchanged.
+- **`cross-chain` (issue #643): cover non-admin auth rejection for admin setters.**
+  Extended `contracts/cross-chain/src/test.rs` with negative-path tests
+  asserting that `set_guardian_set`, `set_axelar_gateway`, `set_trusted_peer`
+  and `set_layerzero_endpoint` reject non-admin callers before any storage
+  write, plus admin happy-path tests pinning the expected stored values.
+  Test-only — no contract behavior change.
+- **`oracle` (issue #652): pin the admin getter and the round staleness bound.** New
+  `staleness_test` module in `contracts/oracle/src/staleness_test.rs`, registered
+  with a single `mod staleness_test;` line, asserting `get_admin` returns `None`
+  before `initialize` and `Some(admin)` after, a second `initialize` fails with
+  the typed `AlreadyInitialized` error while leaving the original admin bound,
+  and a round at exactly `max_staleness_ledgers` old is served while one ledger
+  past the bound is refused with `StalePrice` through both public readers. No
+  contract behaviour change.
+- **`cross-chain` (issue #653): cover the cross-chain config getters' uninitialized arms.** New
+  `config_readers_test` module in `contracts/cross-chain/src/config_readers_test.rs`,
+  registered with a single `mod config_readers_test;` line, asserting
+  `get_axelar_gateway`, `get_token`, `get_destination_chain_id` and
+  `is_trusted_peer` are unset before `initialize`, read back the exact written
+  values after it, and follow `set_axelar_gateway` / `set_trusted_peer` rebinds;
+  both `require_admin` verdicts (`NotInitialized` before initialize and
+  `Unauthorized` for a non-admin caller) are driven through public setters with
+  no mocked authorization via a direct-invoker probe contract. No contract
+  behaviour change.
+- **`refund-vault-factory` (issue #654): cover the already-tracked address branch on deploy.** New
+  `contracts/refund-vault-factory/tests/tracked_address.rs` proving the first
+  `deploy_vault` allocates a salt and registers the derived address, a second
+  request deriving an address already in the registry is rejected with the
+  documented `Error::SaltCollision` without double-registering or advancing the
+  counter, `get_vaults` never holds a duplicate, and two merchants' salt draws
+  stay independent with one counter advance per allocation. No contract code
+  change.
+- **`treasury` (issue #656): assert schedule entries keep their TTL across claims.** New
+  `contracts/treasury/tests/schedule_ttl.rs` reading `DataKey::Schedule(..)`'s
+  persistent TTL with `as_contract` + `get_ttl`, asserting `add_schedule`
+  leaves the entry at or above `DEFAULT_TTL_BUMP`, a successful `claim_vested`
+  re-extends an entry decayed below `DEFAULT_TTL_LOW_WATER` back to at least
+  `DEFAULT_TTL_BUMP`, and a rejected `NothingToClaim` claim leaves the TTL no
+  shorter. Policy constants come from `accensa_common::storage`; no contract
+  code change.
+- chore(accensa-common): drop two no-op modules from the public API (#571) (#852).
 - **`receipt-shard` / `upto-authorization` (issues #781, #793): rustdoc for
   the undocumented public fields of `BatchRecord` and `AuthorizationRecord`.**
   Each of the 5 fields of `BatchRecord` in `contracts/receipt-shard/src/lib.rs`
@@ -156,6 +215,14 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   - **`state-channel` & `upto-authorization` (#590):** Wired `budget-assert` feature and added Tier A budget suites for `mutual_close`/`close_channel` (with Ed25519 signatures) and `authorize`/`settle` at cap boundaries; enabled in CI workflow.
   - **`refund-vault-factory` (#591):** Added `initialize_alias` test module asserting proxy initialization matching constructor state, `AlreadyInitialized` protection on repeat calls, and non-admin authorization denial.
 
+- **`refund-vault` (issue #703): dust and flash-loan guard pinned by tests.**
+  `dust_threshold` and `dust_treasury` are asserted — through direct
+  crate-internal calls and the public getters — to return the compiled default,
+  the exact configured values, and the full merchant → fee-recipient →
+  explicit-treasury fallback chain; the flash-loan reentrancy guard is asserted
+  to reject a nested acquire and a locked `flash_loan` with exactly
+  `ReentrancyBlocked` (releasing no lock, moving no funds) and to release the
+  lock after a fully repaid loan. Test-only — no contract behavior change.
 - **Documentation (#750, #751):** Documented the 4 public items of refund-vault `nft_escrow` (`deposit`, `claim`, `refund`, `get`) and the 4 of state-channel `multi_asset` (`MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open`, `get`) with `///` rustdoc, covering role, pre-conditions and each `Error` arm for off-chain integrators; comments only, no code change.
 - **`state-channel` (issue #627): route the HTLC preimage check through the
   constant-time comparator.** `contracts/state-channel/src/htlc.rs` now calls
@@ -197,6 +264,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **Internal tests (#651, #655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`, including rejection of non-authority callers without changing storage.
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 - **Documentation (#788, #792):** Documented the five public fields of state-channel `MultiAssetChannel` (`sender`, `receiver`, `phase`, `opened_at`, `challenge_period`) and the five of upto-authorization `AuthorizeEvent` (`payment_id`, `from`, `to`, `cap`, `expiry`) for off-chain decoders; comments only, no code change.
+- **Documentation (#774):** Documented the five public fields of governance `ProposalCreated` (`proposal_id`, `proposer`, `target`, `function`, `deadline_ledger`) for off-chain decoders; comments only, no code change. New `contracts/governance/tests/proposal_created_event.rs` pins the published payload and the inclusive deadline.
 - **Documentation (#775):** Documented the five public fields of governance `OptimisticQueuedEvent` (`proposal_id`, `proposer`, `target`, `function`, `challenge_deadline_ledger`) for off-chain decoders; comments only, no code change.
 - **`refund-vault` / `state-channel` (issues #128, #460):** Add commit-reveal, mock-yield and channel-splicing test suites. New `contracts/refund-vault/src/commit_reveal_tests.rs` pins the commit-reveal front-running mitigation (delayed reveal, single-use commitment, hash-mismatch rejection, merchant-only access); new `contracts/refund-vault/src/yield_tests.rs` adds a mock yield strategy harness covering strategy set/deposit/withdraw/harvest; new `contracts/state-channel/src/splice_test.rs` covers splice-in/splice-out capacity changes, reserved-escrow guards, non-positive amounts and unknown-channel errors. Test-only — no contract behavior change.
 - **Documentation (#787):** Documented the five public fields of state-channel `ChannelOpenedEvent` (`channel_id`, `sender`, `receiver`, `amount`, `challenge_period`) for off-chain decoders; comments only, no code change.
@@ -307,6 +375,8 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   setter/getter round-trip. Test-only — no contract behavior change.
 - **`refund-policy-vdf` (issue #702): unit tests for fallback dispute resolution.**
   Extended `contracts/refund-policy-vdf/src/test.rs` with coverage for `request_dispute`, `oracle_request_bytes`, and `settle_dispute`.
+- **`receipt-shard` (issue #700): unit tests for record_migration.**
+  Extended `contracts/receipt-shard/src/pruning_test.rs` with coverage for `record_migration` and diagnostic metrics progression.
 - **`refund-policy-time` (issue #701): unit tests for check_time_gates.**
   Extended `contracts/refund-policy-time/src/oracle_test.rs` with coverage for `check_time_gates` window and deadline gates.
 - **`receipt-shard` (issue #699): unit tests for decommission, record_anchor, and record_removals.**
@@ -332,6 +402,43 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`refund-vault` (issue #690): `set_tier_ladder` uses a checked lookup.**
   `set_tier_ladder` reads the selected rung's fee with `tiers.get(current_tier)` followed by a typed `Error::InvalidTierLadder` fallback (instead of unwrapping), so a missing rung resolves to the crate's error and validated ladders retain their existing behaviour.
 
+- **`cross-chain` (issue #695): tests for `execute_withdrawal_to_evm`, `get_destination_chain_id` and `is_trusted_peer`.**
+  Extended `contracts/cross-chain/src/wormhole_test.rs` with tests that name and
+  drive three previously untested public functions:
+  `outbound::execute_withdrawal_to_evm` is asserted to burn the wrapped asset and
+  return the exact `OutboundBridgePayload`, and to reject zero/negative amounts
+  with the typed `Error::InvalidAmount`; `get_destination_chain_id` returns the
+  configured chain id and `Error::NotInitialized` when unset; and
+  `is_trusted_peer` reflects `set_trusted_peer` registration, keyed on both the
+  source chain id and the sender. No contract behaviour change.
+- **`receipt-anchor` (issue #698): tests for `verify_batch_zk_proof`, `fold_proof` and `get_min_anchor_interval`.**
+  Extended `contracts/receipt-anchor/src/fuzz_test.rs` with tests that name and
+  drive three previously untested public functions:
+  `zk_verifier::verify_batch_zk_proof` is asserted to reject zero-count, empty,
+  short and all-zero-component proofs while accepting a well-formed one;
+  `merkle::fold_proof` is pinned to return the leaf for an empty proof and the
+  sorted-pair hash at each level otherwise; and
+  `ReceiptAnchor::get_min_anchor_interval` is read before and after
+  `set_min_anchor_interval`. No contract behaviour change.
+- **`receipt-anchor` (issue #697): tests for `topic`, `publish` and `canonical_message`.**
+  Extended `contracts/receipt-anchor/src/budget_test.rs` with tests that name and
+  drive the three previously untested public functions in the canonical event
+  schema: `ReceiptAction::topic` is asserted for both arms, `events::publish` is
+  asserted to emit the exact `(receipt, action, anchor_id)` topic tuple and
+  payload data for the anchor and prune actions, and
+  `signatures::canonical_message` is pinned byte-for-byte against the documented
+  layout, including that the signer mask is part of the signed bytes. No contract
+  behaviour change.
+- **`governance` (issue #696): tests for `burn`, the ragequit path and constructor error variants.**
+  Extended `contracts/governance/tests/receipt_anchor_admin.rs` with client-driven
+  integration tests for the previously untested public surface:
+  `LiquidStaking::burn` is asserted to redeem locked underlying at the current
+  exchange rate after the lock epoch and publish one `Burn` event, and to answer
+  a zero amount or premature redemption with the typed error variant;
+  `ragequit::is_approved` gates on the proposal's quorum so `ragequit::process`
+  refuses a dissenter's exit with `ProposalNotApproved` and rejects a member who
+  voted yes; and the constructor surfaces `ArityMismatch` for a length mismatch
+  and `InvalidMembers` for an invalid member set. No contract behaviour change.
 - **`governance` (issue #552): test instance storage TTL eviction returns typed errors.**
   Added tests in `contracts/governance/src/test.rs` asserting that `propose` and
   `execute` operations return typed errors `InvalidVotingPeriod` and `InvalidMembers`

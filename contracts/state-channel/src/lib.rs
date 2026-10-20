@@ -1308,6 +1308,7 @@ pub mod htlc;
 pub mod multi_asset;
 pub mod nonce;
 pub mod splice;
+pub mod subchannel;
 pub mod watchtower;
 
 pub use delegation::DelegationCertificate;

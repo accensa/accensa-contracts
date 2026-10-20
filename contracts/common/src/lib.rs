@@ -307,8 +307,6 @@ pub struct VaultInit {
     /// Mirror of the active VDF gate's delay (read path).
     pub vdf_delay: u32,
 }
-pub mod audit;
-pub mod blacklist;
 pub mod constant_time;
 pub mod events;
 pub mod keys;
