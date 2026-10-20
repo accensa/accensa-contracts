@@ -101,10 +101,15 @@ pub struct BucketState {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchRecord {
+    /// SHA-256 Merkle root over the batch's receipt leaves, supplied to `anchor_batch` and read by `verify_receipt`.
     pub root: BytesN<32>,
+    /// Number of receipt leaves in the batch, caller-supplied; `anchor_batch` rejects values above `MAX_BATCH_SIZE`.
     pub count: u32,
+    /// Caller-supplied start of the batch's reporting period, stored verbatim; the contract never interprets it.
     pub period_start: u64,
+    /// Caller-supplied end of the batch's reporting period, stored verbatim; the contract never interprets it.
     pub period_end: u64,
+    /// Ledger sequence when the record was written, set by the storage shard from `env.ledger().sequence()`.
     pub anchored_ledger: u32,
 }
 
