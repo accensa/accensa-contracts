@@ -8,6 +8,8 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+### Changed
+- Remove two no-op modules from the `accensa-common` public API.
 - fix(refund-vault,refund-policy-vdf): guard four amount paths with checked math (closes #716, #717, #718, #719) (#896).
 - feat: resolve #550, #480, #479, and #478 (#866).
 - docs(factory): rustdoc for 7 public items in refund-vault-factory/lib… (#880).
