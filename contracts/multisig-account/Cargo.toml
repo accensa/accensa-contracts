@@ -1,5 +1,6 @@
 [package]
 name = "multisig-account"
+description = "Threshold multisig custom account for Soroban admin authorization"
 version = "0.1.0"
 edition = "2021"
 

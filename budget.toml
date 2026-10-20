@@ -16,7 +16,8 @@
 # ceiling. They are NOT regenerated automatically on every run.
 #
 # Per-function tolerance = 15%. A measured value that exceeds
-# `baseline * 1.15` fails CI. To update a baseline, re-measure
+# `baseline * 1.15` fails CI when `cargo budget-report --check` runs on post-merge
+# testnet builds. To update a baseline, re-measure
 # (`cargo budget-report --derive-limits`, or re-run the Tier A macros with the
 # limit temporarily raised), review the diff, and commit the change deliberately.
 #

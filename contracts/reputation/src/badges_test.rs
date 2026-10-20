@@ -12,6 +12,7 @@ use badges::Error as BadgeError;
 use soroban_sdk::{
     events::Event as _,
     testutils::{Address as _, EnvTestConfig, Events as _},
+    InvokeError,
 };
 
 /// Assert the last invocation emitted exactly `events` (nothing else), in
@@ -335,4 +336,128 @@ fn tier_boundaries_are_exact() {
     assert_eq!(BadgeTier::for_accurate(99), Some(BadgeTier::Silver));
     assert_eq!(BadgeTier::for_accurate(100), Some(BadgeTier::Gold));
     assert_eq!(BadgeTier::for_accurate(1_000), Some(BadgeTier::Gold));
+}
+
+// ── Authority guard coverage ─────────────────────────────────────────────
+//
+// `record_resolution` mirrors the private `require_authority` guard
+// (`lib.rs:62-67`): it reads `BadgeDataKey::Admin` from instance storage and
+// rejects with the not-initialised variant when it is absent, then
+// authenticates the stored admin with `require_auth()`. The guard itself is
+// shared with the credit-scoring entry points, so those are driven here too.
+// An unauthenticated caller is refused by the host, which aborts the
+// invocation (`InvokeError::Abort`) rather than returning
+// `Error::Unauthorized`; the wrong-caller arm is pinned as that abort, and
+// the state it leaves behind is checked separately.
+
+#[test]
+fn record_resolution_before_initialize_reports_not_initialized() {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    let contract_id = env.register(Reputation, ());
+    let client = ReputationClient::new(&env, &contract_id);
+    let arbitrator = Address::generate(&env);
+
+    // No auth is mocked: the call must fail at the guard, not at a signature.
+    assert_eq!(
+        client.try_record_resolution(&arbitrator, &1, &true),
+        Err(Ok(BadgeError::NotInitialized))
+    );
+    assert_eq!(client.total_badges(), 0);
+    assert!(client.get_badge(&arbitrator).is_none());
+}
+
+#[test]
+fn record_resolution_rejects_a_non_admin_caller() {
+    let s = setup();
+    let stranger = Address::generate(&s.env);
+
+    // Drop the auth mock: the stored admin's `require_auth()` must now fail.
+    s.env.set_auths(&[]);
+
+    assert_eq!(
+        s.client.try_record_resolution(&stranger, &1, &true),
+        Err(Err(InvokeError::Abort))
+    );
+}
+
+#[test]
+fn refused_record_resolution_leaves_badge_state_untouched() {
+    let s = setup();
+    // Mint one badge through the admitted path first.
+    s.client.record_resolution(&s.arbitrator, &1, &true);
+    let total_before = s.client.total_badges();
+    let badge_before = s.client.get_badge(&s.arbitrator).unwrap();
+
+    // Now refuse a different caller without an auth mock.
+    let stranger = Address::generate(&s.env);
+    s.env.set_auths(&[]);
+    assert!(s
+        .client
+        .try_record_resolution(&stranger, &2, &true)
+        .is_err());
+
+    // Nothing moved: the counter and the existing badge are exactly what
+    // they were, and the refused caller holds no badge.
+    assert_eq!(s.client.total_badges(), total_before);
+    assert_eq!(s.client.get_badge(&s.arbitrator).unwrap(), badge_before);
+    assert!(s.client.get_badge(&stranger).is_none());
+}
+
+#[test]
+fn record_resolution_admits_the_stored_admin_and_persists_the_tier() {
+    let s = setup();
+    // mock_all_auths from setup() authorises the bound admin.
+    let count = s.client.record_resolution(&s.arbitrator, &1, &true);
+    assert_eq!(count, 1);
+
+    let badge = s.client.get_badge(&s.arbitrator).unwrap();
+    assert_eq!(badge.tier, BadgeTier::Bronze);
+    assert_eq!(badge.accurate_resolutions, 1);
+    assert_eq!(s.client.total_badges(), 1);
+}
+
+#[test]
+fn require_authority_reports_not_initialized_for_score_config() {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    let contract_id = env.register(Reputation, ());
+    let client = ReputationClient::new(&env, &contract_id);
+
+    // `set_score_config` routes through the shared `require_authority` guard;
+    // with no `Admin` entry it must report `NotInitialized` rather than
+    // defaulting to a stored authority.
+    assert_eq!(
+        client.try_set_score_config(&800, &950),
+        Err(Ok(CreditError::NotInitialized))
+    );
+}
+
+#[test]
+fn require_authority_reports_not_initialized_for_record_completion() {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    let contract_id = env.register(Reputation, ());
+    let client = ReputationClient::new(&env, &contract_id);
+    let buyer = Address::generate(&env);
+
+    assert_eq!(
+        client.try_record_completion(&buyer, &1),
+        Err(Ok(CreditError::NotInitialized))
+    );
+}
+
+#[test]
+fn require_authority_admits_the_bound_admin_for_score_config() {
+    let s = setup();
+    // mock_all_auths from setup() authorises the bound admin, so the write
+    // through `require_authority` is admitted and lands in storage.
+    s.client.set_score_config(&800, &950);
+
+    let config = s.client.get_score_config();
+    assert_eq!(config.gold_tier, 800);
+    assert_eq!(config.zero_fee_tier, 950);
 }

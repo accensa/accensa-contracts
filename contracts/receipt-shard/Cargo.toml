@@ -1,5 +1,6 @@
 [package]
 name = "receipt-shard"
+description = "Storage shards holding Merkle batch anchors for the ReceiptAnchor router"
 version = "0.1.0"
 edition = "2021"
 

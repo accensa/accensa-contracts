@@ -94,3 +94,81 @@ fn budget_refund() {
     env.cost_estimate().budget().reset_unlimited();
     client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None, &0);
 }
+
+#[contract]
+pub struct MockStrategy;
+
+#[contractimpl]
+impl MockStrategy {
+    pub fn deposit(_env: Env, _amount: i128) -> Result<(), Error> {
+        Ok(())
+    }
+    pub fn withdraw(_env: Env, principal: i128) -> Result<(i128, i128), Error> {
+        Ok((principal, 0))
+    }
+    pub fn harvest(_env: Env) -> Result<i128, Error> {
+        Ok(0)
+    }
+    pub fn total_balance(_env: Env) -> i128 {
+        0
+    }
+}
+
+// Baseline: 11_128_842 CPU instructions measured on 2026-10-16.
+// Ceiling = baseline * 1.15 = 12_798_168 (rounded to 12_800_000).
+#[test]
+#[budget_cpu_lt(12_800_000)]
+fn budget_claim_batch() {
+    let env = Env::default();
+    let (client, merchant, _token) = setup(&env, 100);
+    client.deposit(&merchant, &500_000, &None);
+    let mut claims = soroban_sdk::Vec::new(&env);
+    for i in 0..10u8 {
+        let buyer = Address::generate(&env);
+        claims.push_back(RefundClaim {
+            payment_ref: BytesN::from_array(&env, &[i; 32]),
+            recipient: buyer,
+            amount: 10_000,
+            paid_at_ledger: 0,
+            payment_amount: 10_000,
+            vdf_proof: None,
+        });
+    }
+    env.cost_estimate().budget().reset_unlimited();
+    client.claim_batch(&claims, &0);
+}
+
+// Baseline: 1_906_686 CPU instructions measured on 2026-10-16.
+// Ceiling = baseline * 1.15 = 2_192_689 (rounded to 2_195_000).
+#[test]
+#[budget_cpu_lt(2_195_000)]
+fn budget_deploy_to_yield() {
+    let env = Env::default();
+    let (client, merchant, _token) = setup(&env, 100);
+    client.deposit(&merchant, &1_000_000, &None);
+
+    let strategy = env.register(MockStrategy, ());
+    client.approve_yield_strategy(&strategy);
+    client.set_yield_strategy(&strategy);
+    client.set_reserve_ratio(&2000);
+    client.set_max_deploy_ratio(&8000);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.deploy_to_yield(&500_000);
+}
+
+// Baseline: 952_850 CPU instructions measured on 2026-10-16.
+// Ceiling = baseline * 1.15 = 1_095_778 (rounded to 1_100_000).
+#[test]
+#[budget_cpu_lt(1_100_000)]
+fn budget_extend_refund_ttl() {
+    let env = Env::default();
+    let (client, merchant, _token) = setup(&env, 100);
+    client.deposit(&merchant, &500_000, &None);
+    let payment_ref = BytesN::from_array(&env, &[7u8; 32]);
+    let buyer = Address::generate(&env);
+    client.refund(&payment_ref, &buyer, &120_000, &0, &120_000, &None, &0);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.extend_refund_ttl(&payment_ref);
+}

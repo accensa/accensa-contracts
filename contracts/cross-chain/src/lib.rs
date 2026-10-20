@@ -44,6 +44,7 @@ pub enum DataKey {
     AxelarGateway,
 }
 
+/// Cross-chain bridge contract connecting Stellar to external chains.
 #[contract]
 pub struct CrossChainBridge;
 
@@ -268,6 +269,7 @@ impl CrossChainBridge {
         Ok(())
     }
 
+    /// Returns `true` if the bridge is currently paused, or `false` otherwise.
     pub fn is_paused(env: &Env) -> bool {
         env.storage()
             .instance()
@@ -275,6 +277,7 @@ impl CrossChainBridge {
             .unwrap_or(false)
     }
 
+    /// Returns the bridged token contract address, or `Error::NotInitialized` if unset.
     pub fn get_token(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
@@ -282,6 +285,7 @@ impl CrossChainBridge {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Returns the destination EVM chain ID, or `Error::NotInitialized` if unset.
     pub fn get_destination_chain_id(env: Env) -> Result<u32, Error> {
         env.storage()
             .instance()
@@ -289,6 +293,7 @@ impl CrossChainBridge {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Returns the sequence number that will be assigned to the next outbound bridge transfer.
     pub fn get_next_sequence(env: Env) -> u64 {
         env.storage()
             .instance()
@@ -296,6 +301,7 @@ impl CrossChainBridge {
             .unwrap_or(1)
     }
 
+    /// Returns the bridge admin address, or `Error::NotInitialized` if unset.
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
