@@ -27,6 +27,7 @@
 - [x] Document the publicly exported fields of `YieldInfo` in refund-vault (#785)
 - [x] Document the publicly exported fields of `CouponAppliedEvent` in refund-vault (#783)
 - [x] Document the publicly exported fields of `HtlcAddedEvent` in state-channel (#786)
+- [x] Document the publicly exported fields of `ProposalCreated` in governance (#774)
 - [x] Document the publicly exported fields of `OptimisticQueuedEvent` in governance (#775)
 ## Issue #660: PR template verification step runs the full workspace suite
 
@@ -186,6 +187,11 @@
 - [x] Point the supported-versions table at the 0.3.x release line (#661)
   - `SECURITY.md` — supported and unsupported version rows; the 0.1.0 testnet note is unchanged
 
+## Issue #777: Add /// to BatchRecord's exported fields
+
+- [x] Add `///` doc comments to `BatchRecord`'s five exported fields (#777)
+  - Documented `root`, `count`, `period_start`, `period_end`, and `anchored_ledger` in `contracts/receipt-anchor/src/lib.rs`
+  - Verified `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked --workspace`, and rustdoc rendering
 ## Issue #787: rustdoc for `ChannelOpenedEvent`'s 5 public fields
 
 - [x] Document the struct's 5 public fields (#787)
@@ -240,3 +246,8 @@
 
 - [x] Add `///` rustdoc to `MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open` and `get` (#751)
   - `contracts/state-channel/src/multi_asset.rs` — doc comments only; role, pre-conditions and each `Error` arm documented, signatures and bodies unchanged
+
+## Issue #776: Document the public fields of `PrunePayload`
+
+- [x] Add `///` rustdoc to `schema_version`, `timestamp`, `shard_id`, `start_batch_id` and `end_batch_id` (#776)
+  - `contracts/receipt-anchor/src/events.rs` — one doc line per field stating its domain and the `prune_batches` call site that writes it; field/type/order/derives unchanged
