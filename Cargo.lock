@@ -1588,6 +1588,7 @@ name = "receipt-shard"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "budget-macros",
  "sha2 0.10.9",
  "soroban-sdk",
 ]
@@ -1617,6 +1618,7 @@ name = "refund-policy-time"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "budget-macros",
  "soroban-sdk",
 ]
 

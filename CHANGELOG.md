@@ -8,6 +8,31 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`receipt-shard` (issue #599): Tier A CPU ceilings for shard-side Merkle
+  verification.** New `contracts/receipt-shard/src/budget_test.rs` deploys
+  `receipt_shard.wasm` on its own — no router — runs its `__constructor`, and
+  gates `verify_receipt` at proof depth 1, depth 5 and `MAX_PROOF_LEN`, plus
+  `anchor_batch` into an already-populated shard, with `#[budget_cpu_lt]`
+  behind the new `budget-assert` feature and optional `budget_macros`
+  dependency. The module records the measured shard-side curve (497,495 CPU at
+  depth 0 to 1,904,505 at depth 10, ~140,701 instructions per level, memory
+  flat at +24 bytes per level) next to the `docs/BENCHMARKS.md` router curve;
+  it sits 27-32% below the tabulated router numbers and the reason is recorded
+  there and in the PR body. A `measure_verify_receipt_by_depth` test re-prints
+  the whole curve. Test-only — `verify_receipt`, `fold_proof`, `anchor_batch`
+  and `prune_batches` are unchanged.
+- **`refund-policy-time` (issue #602): Tier A CPU ceilings for the
+  oracle-backed time policy.** New
+  `contracts/refund-policy-time/src/budget_test.rs` gates
+  `TimePolicy::evaluate` in the three configurations the crate already
+  supports, each with its own `#[budget_cpu_lt]` number so a regression in one
+  cannot hide behind a blended ceiling: no oracle configured (baseline
+  397,906), a reachable oracle returning a fresh report (485,512, the
+  cross-contract hop plus the `OracleResolutionApplied` event), and an oracle
+  that traps so the window fallback runs (435,029). Wired with the same
+  `budget-assert` feature and optional `budget_macros` dependency. Test-only —
+  `evaluate`, `resolve`, `is_usable` and `check_time_gates` are unchanged, and
+  neither tolerance file was touched.
 - Feat/median price (#920).
 - Feat/set active (#918).
 - Feat/resolve ceiling (#917).
