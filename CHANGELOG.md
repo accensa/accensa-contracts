@@ -8,6 +8,10 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- Feat/median price (#920).
+- Feat/set active (#918).
+- Feat/resolve ceiling (#917).
+- Feat/refund vault (#916).
 - **`governance` (issue #476): per-bounty community donations with quadratic
   treasury matching.** New `qf` module (`contracts/governance/src/qf.rs`).
   `qf_open_bounty` / `qf_complete_bounty` are gated like `set_treasury_token`
@@ -58,6 +62,10 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - docs(governance): document the 4 public items in lib.rs (closes #746) (#850).
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
 
+- **Documentation (issues #766, #767, #768, #770): document exported struct fields.**
+  Added field-level rustdoc comments to `AnchorEvent`, `TransferEventPayload`,
+  `OptimisticProposal`, and `RefundVector`. No contract behavior or data shapes
+  changed.
 - **`multisig-account` (issue #413): daily spending limits for sub-threshold
   signers.** Governance can configure a per-token daily allowance for routine
   transfers authorized by fewer than the full threshold. Spending is tracked
@@ -284,6 +292,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **Documentation (#775):** Documented the five public fields of governance `OptimisticQueuedEvent` (`proposal_id`, `proposer`, `target`, `function`, `challenge_deadline_ledger`) for off-chain decoders; comments only, no code change.
 - **`refund-vault` / `state-channel` (issues #128, #460):** Add commit-reveal, mock-yield and channel-splicing test suites. New `contracts/refund-vault/src/commit_reveal_tests.rs` pins the commit-reveal front-running mitigation (delayed reveal, single-use commitment, hash-mismatch rejection, merchant-only access); new `contracts/refund-vault/src/yield_tests.rs` adds a mock yield strategy harness covering strategy set/deposit/withdraw/harvest; new `contracts/state-channel/src/splice_test.rs` covers splice-in/splice-out capacity changes, reserved-escrow guards, non-positive amounts and unknown-channel errors. Test-only — no contract behavior change.
 - **Documentation (#787):** Documented the five public fields of state-channel `ChannelOpenedEvent` (`channel_id`, `sender`, `receiver`, `amount`, `challenge_period`) for off-chain decoders; comments only, no code change.
+- **Documentation (#771):** Documented the six public fields of stream-vault `StreamCreatedEvent` (`stream_id`, `buyer`, `start_ledger`, `stop_ledger`, `rate_per_ledger`, `deposit`) with their domain and the `create_stream` path that writes them, for off-chain decoders; comments only, no code change.
 
 - **`refund-policy-vdf` / `receipt-anchor` (issues #755, #778): rustdoc for
   the fallback dispute helpers and the `RateLimitUpdatedEvent` fields.**

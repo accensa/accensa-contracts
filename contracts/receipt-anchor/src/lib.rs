@@ -152,13 +152,20 @@ pub trait ShardInterface {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnchorEvent {
     #[topic]
+    /// Shard identifier for the anchored receipt stream.
     pub shard_id: u64,
     #[topic]
+    /// Identifier of the anchored batch within the shard.
     pub batch_id: u64,
+    /// Root hash committed for this batch.
     pub root: BytesN<32>,
+    /// Number of receipts included in the batch.
     pub count: u32,
+    /// Start of the batch's covered receipt period.
     pub period_start: u64,
+    /// End of the batch's covered receipt period.
     pub period_end: u64,
+    /// Ledger sequence at which this batch was anchored.
     pub anchored_ledger: u32,
 }
 

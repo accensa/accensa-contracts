@@ -134,11 +134,23 @@ pub struct DisbursementStream {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamCreatedEvent {
     #[topic]
+    /// Stream id that `create_stream` assigned and returned; the same value
+    /// is this event's second topic and the `DataKey::Stream` record key.
     pub stream_id: u64,
+    /// Address whose auth `create_stream` required and whose tokens the
+    /// escrowed `deposit` was transferred from.
     pub buyer: Address,
+    /// Ledger sequence at which accrual begins, as passed to
+    /// `create_stream`.
     pub start_ledger: u32,
+    /// Ledger sequence at which the deposit is fully streamed, as passed to
+    /// `create_stream`.
     pub stop_ledger: u32,
+    /// Amount streamed per elapsed ledger, in the token's smallest unit, as
+    /// passed to `create_stream`.
     pub rate_per_ledger: i128,
+    /// Deposit `create_stream` transferred from `buyer` into escrow, in the
+    /// token's smallest unit.
     pub deposit: i128,
 }
 

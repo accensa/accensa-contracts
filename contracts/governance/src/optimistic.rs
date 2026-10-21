@@ -49,15 +49,21 @@ pub const VETO_THRESHOLD_BPS: u32 = 6_667;
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OptimisticProposal {
+    /// Address that submitted the proposal.
     pub proposer: Address,
+    /// Contract to call when the proposal is executed.
     pub target: Address,
+    /// Function to invoke on the target contract.
     pub function: Symbol,
+    /// Arguments encoded for the contract call.
     pub args: Vec<Val>,
     /// Last ledger of the challenge window: vetoes close strictly after this.
     pub challenge_deadline_ledger: u32,
     /// Cumulative quadratic weight vetoing the proposal.
     pub veto_weight: u64,
+    /// Whether the proposal's call has been executed.
     pub executed: bool,
+    /// Whether the proposal has been vetoed.
     pub vetoed: bool,
 }
 

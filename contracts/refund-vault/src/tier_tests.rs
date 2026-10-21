@@ -11,8 +11,8 @@ use soroban_sdk::{
     Address, BytesN, Env,
 };
 
-use crate::test_helpers::vault_init;
-use crate::tiers::{MerchantTier, MerchantTierState, MAX_TIERS};
+use crate::test_helpers::{reg_vdf_policy, vault_init};
+use crate::tiers::{effective_fee_bps, MerchantTier, MerchantTierState, MAX_TIERS};
 use crate::{RefundVault, RefundVaultClient};
 
 const FLOAT: i128 = 10_000_000;
@@ -290,4 +290,117 @@ fn ladder_changes_require_the_merchant() {
     ctx.env.set_auths(&[]);
     assert!(ctx.client.try_set_tier_ladder(&tiers).is_err());
     assert!(ctx.client.try_clear_tier_ladder().is_err());
+}
+
+#[test]
+fn effective_fee_bps_returns_flat_fee_when_no_ladder() {
+    let ctx = setup(350);
+
+    let fee = ctx
+        .env
+        .as_contract(&ctx.client.address, || effective_fee_bps(&ctx.env));
+    assert_eq!(fee, 350);
+}
+
+#[test]
+fn effective_fee_bps_returns_tier_fee_when_ladder_active() {
+    let ctx = setup(500);
+    ctx.client
+        .set_tier_ladder(&ladder(&ctx, &[(0, 200), (100_000, 50)]));
+
+    let fee = ctx
+        .env
+        .as_contract(&ctx.client.address, || effective_fee_bps(&ctx.env));
+    assert_eq!(fee, 200);
+}
+
+#[test]
+fn reg_vdf_policy_registers_a_valid_contract() {
+    let env = Env::default();
+    let vdf_address = reg_vdf_policy(&env);
+
+    assert!(!vdf_address.to_string().is_empty());
+
+    // A live VdfPolicy answers its entry points; an unknown dispute is a typed error.
+    let vdf_client = refund_policy_vdf::VdfPolicyClient::new(&env, &vdf_address);
+    assert!(vdf_client.try_get_fallback_dispute(&0).is_err());
+}
+
+mod nft_owner_tests {
+    use crate::nft_escrow::nft_owner;
+    use soroban_sdk::{
+        contract, contractimpl, contracttype, testutils::Address as _, Address, Env,
+    };
+
+    #[contract]
+    struct MockNft;
+
+    #[contracttype]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum NftKey {
+        Admin,
+        Owner(u128),
+    }
+
+    #[contractimpl]
+    impl MockNft {
+        pub fn init(env: Env, admin: Address) {
+            env.storage().instance().set(&NftKey::Admin, &admin);
+        }
+
+        pub fn mint(env: Env, to: Address, token_id: u128) {
+            let admin: Address = env.storage().instance().get(&NftKey::Admin).unwrap();
+            admin.require_auth();
+            env.storage()
+                .persistent()
+                .set(&NftKey::Owner(token_id), &to);
+        }
+
+        pub fn owner(env: Env, token_id: u128) -> Address {
+            let zero = Address::from_string(&soroban_sdk::String::from_str(
+                &env,
+                "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            ));
+            env.storage()
+                .persistent()
+                .get(&NftKey::Owner(token_id))
+                .unwrap_or_else(|| zero.clone())
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, token_id: u128) {
+            from.require_auth();
+            let zero = Address::from_string(&soroban_sdk::String::from_str(
+                &env,
+                "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            ));
+            let owner: Address = env
+                .storage()
+                .persistent()
+                .get(&NftKey::Owner(token_id))
+                .unwrap_or_else(|| zero.clone());
+            assert!(
+                owner == from,
+                "only the current owner may transfer the token"
+            );
+            env.storage()
+                .persistent()
+                .set(&NftKey::Owner(token_id), &to);
+        }
+    }
+
+    #[test]
+    fn nft_owner_returns_correct_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let merchant = Address::generate(&env);
+        let nft_id = env.register(MockNft, ());
+        MockNftClient::new(&env, &nft_id).init(&merchant);
+
+        let token_id: u128 = 42;
+        MockNftClient::new(&env, &nft_id).mint(&merchant, &token_id);
+
+        let owner = nft_owner(&env, &nft_id, token_id);
+        assert_eq!(owner, merchant);
+    }
 }

@@ -15,8 +15,10 @@ use soroban_sdk::{
     vec, Address, BytesN, Env, IntoVal, Map, Symbol, Val, Vec,
 };
 
+use crate::oracle::{evaluate_policy, median_price, OraclePolicy};
+use crate::strategy::is_approved;
 use crate::test_helpers::vault_init;
-use crate::{oracle::OraclePolicy, Error, RefundParam, RefundVault, RefundVaultClient};
+use crate::{Error, RefundParam, RefundVault, RefundVaultClient};
 
 // ── Mock oracle contract ───────────────────────────────────────────────────
 
@@ -747,4 +749,334 @@ fn test_oracle_policy_events_emitted() {
             )
         ]
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// §X — Direct tests for internal oracle/strategy functions (issue #704)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Tests for the internal `median_price` function (oracle.rs:97)
+mod median_price_tests {
+    use super::*;
+
+    #[test]
+    fn test_median_price_no_oracles_configured() {
+        let (env, vault_client, _merchant, _token) = setup();
+
+        let result = env.as_contract(&vault_client.address, || median_price(&env, &feed(&env), 0));
+        assert_eq!(result, Err(Error::NoOraclesConfigured));
+    }
+
+    #[test]
+    fn test_median_price_empty_oracle_list() {
+        let (env, vault_client, merchant, _token) = setup();
+
+        // Add an oracle then remove it to create empty list
+        let oracle = deploy_oracle(&env, &merchant);
+        vault_client.add_oracle(&oracle);
+        vault_client.remove_oracle(&oracle);
+
+        let result = env.as_contract(&vault_client.address, || median_price(&env, &feed(&env), 0));
+        assert_eq!(result, Err(Error::NoOraclesConfigured));
+    }
+
+    #[test]
+    fn test_median_price_all_oracles_stale() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &100);
+
+        env.ledger().with_mut(|li| li.sequence_number = 500);
+        vault_client.add_oracle(&oracle);
+
+        // max_staleness = 10, oracle is 400 ledgers old
+        let result = env.as_contract(&vault_client.address, || median_price(&env, &feed_id, 10));
+        assert_eq!(result, Err(Error::StaleOracleData));
+    }
+
+    #[test]
+    fn test_median_price_returns_median_single_oracle() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &42);
+        vault_client.add_oracle(&oracle);
+
+        let result = env.as_contract(&vault_client.address, || median_price(&env, &feed_id, 0));
+        assert_eq!(result, Ok(42));
+    }
+
+    #[test]
+    fn test_median_price_returns_median_multiple_oracles() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        let a = deploy_oracle(&env, &merchant);
+        let b = deploy_oracle(&env, &merchant);
+        let c = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &a, &feed_id, &300);
+        set_feed_price(&env, &b, &feed_id, &100);
+        set_feed_price(&env, &c, &feed_id, &200);
+        vault_client.add_oracle(&a);
+        vault_client.add_oracle(&b);
+        vault_client.add_oracle(&c);
+
+        let result = env.as_contract(&vault_client.address, || median_price(&env, &feed_id, 0));
+        assert_eq!(result, Ok(200));
+    }
+
+    #[test]
+    fn test_median_price_respects_staleness_filter() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        let fresh = deploy_oracle(&env, &merchant);
+        let stale = deploy_oracle(&env, &merchant);
+
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        set_feed_price(&env, &fresh, &feed_id, &50);
+        set_feed_price(&env, &stale, &feed_id, &250);
+
+        env.ledger().with_mut(|li| li.sequence_number = 200);
+        set_feed_price(&env, &fresh, &feed_id, &100);
+
+        vault_client.add_oracle(&fresh);
+        vault_client.add_oracle(&stale);
+
+        // max_staleness = 50: fresh is 0 old, stale is 100 old -> excluded
+        let result = env.as_contract(&vault_client.address, || median_price(&env, &feed_id, 50));
+        assert_eq!(result, Ok(100));
+    }
+
+    #[test]
+    fn test_median_price_zero_staleness_disables_filtering() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &300);
+
+        env.ledger().with_mut(|li| li.sequence_number = 10_000);
+        vault_client.add_oracle(&oracle);
+
+        let result = env.as_contract(&vault_client.address, || median_price(&env, &feed_id, 0));
+        assert_eq!(result, Ok(300));
+    }
+}
+
+/// Tests for the internal `evaluate_policy` function (oracle.rs:136)
+mod evaluate_policy_tests {
+    use super::*;
+
+    #[test]
+    fn test_evaluate_policy_no_oracles_fails_closed() {
+        let (env, vault_client, _merchant, _token) = setup();
+
+        let policy = OraclePolicy {
+            feed_id: feed(&env),
+            threshold: 250,
+            max_staleness_ledgers: 0,
+            refund_when_below: true,
+        };
+
+        let result = env.as_contract(&vault_client.address, || evaluate_policy(&env, &policy));
+        assert_eq!(result, Err(Error::NoOraclesConfigured));
+    }
+
+    #[test]
+    fn test_evaluate_policy_all_stale_fails_closed() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &100);
+        env.ledger().with_mut(|li| li.sequence_number = 500);
+        vault_client.add_oracle(&oracle);
+
+        let policy = OraclePolicy {
+            feed_id,
+            threshold: 250,
+            max_staleness_ledgers: 10,
+            refund_when_below: true,
+        };
+
+        let result = env.as_contract(&vault_client.address, || evaluate_policy(&env, &policy));
+        assert_eq!(result, Err(Error::StaleOracleData));
+    }
+
+    #[test]
+    fn test_evaluate_policy_refund_when_below_true_condition_met() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &200);
+        vault_client.add_oracle(&oracle);
+
+        let policy = OraclePolicy {
+            feed_id,
+            threshold: 250,
+            max_staleness_ledgers: 0,
+            refund_when_below: true,
+        };
+
+        let result = env
+            .as_contract(&vault_client.address, || evaluate_policy(&env, &policy))
+            .unwrap();
+        assert!(result, "median 200 < 250 should be true");
+    }
+
+    #[test]
+    fn test_evaluate_policy_refund_when_below_true_condition_not_met() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &300);
+        vault_client.add_oracle(&oracle);
+
+        let policy = OraclePolicy {
+            feed_id,
+            threshold: 250,
+            max_staleness_ledgers: 0,
+            refund_when_below: true,
+        };
+
+        let result = env
+            .as_contract(&vault_client.address, || evaluate_policy(&env, &policy))
+            .unwrap();
+        assert!(!result, "median 300 !< 250 should be false");
+    }
+
+    #[test]
+    fn test_evaluate_policy_refund_when_below_false_condition_met() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &300);
+        vault_client.add_oracle(&oracle);
+
+        let policy = OraclePolicy {
+            feed_id,
+            threshold: 250,
+            max_staleness_ledgers: 0,
+            refund_when_below: false,
+        };
+
+        let result = env
+            .as_contract(&vault_client.address, || evaluate_policy(&env, &policy))
+            .unwrap();
+        assert!(result, "median 300 > 250 should be true");
+    }
+
+    #[test]
+    fn test_evaluate_policy_refund_when_below_false_condition_not_met() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &200);
+        vault_client.add_oracle(&oracle);
+
+        let policy = OraclePolicy {
+            feed_id,
+            threshold: 250,
+            max_staleness_ledgers: 0,
+            refund_when_below: false,
+        };
+
+        let result = env
+            .as_contract(&vault_client.address, || evaluate_policy(&env, &policy))
+            .unwrap();
+        assert!(!result, "median 200 !> 250 should be false");
+    }
+
+    #[test]
+    fn test_evaluate_policy_strict_comparison() {
+        let (env, vault_client, merchant, _token) = setup();
+        let feed_id = feed(&env);
+
+        let oracle = deploy_oracle(&env, &merchant);
+        set_feed_price(&env, &oracle, &feed_id, &250);
+        vault_client.add_oracle(&oracle);
+
+        let policy_below = OraclePolicy {
+            feed_id: feed_id.clone(),
+            threshold: 250,
+            max_staleness_ledgers: 0,
+            refund_when_below: true,
+        };
+        let result = env
+            .as_contract(&vault_client.address, || {
+                evaluate_policy(&env, &policy_below)
+            })
+            .unwrap();
+        assert!(!result, "250 is not < 250");
+
+        let policy_above = OraclePolicy {
+            feed_id,
+            threshold: 250,
+            max_staleness_ledgers: 0,
+            refund_when_below: false,
+        };
+        let result = env
+            .as_contract(&vault_client.address, || {
+                evaluate_policy(&env, &policy_above)
+            })
+            .unwrap();
+        assert!(!result, "250 is not > 250");
+    }
+}
+
+/// Tests for the internal `is_approved` function (strategy.rs:111)
+mod is_approved_tests {
+    use super::*;
+
+    #[test]
+    fn test_is_approved_returns_false_for_unknown_strategy() {
+        let (env, vault_client, _merchant, _token) = setup();
+        let unknown_strategy = Address::generate(&env);
+
+        let result = env.as_contract(&vault_client.address, || {
+            is_approved(&env, &unknown_strategy)
+        });
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_is_approved_returns_true_after_approve() {
+        let (env, vault_client, merchant, _token) = setup();
+        let strategy = Address::generate(&env);
+
+        // Initially not approved
+        assert!(!env.as_contract(&vault_client.address, || is_approved(&env, &strategy)));
+
+        // Approve the strategy
+        vault_client.approve_yield_strategy(&strategy);
+
+        // Now it should be approved
+        let result = env.as_contract(&vault_client.address, || is_approved(&env, &strategy));
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_approved_returns_false_after_revoke() {
+        let (env, vault_client, merchant, _token) = setup();
+        let strategy = Address::generate(&env);
+
+        vault_client.approve_yield_strategy(&strategy);
+        assert!(env.as_contract(&vault_client.address, || is_approved(&env, &strategy)));
+
+        vault_client.revoke_yield_strategy(&strategy);
+
+        let result = env.as_contract(&vault_client.address, || is_approved(&env, &strategy));
+        assert!(!result);
+    }
 }
