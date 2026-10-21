@@ -1,5 +1,7 @@
 #![no_std]
 
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;
 #[cfg(test)]
 mod close_test;
 #[cfg(test)]
@@ -138,10 +140,21 @@ pub enum DataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelOpenedEvent {
     #[topic]
+    /// Channel id assigned by `open_channel` (the incremented
+    /// `DataKey::ChannelCount`, first channel `1`).
     pub channel_id: u64,
+    /// Address that escrowed `amount` for the channel in `open_channel`;
+    /// state updates verify against the `sender_pubkey` supplied there.
     pub sender: Address,
+    /// Address recorded by `open_channel`; `claim` pays the channel balance
+    /// to it, and it may dispute a close during the challenge period.
     pub receiver: Address,
+    /// Escrowed token amount locked in by `open_channel`, in the settlement
+    /// token's smallest unit.
     pub amount: i128,
+    /// Dispute window in ledgers stored on the channel by `open_channel`: the
+    /// caller's value after `effective_challenge_period` maps `0` to the
+    /// default and caps larger values at `MAX_CHALLENGE_PERIOD`.
     pub challenge_period: u32,
 }
 
@@ -1131,11 +1144,11 @@ impl StateChannel {
     /// escrow ceiling check bounds.
     pub fn get_reserved_escrow(env: Env, channel_id: u64) -> Result<i128, Error> {
         let channel = Self::get_channel_internal(&env, channel_id)?;
-        Ok(channel
+        channel
             .balance
             .checked_add(htlc::reserved(&env, channel_id))
             .and_then(|b| b.checked_add(hashlock::reserved(&env, channel_id)))
-            .ok_or(Error::MathOverflow)?)
+            .ok_or(Error::MathOverflow)
     }
 
     // ── Channel splicing (issue #460) ────────────────────────────────────
@@ -1290,12 +1303,12 @@ pub mod close;
 pub mod crypto;
 pub mod delegation;
 pub mod dispute;
-pub mod epoch;
 pub mod hashlock;
 pub mod htlc;
 pub mod multi_asset;
 pub mod nonce;
 pub mod splice;
+pub mod subchannel;
 pub mod watchtower;
 
 pub use delegation::DelegationCertificate;

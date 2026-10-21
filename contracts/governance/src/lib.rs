@@ -97,6 +97,7 @@ contractmeta!(
     val = "https://github.com/accensa/accensa-contracts"
 );
 
+/// Every failure `Governance` can return; each variant documents the condition that raises it.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -186,6 +187,7 @@ pub enum Error {
     AlreadyQueued = 34,
 }
 
+/// Storage keys for governance's instance settings, member deposits, proposals and per-voter markers.
 #[contracttype]
 pub enum DataKey {
     /// Instance: sum of every member's quadratic weight.
@@ -241,6 +243,7 @@ pub enum DataKey {
     KeyImage(u64, BytesN<32>),
 }
 
+/// A linkable LSAG ring signature: the key image, the challenge closing the ring, and one response per ring member.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RingSignature {
@@ -276,10 +279,25 @@ pub struct Proposal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposalCreated {
     #[topic]
+    /// Proposal id assigned by the creating path ([`Governance::propose`], or
+    /// `simulation::propose_with_simulation`): the incremented
+    /// `DataKey::ProposalCount`, starting at `1`. Published as the event topic
+    /// and used as the `DataKey::Proposal(id)` key by [`Governance::vote`],
+    /// [`Governance::execute`] and `get_proposal`.
     pub proposal_id: u64,
+    /// Address whose authorization the creating path required; also stored
+    /// unchanged as `Proposal::proposer`.
     pub proposer: Address,
+    /// Address of the contract the proposal calls: [`Governance::execute`]
+    /// invokes `function` on it.
     pub target: Address,
+    /// Symbol naming the target function that [`Governance::execute`]
+    /// invokes, with the args stored in the `Proposal` record.
     pub function: Symbol,
+    /// Last ledger on which votes count, as a ledger sequence number: the
+    /// creating path sets it to the ledger at creation plus the configured
+    /// `DataKey::VotingPeriod`, and [`Governance::vote`] rejects a vote at any
+    /// strictly later ledger.
     pub deadline_ledger: u32,
 }
 
@@ -341,6 +359,7 @@ const MAX_THRESHOLD_BPS: u32 = 10_000;
 /// TTL lapses, so a same-ledger `execute` at the deadline still finds it.
 const PROPOSAL_TTL_GRACE: u32 = 100;
 
+/// The governance contract: a fixed member set that proposes, votes on and executes calls against a target contract.
 #[contract]
 pub struct Governance;
 
@@ -1053,3 +1072,9 @@ pub struct DowngradeStrategy {
     pub fallback_protocol_version: u32,
     pub emergency_mode_enabled: bool,
 }
+
+// Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
+// feature is enabled (the budget CI job), so the normal test/clippy runs stay
+// free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;

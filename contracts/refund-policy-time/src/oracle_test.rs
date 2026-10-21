@@ -248,3 +248,54 @@ fn plain_time_params_still_decode_without_an_oracle() {
         Err(Ok(Error::WindowExpired))
     );
 }
+
+// ── Time gates unit coverage (#701) ──────────────────────────────────────────
+
+#[test]
+fn test_check_time_gates_window_expired() {
+    let env = Env::default();
+    let ctx = PolicyContext {
+        payment_ref: BytesN::from_array(&env, &[1u8; 32]),
+        amount: 100,
+        paid_at_ledger: 100,
+        current_ledger: 201,
+        timestamp: 1_000,
+        vdf_proof: None,
+    };
+    assert_eq!(
+        crate::oracle::check_time_gates(100, 0, &ctx),
+        Err(Error::WindowExpired)
+    );
+}
+
+#[test]
+fn test_check_time_gates_refund_expired() {
+    let env = Env::default();
+    let ctx = PolicyContext {
+        payment_ref: BytesN::from_array(&env, &[1u8; 32]),
+        amount: 100,
+        paid_at_ledger: 100,
+        current_ledger: 150,
+        timestamp: 2_001,
+        vdf_proof: None,
+    };
+    assert_eq!(
+        crate::oracle::check_time_gates(100, 2_000, &ctx),
+        Err(Error::RefundExpired)
+    );
+}
+
+#[test]
+fn test_check_time_gates_passing() {
+    let env = Env::default();
+    let ctx = PolicyContext {
+        payment_ref: BytesN::from_array(&env, &[1u8; 32]),
+        amount: 100,
+        paid_at_ledger: 100,
+        current_ledger: 150,
+        timestamp: 1_500,
+        vdf_proof: None,
+    };
+    assert_eq!(crate::oracle::check_time_gates(100, 2_000, &ctx), Ok(()));
+    assert_eq!(crate::oracle::check_time_gates(0, 0, &ctx), Ok(()));
+}

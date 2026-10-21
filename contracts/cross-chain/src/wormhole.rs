@@ -242,6 +242,8 @@ pub fn verify_vaa(env: &Env, vaa: &ParsedVaa, guardian_set: &GuardianSet) -> Res
 
         let recovered_addr = pubkey_to_address(env, &recovered_pubkey);
 
+        // Public-data comparison: both addresses are drawn from the public
+        // VAA, so standard equality cannot leak a secret-derived prefix.
         if recovered_addr != expected_addr {
             return Err(Error::InvalidSignature);
         }

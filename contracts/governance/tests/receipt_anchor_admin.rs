@@ -26,12 +26,16 @@ use curve25519_dalek::{
     ristretto::{CompressedRistretto, RistrettoPoint},
     scalar::Scalar,
 };
-use governance::{Governance, GovernanceClient, RingSignature};
+use governance::{
+    Error, Governance, GovernanceClient, LiquidStaking, LiquidStakingClient, LiquidStakingError,
+    RingSignature,
+};
 use receipt_anchor::{ReceiptAnchor, ReceiptAnchorClient};
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke},
+    testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
+    token::StellarAssetClient,
     xdr::ToXdr,
-    Address, Bytes, BytesN, Env, IntoVal, Symbol, Vec,
+    Address, Bytes, BytesN, Env, IntoVal, Map, Symbol, Val, Vec,
 };
 
 const IMAGE_DOMAIN: &[u8] = b"ACCENSA_GOVERNANCE_LSAG_KEY_IMAGE_V1";
@@ -349,4 +353,267 @@ fn anonymous_ring_votes_pass_existing_quorum_and_execute_without_a_voter_event_f
     env.set_auths(&[]);
     gov.execute(&proposal_id);
     assert_eq!(anchor.get_anchor_rate_limit().burst_capacity, 2);
+}
+
+// ── Liquid staking `burn` (#696) ────────────────────────────────────────────
+
+/// `LiquidStaking::burn` redeems locked underlying at the current exchange
+/// rate once the lock epoch elapses, zeroes the user's balance, and publishes
+/// one `Burn` event carrying the burned and redeemed amounts.
+#[test]
+fn liquid_staking_burn_redeems_underlying_and_publishes_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stacc_id = env.register(LiquidStaking, ());
+    let stacc = LiquidStakingClient::new(&env, &stacc_id);
+    stacc.initialize(&1_000_000);
+
+    let alice = Address::generate(&env);
+    let lock_start = env.ledger().sequence();
+    stacc.mint(&alice, &50);
+
+    // `LOCK_EPOCH_LEDGERS` is 86_400; the burn is legal at/after the epoch.
+    let burn_ledger = lock_start + 86_400;
+    env.ledger().with_mut(|l| l.sequence_number = burn_ledger);
+
+    stacc.burn(&alice, &50);
+    // Capture before any getter call: `events().all()` reflects only the most
+    // recent top-level invocation.
+    let emitted = env.events().all().filter_by_contract(&stacc_id);
+
+    assert_eq!(stacc.get_total_supply(), 0);
+    assert_eq!(stacc.get_total_locked(), 0);
+    assert_eq!(stacc.get_user_stacc_balance(&alice), 0);
+
+    // 1:1 rate: burning 50 stACC redeems 50 underlying.
+    let mut data = Map::<Val, Val>::new(&env);
+    data.set(
+        Symbol::new(&env, "stacc_burned").into_val(&env),
+        50u64.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "underlying_redeemed").into_val(&env),
+        50u64.into_val(&env),
+    );
+    data.set(
+        Symbol::new(&env, "ledger").into_val(&env),
+        burn_ledger.into_val(&env),
+    );
+    assert_eq!(
+        emitted,
+        soroban_sdk::vec![
+            &env,
+            (
+                stacc_id.clone(),
+                (Symbol::new(&env, "burn"), alice.clone()).into_val(&env),
+                data.into_val(&env),
+            )
+        ]
+    );
+}
+
+/// `LiquidStaking::burn` answers a zero amount and a premature redemption with
+/// the typed error variant, not a trap.
+#[test]
+fn liquid_staking_burn_rejects_zero_and_early_redemption() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stacc_id = env.register(LiquidStaking, ());
+    let stacc = LiquidStakingClient::new(&env, &stacc_id);
+    stacc.initialize(&1_000_000);
+
+    let alice = Address::generate(&env);
+    stacc.mint(&alice, &50);
+
+    assert_eq!(
+        stacc.try_burn(&alice, &0),
+        Err(Ok(LiquidStakingError::ZeroAmount))
+    );
+    assert_eq!(
+        stacc.try_burn(&alice, &1),
+        Err(Ok(LiquidStakingError::LockNotExpired))
+    );
+}
+
+// ── Ragequit `is_approved` / `process` (#696) ───────────────────────────────
+
+/// Three members with deposits 1/1/4 (weights 1/1/2), 60% quorum, a 100-ledger
+/// window, and a treasury token holding 600 units. With a majority that is not
+/// unanimous, a dissenter and an approved proposal can coexist here.
+struct RagequitFixture {
+    env: Env,
+    gov: GovernanceClient<'static>,
+    gov_id: Address,
+    token: Address,
+    m1: Address,
+    m2: Address,
+    m3: Address,
+}
+
+fn ragequit_setup() -> RagequitFixture {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+
+    let members = Vec::from_array(&env, [m1.clone(), m2.clone(), m3.clone()]);
+    let deposits = Vec::from_array(&env, [1u64, 1u64, 4u64]);
+    let gov_id = env.register(Governance, (members, deposits, 6000u32, 100u32));
+    let gov = GovernanceClient::new(&env, &gov_id);
+
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token = sac.address();
+    StellarAssetClient::new(&env, &token).mint(&gov_id, &600i128);
+    gov.set_treasury_token(&token);
+
+    RagequitFixture {
+        env,
+        gov,
+        gov_id,
+        token,
+        m1,
+        m2,
+        m3,
+    }
+}
+
+/// Propose a no-op call and drive it to approval while `m2` dissents:
+/// m3 (2) + m1 (1) = 75% ≥ 60% quorum and `yes > no`.
+fn approved_with_dissent(f: &RagequitFixture) -> u64 {
+    let args: Vec<Val> = Vec::new(&f.env);
+    let target = Address::generate(&f.env);
+    let id = f
+        .gov
+        .propose(&f.m1, &target, &Symbol::new(&f.env, "noop"), &args);
+    f.gov.vote(&f.m3, &id, &true);
+    f.gov.vote(&f.m1, &id, &true);
+    f.gov.vote(&f.m2, &id, &false);
+    id
+}
+
+/// The public `ragequit` path drives `is_approved` (quorum met) and `process`
+/// (quarantine + pro-rata payout) and publishes the `RagequitEvent`.
+#[test]
+fn ragequit_process_burns_deposit_and_publishes_event() {
+    let f = ragequit_setup();
+    let id = approved_with_dissent(&f);
+
+    f.gov.ragequit(&f.m2, &id);
+    // Capture before any getter call: `events().all()` reflects only the most
+    // recent top-level invocation.
+    let emitted = f.env.events().all().filter_by_contract(&f.gov_id);
+
+    // 600 treasury * deposit 1 / total deposits 6 = 100.
+    let token = soroban_sdk::token::TokenClient::new(&f.env, &f.token);
+    assert_eq!(token.balance(&f.m2), 100);
+    assert_eq!(token.balance(&f.gov_id), 500);
+    assert_eq!(f.gov.get_member_deposit(&f.m2), 0);
+    assert!(!f.gov.is_member(&f.m2));
+    assert_eq!(f.gov.get_quarantined(&f.m2), 1);
+    assert!(f.gov.has_ragequit(&id, &f.m2));
+
+    let mut data = Map::<Val, Val>::new(&f.env);
+    data.set(
+        Symbol::new(&f.env, "deposit_burned").into_val(&f.env),
+        1u64.into_val(&f.env),
+    );
+    data.set(
+        Symbol::new(&f.env, "payout").into_val(&f.env),
+        100i128.into_val(&f.env),
+    );
+    assert_eq!(
+        emitted,
+        soroban_sdk::vec![
+            &f.env,
+            (
+                f.gov_id.clone(),
+                (Symbol::new(&f.env, "ragequit_event"), id, f.m2.clone()).into_val(&f.env),
+                data.into_val(&f.env),
+            )
+        ]
+    );
+}
+
+/// `is_approved` returns false for a proposal short of quorum, so `process`
+/// refuses the exit with `ProposalNotApproved` even for a genuine dissenter.
+#[test]
+fn ragequit_rejects_a_dissenter_when_the_proposal_is_not_approved() {
+    let f = ragequit_setup();
+    let args: Vec<Val> = Vec::new(&f.env);
+    let target = Address::generate(&f.env);
+    let id = f
+        .gov
+        .propose(&f.m1, &target, &Symbol::new(&f.env, "noop"), &args);
+    // m3 (2) yes is 50% < 60% quorum; m2 dissents anyway.
+    f.gov.vote(&f.m3, &id, &true);
+    f.gov.vote(&f.m2, &id, &false);
+
+    assert_eq!(
+        f.gov.try_ragequit(&f.m2, &id),
+        Err(Ok(Error::ProposalNotApproved))
+    );
+    assert_eq!(f.gov.get_member_deposit(&f.m2), 1, "no payout happened");
+}
+
+/// `process` rejects a member who voted *yes* on the approved proposal before
+/// it ever reaches the approval check.
+#[test]
+fn ragequit_rejects_a_member_who_voted_yes() {
+    let f = ragequit_setup();
+    let id = approved_with_dissent(&f);
+
+    assert_eq!(
+        f.gov.try_ragequit(&f.m1, &id),
+        Err(Ok(Error::NotADissenter))
+    );
+}
+
+// ── Constructor error variants (#696) ───────────────────────────────────────
+
+/// The constructor's input checks surface as typed errors: a length mismatch
+/// is `ArityMismatch`, and an invalid member set (a zero deposit) is
+/// `InvalidMembers`.
+#[test]
+fn constructor_reports_typed_arity_and_member_errors() {
+    let env = Env::default();
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    // A valid instance gives `as_contract` a live address to run against; the
+    // constructor body is then called directly so its `Result` is observable.
+    let gov_id = env.register(
+        Governance,
+        (
+            Vec::from_array(&env, [a.clone()]),
+            Vec::from_array(&env, [1u64]),
+            5000u32,
+            10u32,
+        ),
+    );
+
+    let arity = env.as_contract(&gov_id, || {
+        Governance::__constructor(
+            env.clone(),
+            Vec::from_array(&env, [a.clone()]),
+            Vec::from_array(&env, [1u64, 2u64]),
+            5000u32,
+            10u32,
+        )
+    });
+    assert_eq!(arity, Err(Error::ArityMismatch));
+
+    let invalid = env.as_contract(&gov_id, || {
+        Governance::__constructor(
+            env.clone(),
+            Vec::from_array(&env, [a.clone(), b.clone()]),
+            Vec::from_array(&env, [1u64, 0u64]),
+            5000u32,
+            10u32,
+        )
+    });
+    assert_eq!(invalid, Err(Error::InvalidMembers));
 }

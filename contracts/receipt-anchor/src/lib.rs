@@ -101,10 +101,15 @@ pub struct BucketState {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchRecord {
+    /// SHA-256 Merkle root over the batch's receipt leaves, supplied to `anchor_batch` and read by `verify_receipt`.
     pub root: BytesN<32>,
+    /// Number of receipt leaves in the batch, caller-supplied; `anchor_batch` rejects values above `MAX_BATCH_SIZE`.
     pub count: u32,
+    /// Caller-supplied start of the batch's reporting period, stored verbatim; the contract never interprets it.
     pub period_start: u64,
+    /// Caller-supplied end of the batch's reporting period, stored verbatim; the contract never interprets it.
     pub period_end: u64,
+    /// Ledger sequence when the record was written, set by the storage shard from `env.ledger().sequence()`.
     pub anchored_ledger: u32,
 }
 
@@ -182,11 +187,23 @@ pub struct PruneEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShardCreatedEvent {
     #[topic]
+    /// Logical `shard_id` whose independent batch stream this storage shard
+    /// serves, as supplied by the merchant to `anchor_batch`.
     pub shard_id: u64,
     #[topic]
+    /// Zero-based index of this storage shard within `shard_id`'s stream,
+    /// computed by `anchor_batch` as `(batch_id - 1) / SHARD_CAPACITY`.
     pub shard_index: u64,
+    /// Address of the deployed `ReceiptShard`, derived from the deterministic
+    /// `(shard_id, shard_index)` salt and stored under
+    /// `DataKey::Shard(shard_id, shard_index)`; `get_shard_address` reads it.
     pub shard_address: Address,
+    /// First batch id this shard accepts (inclusive), computed when the shard
+    /// is deployed as `shard_index * SHARD_CAPACITY + 1`.
     pub start_batch_id: u64,
+    /// One past the last batch id this shard accepts, so the shard covers the
+    /// half-open range `[start_batch_id, end_batch_id)` and is deployed with
+    /// `end_batch_id = start_batch_id + SHARD_CAPACITY`.
     pub end_batch_id: u64,
 }
 
@@ -216,11 +233,33 @@ pub struct InitializedEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RateLimitUpdatedEvent {
     #[topic]
+    /// Burst capacity in force *before* the change, in whole anchors: the
+    /// max number of `anchor_batch` submissions an identity could make
+    /// back-to-back. `0` only as part of the disabled `{0, 0}` config.
+    /// Written here by [`ReceiptAnchor::set_anchor_rate_limit`] from the
+    /// stored [`RateLimitConfig`].
     pub previous_burst_capacity: u32,
     #[topic]
+    /// Seconds per one-token refill of the bucket in force *before* the
+    /// change. `0` only as part of the disabled `{0, 0}` config. Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from the stored
+    /// [`RateLimitConfig`].
     pub previous_refill_interval_secs: u32,
+    /// Burst capacity configured *after* the change, in whole anchors: the
+    /// number of back-to-back `anchor_batch` submissions the limiter now
+    /// allows (capped at 1000, `MAX_RATE_BURST`). Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from its caller's argument
+    /// and read by `anchor_batch`'s admission check.
     pub new_burst_capacity: u32,
+    /// Seconds per one-token refill configured *after* the change (capped at
+    /// 86,400, `MAX_RATE_REFILL_INTERVAL`). Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from its caller's argument
+    /// and read by `anchor_batch`'s admission check.
     pub new_refill_interval_secs: u32,
+    /// Sequence number of the ledger that executed
+    /// [`ReceiptAnchor::set_anchor_rate_limit`]
+    /// (`env.ledger().sequence()` at publish time), not a wall-clock
+    /// timestamp. Set only by that function, the event's sole publisher.
     pub ledger: u32,
 }
 
