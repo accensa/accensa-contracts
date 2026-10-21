@@ -8,6 +8,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **Documentation (#772):** Documented the five public fields of common `AnchorEventPayload` (`shard_id`, `batch_id`, `root`, `count`, `timestamp`) for off-chain decoders; comments only, no code change.
 - fix(refund-policy-vdf): guard `calculate_slashing_penalty`'s product with the
   checked `accensa_common::math` helpers. Decomposing `amount = whole * 100 +
   rest` keeps both products in range under the `penalty <= 100` precondition,
