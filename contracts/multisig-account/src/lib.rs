@@ -505,3 +505,6 @@ mod tests {
         assert_eq!(fx.check_auth(), Err(Error::InsufficientSignatures));
     }
 }
+
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;

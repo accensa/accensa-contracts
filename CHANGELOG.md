@@ -8,6 +8,7 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- test(multisig-account): Tier A CPU budget suite for batch execution and signer rotation, behind the new `budget-assert` feature (#924).
 - Feat/median price (#920).
 - Feat/set active (#918).
 - Feat/resolve ceiling (#917).
