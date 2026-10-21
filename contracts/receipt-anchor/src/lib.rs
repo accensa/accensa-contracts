@@ -27,6 +27,7 @@ contractmeta!(
 );
 
 #[contracttype]
+/// Router storage keys: admin/config and the live-shard set in instance storage, the `(shard_id, shard_index)` deploy map, and the per-merchant token bucket in persistent storage.
 pub enum DataKey {
     Admin,
     /// Per-logical-shard batch count. Each `shard_id` owns an independent
@@ -100,10 +101,15 @@ pub struct BucketState {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchRecord {
+    /// SHA-256 Merkle root over the batch's receipt leaves, supplied to `anchor_batch` and read by `verify_receipt`.
     pub root: BytesN<32>,
+    /// Number of receipt leaves in the batch, caller-supplied; `anchor_batch` rejects values above `MAX_BATCH_SIZE`.
     pub count: u32,
+    /// Caller-supplied start of the batch's reporting period, stored verbatim; the contract never interprets it.
     pub period_start: u64,
+    /// Caller-supplied end of the batch's reporting period, stored verbatim; the contract never interprets it.
     pub period_end: u64,
+    /// Ledger sequence when the record was written, set by the storage shard from `env.ledger().sequence()`.
     pub anchored_ledger: u32,
 }
 
@@ -146,13 +152,20 @@ pub trait ShardInterface {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnchorEvent {
     #[topic]
+    /// Shard identifier for the anchored receipt stream.
     pub shard_id: u64,
     #[topic]
+    /// Identifier of the anchored batch within the shard.
     pub batch_id: u64,
+    /// Root hash committed for this batch.
     pub root: BytesN<32>,
+    /// Number of receipts included in the batch.
     pub count: u32,
+    /// Start of the batch's covered receipt period.
     pub period_start: u64,
+    /// End of the batch's covered receipt period.
     pub period_end: u64,
+    /// Ledger sequence at which this batch was anchored.
     pub anchored_ledger: u32,
 }
 
@@ -181,11 +194,23 @@ pub struct PruneEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShardCreatedEvent {
     #[topic]
+    /// Logical `shard_id` whose independent batch stream this storage shard
+    /// serves, as supplied by the merchant to `anchor_batch`.
     pub shard_id: u64,
     #[topic]
+    /// Zero-based index of this storage shard within `shard_id`'s stream,
+    /// computed by `anchor_batch` as `(batch_id - 1) / SHARD_CAPACITY`.
     pub shard_index: u64,
+    /// Address of the deployed `ReceiptShard`, derived from the deterministic
+    /// `(shard_id, shard_index)` salt and stored under
+    /// `DataKey::Shard(shard_id, shard_index)`; `get_shard_address` reads it.
     pub shard_address: Address,
+    /// First batch id this shard accepts (inclusive), computed when the shard
+    /// is deployed as `shard_index * SHARD_CAPACITY + 1`.
     pub start_batch_id: u64,
+    /// One past the last batch id this shard accepts, so the shard covers the
+    /// half-open range `[start_batch_id, end_batch_id)` and is deployed with
+    /// `end_batch_id = start_batch_id + SHARD_CAPACITY`.
     pub end_batch_id: u64,
 }
 
@@ -215,11 +240,33 @@ pub struct InitializedEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RateLimitUpdatedEvent {
     #[topic]
+    /// Burst capacity in force *before* the change, in whole anchors: the
+    /// max number of `anchor_batch` submissions an identity could make
+    /// back-to-back. `0` only as part of the disabled `{0, 0}` config.
+    /// Written here by [`ReceiptAnchor::set_anchor_rate_limit`] from the
+    /// stored [`RateLimitConfig`].
     pub previous_burst_capacity: u32,
     #[topic]
+    /// Seconds per one-token refill of the bucket in force *before* the
+    /// change. `0` only as part of the disabled `{0, 0}` config. Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from the stored
+    /// [`RateLimitConfig`].
     pub previous_refill_interval_secs: u32,
+    /// Burst capacity configured *after* the change, in whole anchors: the
+    /// number of back-to-back `anchor_batch` submissions the limiter now
+    /// allows (capped at 1000, `MAX_RATE_BURST`). Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from its caller's argument
+    /// and read by `anchor_batch`'s admission check.
     pub new_burst_capacity: u32,
+    /// Seconds per one-token refill configured *after* the change (capped at
+    /// 86,400, `MAX_RATE_REFILL_INTERVAL`). Written by
+    /// [`ReceiptAnchor::set_anchor_rate_limit`] from its caller's argument
+    /// and read by `anchor_batch`'s admission check.
     pub new_refill_interval_secs: u32,
+    /// Sequence number of the ledger that executed
+    /// [`ReceiptAnchor::set_anchor_rate_limit`]
+    /// (`env.ledger().sequence()` at publish time), not a wall-clock
+    /// timestamp. Set only by that function, the event's sole publisher.
     pub ledger: u32,
 }
 
@@ -304,10 +351,12 @@ const MAX_RATE_REFILL_INTERVAL: u32 = 86_400;
 const SHARD_CAPACITY: u64 = 200;
 
 #[contract]
+/// The `ReceiptAnchor` router: holds admin, configuration and the `(shard_id, shard_index) -> Address` map, and forwards every batch read and write to the deployed `ReceiptShard`.
 pub struct ReceiptAnchor;
 
 #[contractimpl]
 impl ReceiptAnchor {
+    /// Binds this deployment to `merchant` as admin and pins the `ReceiptShard` wasm hash the router deploys shards with; needs no auth and runs once — returns `Error::AlreadyInitialized` when an admin is already set.
     pub fn initialize(
         env: Env,
         merchant: Address,
@@ -529,11 +578,13 @@ impl ReceiptAnchor {
         zk_verifier::verify_groth16(&env, &proof, &vk, &public_inputs)
     }
 
+    /// Reads `batch_id` from `shard_id`'s stream via the storage shard that owns it; read-only. Returns `Error::BatchNotFound` when `batch_id` is `0` or that storage shard was never deployed, `Error::ShardCallFailed` when the shard call returns an unexpected shape, and otherwise propagates the shard's own error.
     pub fn get_batch(env: Env, shard_id: u64, batch_id: u64) -> Result<BatchRecord, Error> {
         let shard_addr = Self::shard_for_batch(&env, shard_id, batch_id)?;
         Self::unwrap_shard_result(ShardClient::new(&env, &shard_addr).try_get_batch(&batch_id))
     }
 
+    /// Verifies `leaf` against the root anchored at `batch_id` in `shard_id`'s stream, delegating the Merkle check to that batch's storage shard; read-only. Returns `Ok(true)`/`Ok(false)` for a well-formed proof, `Error::BatchNotFound` when `batch_id` is `0` or its storage shard was never deployed, `Error::ProofTooLong` when the shard rejects an oversize proof, and `Error::ShardCallFailed` for an unexpected shard answer.
     pub fn verify_receipt(
         env: Env,
         shard_id: u64,
@@ -818,6 +869,7 @@ impl ReceiptAnchor {
             .map_or(0, |tree| tree.count)
     }
 
+    /// Returns `SHARD_CAPACITY` (200): the number of `BatchRecord`s each storage shard holds before the router deploys the next one; read-only and infallible.
     pub fn get_shard_capacity(_env: Env) -> u64 {
         SHARD_CAPACITY
     }
@@ -1191,6 +1243,8 @@ impl ReceiptAnchor {
 
 #[cfg(test)]
 mod fuzz_test;
+#[cfg(test)]
+mod incremental_api_test;
 #[cfg(test)]
 mod signatures_test;
 #[cfg(test)]

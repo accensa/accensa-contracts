@@ -12,12 +12,18 @@
 
 #[allow(dead_code)]
 pub struct RefundVector {
+    /// Human-readable name of the refund test case.
     pub name: &'static str,
+    /// Identifier of the payment associated with this case.
     pub payment_id: &'static str,
     pub payment_ref: [u8; 32],
+    /// Amount value expected by this refund test case.
     pub amount: i128,
+    /// Ledger sequence at which the payment was made.
     pub paid_at_ledger: u32,
+    /// Transaction hash associated with the payment, when available.
     pub tx_hash: Option<&'static str>,
+    /// Whether the refund is expected to succeed.
     pub expected_success: bool,
 }
 

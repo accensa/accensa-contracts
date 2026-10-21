@@ -109,3 +109,43 @@ fn monotonic_round_ids_enforced() {
         Err(Ok(Error::StaleRoundId))
     );
 }
+
+#[test]
+fn stored_rounds_are_returned_verbatim_by_get_and_latest() {
+    let (env, id, _) = setup();
+    let c = ChainlinkConsumerClient::new(&env, &id);
+
+    let first = round(1, 100_000_000, env.ledger().sequence());
+    c.set_round_data(&first);
+    env.ledger().with_mut(|l| l.sequence_number += 1);
+    let second = round(2, 101_000_000, env.ledger().sequence());
+    c.set_round_data(&second);
+
+    // RoundData equality covers all five fields, so this compares the whole
+    // record rather than selected fields.
+    assert_eq!(c.get_round_data(&1), first);
+    assert_eq!(c.get_round_data(&2), second);
+    assert_eq!(c.latest_round_data(&0), second);
+}
+
+#[test]
+fn unknown_round_returns_typed_no_data() {
+    let (env, id, _) = setup();
+    let c = ChainlinkConsumerClient::new(&env, &id);
+    assert_eq!(c.try_get_round_data(&42), Err(Ok(Error::NoData)));
+}
+
+#[test]
+fn latest_round_data_on_an_empty_feed_fails_closed() {
+    let (env, id, _) = setup();
+    let c = ChainlinkConsumerClient::new(&env, &id);
+    assert_eq!(c.try_latest_round_data(&0), Err(Ok(Error::NoData)));
+    assert_eq!(c.try_latest_round_data(&3_600), Err(Ok(Error::NoData)));
+}
+
+#[test]
+fn get_admin_returns_the_address_supplied_at_construction() {
+    let (env, id, admin) = setup();
+    let c = ChainlinkConsumerClient::new(&env, &id);
+    assert_eq!(c.get_admin(), Some(admin));
+}

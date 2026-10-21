@@ -85,8 +85,14 @@ pub enum Error {
     NothingToWithdraw = 5,
     /// Resuming would shift the schedule past `u32::MAX`.
     MathOverflow = 6,
+    /// The contract instance is missing constructor-written state, e.g. the
+    /// token address a `token_client` call needs.
+    NotInitialized = 7,
 }
 
+/// Storage key space of this contract: the per-instance configuration
+/// (`Merchant`, `Token`, `StreamCount`) and the persistent per-stream records
+/// indexed by `Stream(id)`.
 #[contracttype]
 pub enum DataKey {
     /// Recipient of every stream's disbursements.
@@ -128,11 +134,23 @@ pub struct DisbursementStream {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamCreatedEvent {
     #[topic]
+    /// Stream id that `create_stream` assigned and returned; the same value
+    /// is this event's second topic and the `DataKey::Stream` record key.
     pub stream_id: u64,
+    /// Address whose auth `create_stream` required and whose tokens the
+    /// escrowed `deposit` was transferred from.
     pub buyer: Address,
+    /// Ledger sequence at which accrual begins, as passed to
+    /// `create_stream`.
     pub start_ledger: u32,
+    /// Ledger sequence at which the deposit is fully streamed, as passed to
+    /// `create_stream`.
     pub stop_ledger: u32,
+    /// Amount streamed per elapsed ledger, in the token's smallest unit, as
+    /// passed to `create_stream`.
     pub rate_per_ledger: i128,
+    /// Deposit `create_stream` transferred from `buyer` into escrow, in the
+    /// token's smallest unit.
     pub deposit: i128,
 }
 
@@ -208,13 +226,16 @@ fn merchant(env: &Env) -> Address {
         .expect("initialized in the constructor")
 }
 
-fn token_client(env: &Env) -> token::Client<'_> {
+/// The token contract this vault streams, or [`Error::NotInitialized`] when
+/// the constructor-written `Token` key is absent (a caller reaching this
+/// before initialization).
+fn token_client(env: &Env) -> Result<token::Client<'_>, Error> {
     let token: Address = env
         .storage()
         .instance()
         .get(&DataKey::Token)
-        .expect("initialized in the constructor");
-    token::Client::new(env, &token)
+        .ok_or(Error::NotInitialized)?;
+    Ok(token::Client::new(env, &token))
 }
 
 fn load(env: &Env, stream_id: u64) -> Result<DisbursementStream, Error> {
@@ -238,6 +259,9 @@ fn store(env: &Env, stream_id: u64, stream: &DisbursementStream) {
         .extend_ttl(&key, extend_to, extend_to);
 }
 
+/// The stream-vault contract itself: one instance escrows buyer deposits for
+/// a single merchant and token, disbursing them linearly over each stream's
+/// ledger schedule.
 #[contract]
 pub struct StreamVault;
 
@@ -308,7 +332,7 @@ impl StreamVault {
             },
         );
 
-        token_client(&env).transfer(&buyer, &this, &deposit);
+        token_client(&env)?.transfer(&buyer, &this, &deposit);
 
         StreamCreatedEvent {
             stream_id,
@@ -349,7 +373,7 @@ impl StreamVault {
             store(&env, stream_id, &stream);
         }
 
-        token_client(&env).transfer(&env.current_contract_address(), merchant(&env), &amount);
+        token_client(&env)?.transfer(&env.current_contract_address(), merchant(&env), &amount);
 
         StreamClaimedEvent {
             stream_id,
@@ -440,7 +464,7 @@ impl StreamVault {
             .persistent()
             .remove(&DataKey::Stream(stream_id));
 
-        let token = token_client(&env);
+        let token = token_client(&env)?;
         let this = env.current_contract_address();
         if merchant_amount > 0 {
             token.transfer(&this, merchant(&env), &merchant_amount);
@@ -474,14 +498,30 @@ impl StreamVault {
         Ok(streamed_amount(&stream, env.ledger().sequence()) - stream.claimed)
     }
 
+    /// The merchant bound at construction: the only address that ever
+    /// receives this contract's payouts. Requires the contract to have been
+    /// initialized, as the address is read from instance storage.
     pub fn get_merchant(env: Env) -> Address {
         merchant(&env)
     }
 
+    /// The token every stream on this instance is denominated in, bound at
+    /// construction. Requires the contract to have been initialized, as the
+    /// address is read from instance storage.
     pub fn get_token(env: Env) -> Address {
-        token_client(&env).address
+        token_client(&env).expect("initialized").address
     }
 }
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+#[path = "token_client_missing_test.rs"]
+mod token_client_missing_test;
+
+// Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
+// feature is enabled (the budget CI job), so the normal test/clippy runs stay
+// free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;

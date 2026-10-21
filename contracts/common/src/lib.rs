@@ -75,6 +75,10 @@ pub enum Error {
     ShardCallFailed = 102,
     /// An attempt was made to anchor a Merkle root identical to the currently active root.
     DuplicateRoot = 103,
+    /// Destination shard must differ from the source shard (issue #551).
+    DestinationMismatch = 104,
+    /// The batch record returned by the destination shard did not match the migrated record (issue #551).
+    RoundTripMismatch = 105,
     /// The supplied Merkle root is not in the historical ring buffer.
     RootNotFound = 200,
     /// The Merkle proof exceeds the maximum valid length (`MAX_PROOF_LEN`).
@@ -303,8 +307,6 @@ pub struct VaultInit {
     /// Mirror of the active VDF gate's delay (read path).
     pub vdf_delay: u32,
 }
-pub mod audit;
-pub mod blacklist;
 pub mod constant_time;
 pub mod events;
 pub mod keys;

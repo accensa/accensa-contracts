@@ -445,3 +445,211 @@ fn rejected_pause_emits_no_event() {
     let none: soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)> = vec![&t.env];
     assert_eq!(t.env.events().all().filter_by_contract(&t.account), none);
 }
+
+// ── Execute Batch (#585) ────────────────────────────────────────────────────
+
+#[contract]
+struct StatefulTarget;
+
+#[contractimpl]
+impl StatefulTarget {
+    pub fn push(env: Env, val: u32) -> u32 {
+        let key = Symbol::new(&env, "history");
+        let mut history: soroban_sdk::Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(soroban_sdk::vec![&env]);
+        history.push_back(val);
+        env.storage().instance().set(&key, &history);
+        val * 10
+    }
+
+    pub fn get_history(env: Env) -> soroban_sdk::Vec<u32> {
+        let key = Symbol::new(&env, "history");
+        env.storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(soroban_sdk::vec![&env])
+    }
+
+    pub fn trap(_env: Env) -> u32 {
+        panic!("trap in batch");
+    }
+}
+
+mod execute_batch_tests {
+    use super::*;
+    use crate::Call;
+    use soroban_sdk::TryFromVal;
+
+    #[test]
+    fn execute_batch_runs_calls_in_order_and_returns_results() {
+        let t = setup();
+        let target_id = t.env.register(StatefulTarget, ());
+        let target_client = StatefulTargetClient::new(&t.env, &target_id);
+
+        let call1 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "push"),
+            args: soroban_sdk::vec![&t.env, 1u32.into_val(&t.env)],
+        };
+        let call2 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "push"),
+            args: soroban_sdk::vec![&t.env, 2u32.into_val(&t.env)],
+        };
+        let calls = soroban_sdk::vec![&t.env, call1, call2];
+
+        let args = [calls.clone().into_val(&t.env)];
+        let delegates = [t.s1.clone(), t.s2.clone()];
+        t.authorize(&t.account, "execute_batch", &args, &delegates, 1);
+
+        let results = t.client().execute_batch(&calls);
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            u32::try_from_val(&t.env, &results.get(0).unwrap()).unwrap(),
+            10
+        );
+        assert_eq!(
+            u32::try_from_val(&t.env, &results.get(1).unwrap()).unwrap(),
+            20
+        );
+
+        assert_eq!(
+            target_client.get_history(),
+            soroban_sdk::vec![&t.env, 1u32, 2u32]
+        );
+    }
+
+    #[test]
+    fn execute_batch_external_without_auth_fails() {
+        let t = setup();
+        let target_id = t.env.register(StatefulTarget, ());
+        let target_client = StatefulTargetClient::new(&t.env, &target_id);
+
+        let call1 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "push"),
+            args: soroban_sdk::vec![&t.env, 1u32.into_val(&t.env)],
+        };
+        let calls = soroban_sdk::vec![&t.env, call1];
+
+        // Do not authorize the call on behalf of the account
+        let res = t.client().try_execute_batch(&calls);
+        assert!(res.is_err());
+        assert_eq!(target_client.get_history(), soroban_sdk::vec![&t.env]);
+    }
+
+    #[test]
+    fn execute_batch_reverts_state_when_call_traps() {
+        let t = setup();
+        let target_id = t.env.register(StatefulTarget, ());
+        let target_client = StatefulTargetClient::new(&t.env, &target_id);
+
+        let call1 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "push"),
+            args: soroban_sdk::vec![&t.env, 99u32.into_val(&t.env)],
+        };
+        let call2 = Call {
+            contract: target_id.clone(),
+            function: Symbol::new(&t.env, "trap"),
+            args: soroban_sdk::vec![&t.env],
+        };
+        let calls = soroban_sdk::vec![&t.env, call1, call2];
+
+        let args = [calls.clone().into_val(&t.env)];
+        let delegates = [t.s1.clone(), t.s2.clone()];
+        t.authorize(&t.account, "execute_batch", &args, &delegates, 1);
+
+        let res = t.client().try_execute_batch(&calls);
+        assert!(res.is_err());
+
+        // Partial state written by the first call must be cleanly reverted
+        assert_eq!(target_client.get_history(), soroban_sdk::vec![&t.env]);
+    }
+}
+
+// ── Verify Ed25519 Tests (#592) ─────────────────────────────────────────────
+
+mod verify_ed25519_tests {
+    use super::*;
+    use crate::crypto::ED25519_ORDER_LE;
+    use ed25519_dalek::{Signer, SigningKey};
+    use soroban_sdk::{Bytes, BytesN};
+
+    /// Little-endian 256-bit addition (no overflow for the values used here).
+    fn add_le(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let mut carry = 0u16;
+        for i in 0..32 {
+            let sum = a[i] as u16 + b[i] as u16 + carry;
+            out[i] = sum as u8;
+            carry = sum >> 8;
+        }
+        out
+    }
+
+    /// Returns `(public_key, message, signature)` for the golden test vector in crypto.rs.
+    fn golden_signed(env: &Env) -> (BytesN<32>, Bytes, [u8; 64]) {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let msg = b"accensa multisig payload";
+        let sig = sk.sign(msg).to_bytes();
+        (
+            BytesN::from_array(env, &sk.verifying_key().to_bytes()),
+            Bytes::from_slice(env, msg),
+            sig,
+        )
+    }
+
+    /// Malleates signature by adding group order L to the s scalar (bytes 32..64).
+    fn malleate(sig: &[u8; 64]) -> [u8; 64] {
+        let mut s = [0u8; 32];
+        s.copy_from_slice(&sig[32..]);
+        let mut out = *sig;
+        out[32..].copy_from_slice(&add_le(&s, &ED25519_ORDER_LE));
+        out
+    }
+
+    #[test]
+    fn valid_signature_returns_normally() {
+        let t = setup();
+        let (pk, msg, sig) = golden_signed(&t.env);
+        let sig_bytes = BytesN::from_array(&t.env, &sig);
+
+        // Entry point returns normally
+        t.client().verify_ed25519(&pk, &msg, &sig_bytes);
+        assert_eq!(
+            t.client().try_verify_ed25519(&pk, &msg, &sig_bytes),
+            Ok(Ok(()))
+        );
+    }
+
+    #[test]
+    fn non_canonical_s_signature_returns_typed_error() {
+        let t = setup();
+        let (pk, msg, sig) = golden_signed(&t.env);
+        let malleated = BytesN::from_array(&t.env, &malleate(&sig));
+
+        assert_eq!(
+            t.client().try_verify_ed25519(&pk, &msg, &malleated),
+            Err(Ok(Error::NonCanonicalSignature))
+        );
+    }
+
+    #[test]
+    fn invalid_signature_traps() {
+        let t = setup();
+        let (pk, msg, mut sig) = golden_signed(&t.env);
+        sig[0] ^= 0x01;
+        let invalid_sig = BytesN::from_array(&t.env, &sig);
+
+        let res = t.client().try_verify_ed25519(&pk, &msg, &invalid_sig);
+        assert!(
+            matches!(res, Err(Err(_))),
+            "expected host trap represented as Err(Err(..)), got {:?}",
+            res
+        );
+    }
+}

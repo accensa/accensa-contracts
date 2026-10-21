@@ -66,11 +66,13 @@ mod test;
 
 mod liquid_staking;
 mod math;
+mod qf;
 mod quorum;
 mod ragequit;
 mod ring_sig;
 pub mod simulation;
 mod timelock;
+mod vetoken;
 mod voting;
 
 pub use liquid_staking::{
@@ -96,6 +98,7 @@ contractmeta!(
     val = "https://github.com/accensa/accensa-contracts"
 );
 
+/// Every failure `Governance` can return; each variant documents the condition that raises it.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -185,6 +188,7 @@ pub enum Error {
     AlreadyQueued = 34,
 }
 
+/// Storage keys for governance's instance settings, member deposits, proposals and per-voter markers.
 #[contracttype]
 pub enum DataKey {
     /// Instance: sum of every member's quadratic weight.
@@ -240,6 +244,7 @@ pub enum DataKey {
     KeyImage(u64, BytesN<32>),
 }
 
+/// A linkable LSAG ring signature: the key image, the challenge closing the ring, and one response per ring member.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RingSignature {
@@ -252,13 +257,21 @@ pub struct RingSignature {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposal {
+    /// Address of the member who submitted the proposal.
     pub proposer: Address,
+    /// Address of the contract targeted by the proposed call.
     pub target: Address,
+    /// Function symbol to invoke on the target contract.
     pub function: Symbol,
+    /// Values passed as arguments to the proposed function.
     pub args: Vec<Val>,
+    /// Accumulated voting weight in favor of the proposal.
     pub yes_weight: u64,
+    /// Accumulated voting weight against the proposal.
     pub no_weight: u64,
+    /// Ledger number by which voting on the proposal ends.
     pub deadline_ledger: u32,
+    /// Whether the proposed call has been executed.
     pub executed: bool,
 }
 
@@ -267,10 +280,25 @@ pub struct Proposal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposalCreated {
     #[topic]
+    /// Proposal id assigned by the creating path ([`Governance::propose`], or
+    /// `simulation::propose_with_simulation`): the incremented
+    /// `DataKey::ProposalCount`, starting at `1`. Published as the event topic
+    /// and used as the `DataKey::Proposal(id)` key by [`Governance::vote`],
+    /// [`Governance::execute`] and `get_proposal`.
     pub proposal_id: u64,
+    /// Address whose authorization the creating path required; also stored
+    /// unchanged as `Proposal::proposer`.
     pub proposer: Address,
+    /// Address of the contract the proposal calls: [`Governance::execute`]
+    /// invokes `function` on it.
     pub target: Address,
+    /// Symbol naming the target function that [`Governance::execute`]
+    /// invokes, with the args stored in the `Proposal` record.
     pub function: Symbol,
+    /// Last ledger on which votes count, as a ledger sequence number: the
+    /// creating path sets it to the ledger at creation plus the configured
+    /// `DataKey::VotingPeriod`, and [`Governance::vote`] rejects a vote at any
+    /// strictly later ledger.
     pub deadline_ledger: u32,
 }
 
@@ -332,6 +360,7 @@ const MAX_THRESHOLD_BPS: u32 = 10_000;
 /// TTL lapses, so a same-ledger `execute` at the deadline still finds it.
 const PROPOSAL_TTL_GRACE: u32 = 100;
 
+/// The governance contract: a fixed member set that proposes, votes on and executes calls against a target contract.
 #[contract]
 pub struct Governance;
 
@@ -442,7 +471,7 @@ impl Governance {
             .storage()
             .instance()
             .get(&DataKey::VotingPeriod)
-            .unwrap();
+            .ok_or(Error::InvalidVotingPeriod)?;
         let deadline_ledger = env.ledger().sequence() + voting_period;
 
         let proposal = Proposal {
@@ -622,8 +651,8 @@ impl Governance {
             return Err(Error::VotingClosed);
         }
         let mut weight: Option<u64> = None;
-        for i in 0..ring.len() {
-            let public_key = ring.get(i).unwrap();
+        for (i, public_key) in ring.iter().enumerate() {
+            let i = i as u32;
             let Some(member) = env
                 .storage()
                 .persistent()
@@ -715,17 +744,21 @@ impl Governance {
             return Err(Error::AlreadyExecuted);
         }
 
-        let total_weight: u64 = env.storage().instance().get(&DataKey::TotalWeight).unwrap();
+        let total_weight: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalWeight)
+            .ok_or(Error::InvalidMembers)?;
         let threshold_bps: u32 = env
             .storage()
             .instance()
             .get(&DataKey::ThresholdBps)
-            .unwrap();
+            .ok_or(Error::InvalidThreshold)?;
         let voting_period: u32 = env
             .storage()
             .instance()
             .get(&DataKey::VotingPeriod)
-            .unwrap();
+            .ok_or(Error::InvalidVotingPeriod)?;
 
         // A proposal's window opened the ledger it was created on; the
         // effective quorum decays linearly from the initial threshold toward
@@ -1040,3 +1073,9 @@ pub struct DowngradeStrategy {
     pub fallback_protocol_version: u32,
     pub emergency_mode_enabled: bool,
 }
+
+// Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
+// feature is enabled (the budget CI job), so the normal test/clippy runs stay
+// free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;

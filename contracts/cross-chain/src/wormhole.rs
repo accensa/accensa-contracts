@@ -63,10 +63,15 @@ pub struct VaaBody {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedVaa {
+    /// VAA format version from the raw header's first byte; `parse_vaa` rejects any value other than `1`.
     pub version: u32,
+    /// Guardian-set index (big-endian header bytes 1-4) written by `parse_vaa`; `verify_vaa` requires it to equal the active `GuardianSet::index`.
     pub guardian_set_index: u32,
+    /// Header signatures in wire order as written by `parse_vaa`; `verify_vaa` requires at least the guardian set's quorum.
     pub signatures: Vec<GuardianSignature>,
+    /// Body header and payload decoded from the raw VAA by `parse_vaa`.
     pub body: VaaBody,
+    /// Raw body bytes (51-byte body header plus payload) sliced by `parse_vaa`; `verify_vaa` hashes them for signature checks.
     pub body_bytes: Bytes,
 }
 
@@ -207,19 +212,24 @@ pub fn verify_vaa(env: &Env, vaa: &ParsedVaa, guardian_set: &GuardianSet) -> Res
     }
 
     let digest = hash_vaa_body(env, &vaa.body_bytes);
-    let total_guardians = guardian_set.keys.len();
 
     let mut last_guardian_idx: i64 = -1;
 
-    for i in 0..vaa.signatures.len() {
-        let sig = vaa.signatures.get(i).unwrap();
+    for sig in vaa.signatures.iter() {
         let idx = sig.guardian_index as i64;
 
         // Signatures must be strictly ascending by guardian_index (prevents duplicates)
-        if idx <= last_guardian_idx || (idx as u32) >= total_guardians {
+        if idx <= last_guardian_idx {
             return Err(Error::InvalidSignature);
         }
         last_guardian_idx = idx;
+
+        // A guardian index past the end of the set names no guardian. Resolving
+        // it here, before any signature work, keeps that case a typed error.
+        let expected_addr = guardian_set
+            .keys
+            .get(sig.guardian_index)
+            .ok_or(Error::InvalidSignature)?;
 
         let rec_id = if sig.recovery_id >= 27 {
             sig.recovery_id - 27
@@ -236,8 +246,9 @@ pub fn verify_vaa(env: &Env, vaa: &ParsedVaa, guardian_set: &GuardianSet) -> Res
             .secp256k1_recover(&digest, &sig.signature, rec_id);
 
         let recovered_addr = pubkey_to_address(env, &recovered_pubkey);
-        let expected_addr = guardian_set.keys.get(sig.guardian_index).unwrap();
 
+        // Public-data comparison: both addresses are drawn from the public
+        // VAA, so standard equality cannot leak a secret-derived prefix.
         if recovered_addr != expected_addr {
             return Err(Error::InvalidSignature);
         }

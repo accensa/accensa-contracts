@@ -49,15 +49,21 @@ pub const VETO_THRESHOLD_BPS: u32 = 6_667;
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OptimisticProposal {
+    /// Address that submitted the proposal.
     pub proposer: Address,
+    /// Contract to call when the proposal is executed.
     pub target: Address,
+    /// Function to invoke on the target contract.
     pub function: Symbol,
+    /// Arguments encoded for the contract call.
     pub args: Vec<Val>,
     /// Last ledger of the challenge window: vetoes close strictly after this.
     pub challenge_deadline_ledger: u32,
     /// Cumulative quadratic weight vetoing the proposal.
     pub veto_weight: u64,
+    /// Whether the proposal's call has been executed.
     pub executed: bool,
+    /// Whether the proposal has been vetoed.
     pub vetoed: bool,
 }
 
@@ -66,10 +72,21 @@ pub struct OptimisticProposal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OptimisticQueuedEvent {
     #[topic]
+    /// Id assigned by `submit`: the incremented `DataKey::OptimisticCount`,
+    /// starting at `1`; published as the event topic and used by `veto` and
+    /// `execute` to look the proposal up.
     pub proposal_id: u64,
+    /// Address whose authorization `submit` required; copied unchanged into
+    /// this event and stored as the proposal's `proposer`.
     pub proposer: Address,
+    /// Contract queued by `submit`; `execute` invokes `function` on it.
     pub target: Address,
+    /// Function symbol queued by `submit`; `execute` passes it, with the
+    /// stored args, to `invoke_contract` on `target`.
     pub function: Symbol,
+    /// Last ledger of the challenge window: `submit` sets it to the current
+    /// ledger sequence plus `OPTIMISTIC_CHALLENGE_WINDOW`, and `veto` rejects
+    /// votes strictly after it.
     pub challenge_deadline_ledger: u32,
 }
 
@@ -102,6 +119,14 @@ pub struct OptimisticExecutedEvent {
     pub function: Symbol,
 }
 
+/// Queue a new optimistic proposal for `target.function(args)` and return its
+/// freshly allocated id.
+///
+/// Pre-conditions: `proposer`'s authorization, and non-zero quadratic weight —
+/// `Error::NotAMember` when `quadratic_weight(env, proposer)` is `0`. On
+/// success the proposal opens an `OPTIMISTIC_CHALLENGE_WINDOW`-ledger challenge
+/// window, is persisted with `veto_weight` `0` and neither executed nor vetoed,
+/// and emits [`OptimisticQueuedEvent`].
 pub(crate) fn submit(
     env: &Env,
     proposer: &Address,
@@ -152,6 +177,18 @@ pub(crate) fn submit(
     Ok(id)
 }
 
+/// Cast `voter`'s quadratic weight against optimistic proposal `proposal_id`,
+/// flagging it `vetoed` once cumulative weight reaches `VETO_THRESHOLD_BPS` of
+/// total weight.
+///
+/// Pre-condition: `voter`'s authorization. Error arms, in the order the body
+/// checks them: `Error::NotAMember` when `voter`'s weight is `0`;
+/// `Error::OptimisticNotFound` when no such proposal is stored;
+/// `Error::AlreadyExecuted` if the proposal already ran; `Error::OptimisticVetoed`
+/// if it was already vetoed; `Error::ChallengeWindowClosed` strictly after its
+/// `challenge_deadline_ledger`; and `Error::AlreadyVetoed` if `voter` already
+/// vetoed this proposal. Each accepted veto emits `OptimisticVetoCastEvent`, and
+/// the veto that crosses the threshold additionally emits `OptimisticVetoedEvent`.
 pub(crate) fn veto(env: &Env, voter: &Address, proposal_id: u64) -> Result<(), Error> {
     voter.require_auth();
     let weight = quadratic_weight(env, voter);
@@ -214,6 +251,15 @@ pub(crate) fn veto(env: &Env, voter: &Address, proposal_id: u64) -> Result<(), E
     Ok(())
 }
 
+/// Run the queued optimistic proposal `proposal_id` immediately, invoking its
+/// stored `target`/`function`/`args` and emitting `OptimisticExecutedEvent`.
+///
+/// Any address may call this; no authorization is required. Error arms:
+/// `Error::OptimisticNotFound` when no such proposal is stored,
+/// `Error::AlreadyExecuted` if it already ran, and `Error::OptimisticVetoed` if
+/// a supermajority veto landed. `executed` is persisted before the external
+/// call, so a reentrant execute hits the `AlreadyExecuted` arm rather than
+/// re-running the target.
 pub(crate) fn execute(env: &Env, proposal_id: u64) -> Result<(), Error> {
     let key = DataKey::OptimisticProposal(proposal_id);
     let mut proposal: OptimisticProposal = env
@@ -245,6 +291,12 @@ pub(crate) fn execute(env: &Env, proposal_id: u64) -> Result<(), Error> {
     Ok(())
 }
 
+/// Read-only lookup of the optimistic proposal stored under `proposal_id`.
+///
+/// Returns the [`OptimisticProposal`] record (proposer, target, function, args,
+/// challenge deadline, running veto tally, and executed/vetoed flags); the only
+/// error arm is `Error::OptimisticNotFound` when no proposal with that id is in
+/// persistent storage.
 pub(crate) fn get(env: &Env, proposal_id: u64) -> Result<OptimisticProposal, Error> {
     env.storage()
         .persistent()
