@@ -18,6 +18,11 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   contract behavior change.
 - **Internal tests (#655, #657):** Pinned the treasury vesting event shapes and the reputation SBT authority gate on `issue`, `revoke` and `slash`.
 - **Documentation (#756, #757, #761, #762):** Documented granular event payload fields and refund-vault APIs.
+- **`refund-policy-vdf` (issue #640): fallback dispute event-shape assertions.**
+  Added test-only assertions in `contracts/refund-policy-vdf/src/test.rs` for the
+  exact topic tuples and payloads of `FallbackDisputeRequestedEvent` and
+  `FallbackDisputeSettledEvent`, including refund-branch distinction and
+  exactly-once settlement behavior. Production behavior is unchanged.
 
 - fix(refund-vault): route `resolve_ceiling`'s cumulative sum through the checked
   `accensa_common::math::add_amounts` helper, so an `i128` overflow in the
