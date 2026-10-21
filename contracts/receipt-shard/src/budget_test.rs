@@ -69,22 +69,24 @@ use soroban_sdk::{testutils::Address as _, vec, Address, Bytes, BytesN, Env, Vec
 const BATCH_ID: u64 = 1;
 
 /// The `[start_batch_id, end_batch_id)` bounds the shard is constructed with.
-/// A real router assigns a `SHARD_CAPACITY`-wide slice (`ReceiptAnchor::SHARD_CAPACITY`
-/// is 200, and `shard_index * SHARD_CAPACITY + 1` starts it); this suite uses the
-/// wider `[1, 1001)` range that `contracts/receipt-shard/src/test.rs` constructs
-/// with, so every batch id the gates below anchor falls inside the accepted
-/// window. The bounds only gate whether an id is accepted — the verification
-/// fold never reads them — so the measured cost is the same either way.
+/// A real router assigns a slice `SHARD_CAPACITY` wide (the router's private
+/// `SHARD_CAPACITY` is 200, `contracts/receipt-anchor/src/lib.rs:351`, and
+/// `shard_index * SHARD_CAPACITY + 1` starts it); this suite uses the wider
+/// `[1, 1001)` range that `contracts/receipt-shard/src/test.rs` constructs with,
+/// so every batch id the gates below anchor falls inside the accepted window.
+/// The bounds only gate whether an id is accepted — the verification fold never
+/// reads them — so the measured cost is the same either way.
 const START_BATCH_ID: u64 = 1;
 const END_BATCH_ID: u64 = 1_001;
 
-/// `ReceiptAnchor::MAX_BATCH_SIZE` (1000, `contracts/receipt-anchor/src/lib.rs:308`):
+/// The router's `MAX_BATCH_SIZE` (1000, `contracts/receipt-anchor/src/lib.rs:308`):
 /// the largest leaf count a shard can ever be asked to record, because the router
 /// rejects a bigger batch before routing it. A `MAX_PROOF_LEN` tree is 1024 leaves,
-/// so the gates above and the measurement below clamp the anchored count to this
+/// so `anchor_tree` and the measurement below clamp the anchored count to this
 /// value rather than anchoring an unreachable 1024-leaf batch. `anchor_batch`
 /// stores `count` and `verify_receipt` never reads it, so the clamped anchor costs
-/// the same as an unclamped one.
+/// the same as an unclamped one — `budget_verify_receipt_max_proof_len` measures
+/// 1_904_505 either way.
 const MAX_BATCH_SIZE: u32 = 1000;
 
 /// Batches anchored before the measured `anchor_batch` call, so the gate covers
