@@ -8,6 +8,17 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **Internal tests (#628, #631, #634, #637): pin the dust-sweep, refund-vault
+  policy/oracle-config and upto-authorization event shapes.** The dust sweep
+  event (including the zero-amount reclaim branch and the three silent
+  rejection paths), the `PolicyProposed` / `PolicyExecuted` / `OraclePolicySet`
+  / `OraclePolicyCleared` family, and `AuthorizeEvent` / `SettleEvent` are now
+  compared as full XDR payloads against the contract's own event structs, with
+  the set/clear pair reconciled against the policy getter and the settled
+  amount against the stored record. The `common` telemetry module docs now
+  describe `TelemetryProvider::get_telemetry` as a reserved interface instead
+  of claiming a deployed implementor. Test-only and doc-only — no event shape,
+  storage layout or error variant changed.
 - fix(refund-policy-vdf): guard `calculate_slashing_penalty`'s product with the
   checked `accensa_common::math` helpers. Decomposing `amount = whole * 100 +
   rest` keeps both products in range under the `penalty <= 100` precondition,
