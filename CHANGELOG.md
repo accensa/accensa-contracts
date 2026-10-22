@@ -52,6 +52,11 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   `consumed`) now carries a `///` stating the unit or domain of the value and
   the code paths that write and read it. Doc comments only — no field, type,
   order or derive change, and no behavior change.
+- **`refund-policy-time` (issue #782): rustdoc for the 5 public fields of
+  `OracleResolutionApplied`.** Each of `payment_ref`, `oracle`, `status`,
+  `reported_at` and `proof` now carries a `///` stating where `resolve` copies
+  the value from and what the value means. Doc comments only: no field, type,
+  order, attribute or behavior change.
 - **`state-channel` (issue #728): compute the HTLC reservation total with
   checked arithmetic.** `htlc::add` now combines `already_reserved` and the
   new hop's `amount` through `accensa_common::math::add_amounts`, so an
