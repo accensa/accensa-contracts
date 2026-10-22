@@ -225,9 +225,9 @@ pub struct AnchorEventPayload {
     pub shard_id: u64,
     /// Sequential batch identifier assigned within `shard_id`, starting at 1.
     pub batch_id: u64,
-    /// 32-byte Merkle root supplied to `anchor_batch` for this batch.
+    /// 32-byte Merkle root supplied to `anchor_batch` or `anchor_batch_zk`.
     pub root: BytesN<32>,
-    /// Number of receipts in the batch, supplied to `anchor_batch`.
+    /// Number of receipts in the batch, supplied to `anchor_batch` or `anchor_batch_zk`.
     pub count: u32,
     /// Unix timestamp in seconds from the ledger when the anchor event is emitted.
     pub timestamp: u64,

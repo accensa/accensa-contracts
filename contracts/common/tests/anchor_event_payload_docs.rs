@@ -36,4 +36,21 @@ fn anchor_event_payload_fields_have_documentation() {
             "{field} must have a preceding doc comment"
         );
     }
+
+    for field in ["root", "count"] {
+        let declaration = format!("pub {field}:");
+        let (before_field, _) = payload
+            .split_once(&declaration)
+            .unwrap_or_else(|| panic!("AnchorEventPayload must contain {field}"));
+        let doc_line = before_field
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_else(|| panic!("{field} must have a preceding doc comment"));
+
+        assert!(
+            doc_line.contains("anchor_batch") && doc_line.contains("anchor_batch_zk"),
+            "{field} documentation must describe both anchoring entry points"
+        );
+    }
 }
