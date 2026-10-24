@@ -257,3 +257,23 @@
 
 - [x] Add `///` rustdoc to `MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open` and `get` (#751)
   - `contracts/state-channel/src/multi_asset.rs` — doc comments only; role, pre-conditions and each `Error` arm documented, signatures and bodies unchanged
+
+## Issue #711: Cover state-channel `receiver_key`
+
+- [x] Test `close::receiver_key`, `watchtower::set_bounty` and `watchtower::reward_bps` (#711)
+  - `contracts/state-channel/src/close_test.rs` — tests only; the units they call and every other file are unchanged
+
+## Issue #710: Cover refund-vault `get_coupon`, `set_settlement_contract`
+
+- [x] Test `get_coupon`, `set_settlement_contract` and `get_claim_cooldown` (#710)
+  - `contracts/refund-vault/tests/multisig_admin_vault.rs` — tests only; contract sources unchanged
+
+## Issue #738: Make fix_lib.sh fail fast
+
+- [x] Carry the fail-fast rule onto the shell tooling that still exists (#738)
+  - `fix_lib.sh` is no longer in the tree: #843 deleted it from the repository root as a stray automation scratch file (issue #557), which is the removal of the stale command this issue allowed for. `benchmark/run.sh` was the last tracked script without `set -euo pipefail` and now has it.
+
+## Issue #737: Give fix_common.sh set -euo pipefail
+
+- [x] Give the surviving benchmark entry point `set -euo pipefail` (#737)
+  - `fix_common.sh` was deleted by the same #843 cleanup; `benchmark/run.sh` now aborts at the first measurement that fails instead of reporting a green run over a broken suite

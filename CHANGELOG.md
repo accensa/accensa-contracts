@@ -8,6 +8,35 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+- **`state-channel` (issue #711): cover `close::receiver_key`,
+  `watchtower::set_bounty` and `watchtower::reward_bps`.** Eight tests appended
+  to `contracts/state-channel/src/close_test.rs` call the three `pub(crate)`
+  units directly inside `env.as_contract`, so a regression in the unit fails even
+  where a public entry point still reads correctly: per-channel scoping of the
+  receiver key and its post-`mutual_close` deletion, the 20% bounty cap and its
+  `InvalidRatio` arm, `ChannelNotFound` and `ChannelAlreadyClosed` on the bounty
+  setter, and that repricing a bounty keeps the already-recorded watchtower.
+  Test-only — no contract behavior change.
+- **`refund-vault` (issue #710): cover `get_coupon`, `set_settlement_contract`
+  and `get_claim_cooldown`.** Eight tests appended to
+  `contracts/refund-vault/tests/multisig_admin_vault.rs` drive the three entry
+  points through the file's real multisig `__check_auth`, with hand-built
+  authorization entries that name each call's exact arguments and spend a fresh
+  nonce per call: the settlement key is written and then overwritten by a full
+  quorum, stays untouched below the
+  threshold, and reports `NotInitialized` without an `Admin`; the cooldown getter
+  tracks `set_claim_cooldown` including the disabling `0`; `get_coupon` returns
+  the exact `CouponRecord` per id and `None` for ids never minted, including
+  after a rejected re-mint, and `deposit`'s `CouponNotFound` arm is reached
+  through that `None`. Test-only — no contract behavior change.
+- **`benchmark/run.sh` (issues #738, #737): make it fail fast.** The file carried
+  one line, `// benchmark suite`, and no commands, so it aborted on line 1. Those
+  two issues asked for `set -euo pipefail` in `fix_lib.sh` and `fix_common.sh`,
+  both of which #843 deleted from the repository root as stray automation scratch
+  files (issue #557) — the removal of a stale command they explicitly allowed
+  for. `benchmark/run.sh` was the last tracked shell script without the line; it
+  now runs the three measurements `CONTRIBUTING.md` and `docs/BENCHMARKS.md`
+  prescribe and stops at the first one that fails.
 - fix(refund-policy-vdf): guard `calculate_slashing_penalty`'s product with the
   checked `accensa_common::math` helpers. Decomposing `amount = whole * 100 +
   rest` keeps both products in range under the `penalty <= 100` precondition,
