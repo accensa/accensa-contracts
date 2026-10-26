@@ -934,3 +934,166 @@ fn test_authorize_signed_rejected_when_cap_differs() {
         .is_err());
     assert!(client.get_authorization(&p).is_none());
 }
+
+// ── Exact event XDR shapes (issue #634) ────────────────────────────────────
+//
+// `src/lib.rs` emits `AuthorizeEvent` (`authorize_with_slippage`) and
+// `SettleEvent` (`settle`); `SettleEvent.actual` is the number a merchant
+// reconciles against. The cases below pin both events' full XDR payloads —
+// topics and data — the way `state-channel/src/hashlock_test.rs` does, one per
+// authorization outcome, plus the negative cases: a rejected or expired
+// authorization emits nothing, so the event trail cannot over-report usage.
+
+/// Exact-XDR assertions for `AuthorizeEvent` and `SettleEvent` (issue #634).
+mod event_shapes {
+    use super::*;
+    use soroban_sdk::{events::Event as _, xdr::ContractEvent};
+
+    /// Assert the last invocation published exactly one event on `contract`,
+    /// and that it serialises to `expected` (the full XDR form: topics and
+    /// data), compared the way `hashlock_test.rs` compares them.
+    fn assert_only_event(env: &Env, contract: &Address, expected: ContractEvent) {
+        let events = env.events().all().filter_by_contract(contract);
+        assert_eq!(events.events().len(), 1, "expected exactly one event");
+        assert_eq!(&events.events()[0], &expected);
+    }
+
+    /// Assert the last invocation published no event at all on `contract`.
+    fn assert_no_event(env: &Env, contract: &Address) {
+        let events = env.events().all().filter_by_contract(contract);
+        assert_eq!(events.events().len(), 0, "expected no event");
+    }
+
+    /// Full settle: `authorize` publishes `AuthorizeEvent`, then `settle`
+    /// publishes `SettleEvent` whose `actual` equals the stored record's cap
+    /// — the getters afterwards agree with the trail exactly.
+    #[test]
+    fn full_settle_emits_authorize_then_settle_events() {
+        let (env, client, _admin, buyer, _seller, _token) = setup();
+        let contract = client.address.clone();
+        let p = pid(&env, 1);
+        let recipient = Address::generate(&env);
+
+        client.authorize(&p, &buyer, &recipient, &1000, &1000);
+
+        assert_only_event(
+            &env,
+            &contract,
+            AuthorizeEvent {
+                payment_id: p.clone(),
+                from: buyer.clone(),
+                to: recipient.clone(),
+                cap: 1000,
+                expiry: 1000,
+                max_slippage_bps: 0,
+            }
+            .to_xdr(&env, &contract),
+        );
+
+        env.ledger().with_mut(|li| li.sequence_number = 50);
+        client.settle(&p, &1000);
+
+        // `events().all()` covers the last invocation only: the settle itself.
+        assert_only_event(
+            &env,
+            &contract,
+            SettleEvent {
+                payment_id: p.clone(),
+                actual: 1000,
+                from: buyer.clone(),
+            }
+            .to_xdr(&env, &contract),
+        );
+
+        // The event's amount agrees with the record the getters return
+        // afterwards: consumed, cap untouched, no settleable headroom left.
+        let record = client.get_authorization(&p).unwrap();
+        assert!(record.consumed);
+        assert_eq!(record.cap, 1000);
+        assert_eq!(record.max_settleable().unwrap() - 1000, 0);
+    }
+
+    /// Partial settle: the event reports the amount actually consumed, and
+    /// the record read back through the getter accounts for the rest.
+    #[test]
+    fn partial_settle_event_agrees_with_the_stored_record() {
+        let (env, client, _admin, buyer, _seller, token) = setup();
+        let contract = client.address.clone();
+        let p = pid(&env, 1);
+        let recipient = Address::generate(&env);
+
+        client.authorize(&p, &buyer, &recipient, &1000, &1000);
+        assert_only_event(
+            &env,
+            &contract,
+            AuthorizeEvent {
+                payment_id: p.clone(),
+                from: buyer.clone(),
+                to: recipient.clone(),
+                cap: 1000,
+                expiry: 1000,
+                max_slippage_bps: 0,
+            }
+            .to_xdr(&env, &contract),
+        );
+
+        env.ledger().with_mut(|li| li.sequence_number = 50);
+        client.settle(&p, &400);
+
+        assert_only_event(
+            &env,
+            &contract,
+            SettleEvent {
+                payment_id: p.clone(),
+                actual: 400,
+                from: buyer.clone(),
+            }
+            .to_xdr(&env, &contract),
+        );
+
+        // Stored remaining headroom: settleable minus what the event reports
+        // as consumed — and the recipient's balance moved by exactly the
+        // event's amount, so a merchant can reconcile against either.
+        let record = client.get_authorization(&p).unwrap();
+        assert!(record.consumed);
+        assert_eq!(record.max_settleable().unwrap() - 400, 600);
+        assert_eq!(TokenClient::new(&env, &token).balance(&recipient), 400);
+    }
+
+    /// Expiry without settle: the authorization lapses unspent and the trail
+    /// stays silent — no `SettleEvent` may report usage that never happened.
+    #[test]
+    fn expired_authorization_settles_nothing_and_emits_no_settle_event() {
+        let (env, client, _admin, buyer, _seller, _token) = setup();
+        let contract = client.address.clone();
+        let p = pid(&env, 1);
+        let recipient = Address::generate(&env);
+
+        client.authorize(&p, &buyer, &recipient, &1000, &100);
+        env.ledger().with_mut(|li| li.sequence_number = 150);
+
+        assert_eq!(client.try_settle(&p, &500), Err(Ok(Error::Expired)));
+
+        // The failed settle was the last invocation and published nothing.
+        assert_no_event(&env, &contract);
+        let record = client.get_authorization(&p).unwrap();
+        assert!(!record.consumed, "an expired authorization is unspent");
+    }
+
+    /// A rejected authorization emits no `AuthorizeEvent`, so the trail
+    /// cannot report a cap the contract never recorded.
+    #[test]
+    fn rejected_authorization_emits_no_authorize_event() {
+        let (env, client, _admin, buyer, _seller, _token) = setup();
+        let contract = client.address.clone();
+        let recipient = Address::generate(&env);
+
+        assert_eq!(
+            client.try_authorize(&pid(&env, 1), &buyer, &recipient, &0, &1000),
+            Err(Ok(Error::InvalidAmount))
+        );
+
+        assert_no_event(&env, &contract);
+        assert!(client.get_authorization(&pid(&env, 1)).is_none());
+    }
+}

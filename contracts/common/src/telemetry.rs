@@ -1,10 +1,23 @@
 //! Standardized read-only telemetry view for frontend dashboards.
 //!
-//! Every Accensa contract that escrows funds or collects fees exposes the same
-//! aggregated snapshot through [`TelemetryProvider::get_telemetry`], so a
-//! dashboard (or indexer) can render protocol health — active escrows, channel
-//! counts, fees collected — from one canonical response shape instead of
-//! per-contract queries.
+//! **Status: reserved interface — no deployed contract exposes it yet.** This
+//! module defines the shape and the rules for `get_telemetry`, but as of this
+//! writing no Accensa contract implements [`TelemetryProvider`]: the only
+//! implementor in the tree is the test-only probe below, and the module itself
+//! is compiled solely behind `#[cfg(any(feature = "telemetry", test))]`
+//! (`src/lib.rs`), so no shipped contract binary can reach it. A dashboard or
+//! indexer must feature-detect rather than assume a `get_telemetry` entry
+//! point exists on a deployed contract.
+//!
+//! The **intended implementors** are the contracts that escrow funds or
+//! collect fees — `state-channel` (whose channel-phase counters already exist
+//! as storage keys) and `refund-vault` (whose fee state does). Once one of
+//! them implements [`TelemetryProvider::get_telemetry`], a dashboard (or
+//! indexer) can render protocol health — active escrows, channel counts, fees
+//! collected — from one canonical response shape instead of per-contract
+//! queries. Any future implementor must follow the optimization contract
+//! below, which is why it is worth pinning now: the helpers and the
+//! `Telemetry` shape are the stable part of the reservation.
 //!
 //! # Optimization contract
 //!
@@ -83,11 +96,14 @@ pub fn read_amount(env: &Env, key: &impl IntoVal<Env, Val>) -> i128 {
     env.storage().instance().get(key).unwrap_or(0)
 }
 
-/// Read-only telemetry entry point implemented by every Accensa contract that
-/// escrows funds or collects fees.
+/// Reserved read-only telemetry entry point for the Accensa contracts that
+/// escrow funds or collect fees (`state-channel`, `refund-vault` — see the
+/// module docs: none of them implements it yet).
 ///
 /// The generated [`TelemetryClient`] lets dashboards and indexers pull the
-/// snapshot cross-contract with the same typed shape.
+/// snapshot cross-contract with the same typed shape once an implementor
+/// ships. Until then no document in this repository should claim that
+/// contracts expose this entry point.
 #[contractclient(name = "TelemetryClient")]
 pub trait TelemetryProvider {
     /// Return the aggregated telemetry snapshot.
