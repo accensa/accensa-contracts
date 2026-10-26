@@ -6,6 +6,9 @@
     <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
     <img src="https://img.shields.io/badge/soroban--sdk-27.0.4-orange.svg" alt="soroban--sdk 27" />
     <img src="https://img.shields.io/badge/testnet-deployed-success.svg" alt="Deployed on testnet" />
+    <a href="https://scorecard.dev/viewer/?uri=github.com/accensa/accensa-app">
+      <img src="https://api.scorecard.dev/projects/github.com/accensa/accensa-app/badge" alt="OpenSSF Scorecard" />
+    </a>
   </p>
   <p>
     <a href="DEPLOYMENTS.md"><strong>Live on Testnet</strong></a> ·
