@@ -289,7 +289,11 @@ pub(crate) fn resolve(
         return Err(Error::HtlcNotPending);
     }
     let digest: BytesN<32> = env.crypto().sha256(&preimage).into();
-    if digest != htlc.hash_lock {
+    // Constant-time check: the hash-lock preimage is secret-derived bytes.
+    if !accensa_common::constant_time::constant_time_eq(
+        &digest.to_array(),
+        &htlc.hash_lock.to_array(),
+    ) {
         return Err(Error::InvalidPreimage);
     }
 

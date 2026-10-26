@@ -58,6 +58,7 @@ mod liquidation_test;
 pub mod strategies;
 #[cfg(test)]
 mod strategies_test;
+pub mod sweep;
 #[cfg(test)]
 mod test;
 pub mod vesting;
@@ -208,10 +209,15 @@ pub enum Error {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduleCreatedEvent {
     #[topic]
+    /// Beneficiary whose allocation the admin registers via `add_schedule`.
     pub beneficiary: Address,
+    /// Total allocation in token smallest units, supplied by the admin via `add_schedule`.
     pub total: i128,
+    /// Unix start time in seconds, supplied by the admin via `add_schedule`.
     pub start: u64,
+    /// Delay in seconds before any amount unlocks, supplied by the admin via `add_schedule`.
     pub cliff: u64,
+    /// Linear release window in seconds, supplied by the admin via `add_schedule`.
     pub duration: u64,
 }
 

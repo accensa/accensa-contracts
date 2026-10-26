@@ -49,10 +49,38 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchRecord {
+    /// SHA-256 Merkle root over the batch's receipt leaves, as a raw 32-byte
+    /// digest (no application unit). Written by `anchor_batch` from the
+    /// router-supplied argument, and by `consolidation::insert_migrated_batch`
+    /// when a peer shard migrates the record; read by `verify_receipt`, which
+    /// compares a folded proof against it, and returned by `get_batch`.
     pub root: BytesN<32>,
+    /// Number of receipt leaves in the batch — a count, not a token amount.
+    /// Written by `anchor_batch` from the router-supplied argument, and by
+    /// `consolidation::insert_migrated_batch` on migration; read as a leaf
+    /// total by `prune_batches` and `pruning::prune_expired_receipts`
+    /// (removed-leaves accounting), by `diagnostics` counters, and returned
+    /// by `get_batch`.
     pub count: u32,
+    /// Lower bound of the receipt period this batch covers, as an opaque
+    /// caller-supplied `u64`: no shard code path interprets or validates it
+    /// against ledger time or sequence. Written verbatim by `anchor_batch`
+    /// from the router-supplied argument, and stored verbatim by
+    /// `consolidation::insert_migrated_batch`; read back only via `get_batch`.
     pub period_start: u64,
+    /// Upper bound of the receipt period this batch covers, same opaque
+    /// caller-supplied `u64` domain as `period_start` — the shard stores it
+    /// without interpreting it. Written verbatim by `anchor_batch` from the
+    /// router-supplied argument, and stored verbatim by
+    /// `consolidation::insert_migrated_batch`; read back only via `get_batch`.
     pub period_end: u64,
+    /// Soroban ledger sequence number (`env.ledger().sequence()`) at which
+    /// this record was anchored. Written by `anchor_batch` itself, not
+    /// supplied by the router, and carried over unchanged by
+    /// `consolidation::insert_migrated_batch`; read as an age bound by
+    /// `prune_batches` (`record.anchored_ledger < before_ledger`), by
+    /// `pruning::prune_expired_receipts` and `diagnostics::count_retained`
+    /// against `RETENTION_LEDGERS`, and returned by `get_batch`.
     pub anchored_ledger: u32,
 }
 
@@ -182,6 +210,8 @@ impl ReceiptShard {
         let batch = Self::get_batch(env, batch_id)?;
         let computed_hash = Self::fold_proof(leaf.to_array(), proof);
 
+        // Public-data comparison: both the folded proof and the stored Merkle
+        // root are public commitment data, so standard equality is intentional.
         Ok(computed_hash == batch.root.to_array())
     }
 
@@ -353,3 +383,9 @@ pub mod pruning;
 #[cfg(test)]
 mod pruning_test;
 mod test;
+
+// Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
+// feature is enabled (the budget CI job), so the normal test/clippy runs stay
+// free of the prebuilt-WASM requirement and the `budget_macros` dependency.
+#[cfg(all(test, feature = "budget-assert"))]
+mod budget_test;

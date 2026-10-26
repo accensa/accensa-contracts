@@ -49,15 +49,21 @@ pub const VETO_THRESHOLD_BPS: u32 = 6_667;
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OptimisticProposal {
+    /// Address that submitted the proposal.
     pub proposer: Address,
+    /// Contract to call when the proposal is executed.
     pub target: Address,
+    /// Function to invoke on the target contract.
     pub function: Symbol,
+    /// Arguments encoded for the contract call.
     pub args: Vec<Val>,
     /// Last ledger of the challenge window: vetoes close strictly after this.
     pub challenge_deadline_ledger: u32,
     /// Cumulative quadratic weight vetoing the proposal.
     pub veto_weight: u64,
+    /// Whether the proposal's call has been executed.
     pub executed: bool,
+    /// Whether the proposal has been vetoed.
     pub vetoed: bool,
 }
 
@@ -66,10 +72,21 @@ pub struct OptimisticProposal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OptimisticQueuedEvent {
     #[topic]
+    /// Id assigned by `submit`: the incremented `DataKey::OptimisticCount`,
+    /// starting at `1`; published as the event topic and used by `veto` and
+    /// `execute` to look the proposal up.
     pub proposal_id: u64,
+    /// Address whose authorization `submit` required; copied unchanged into
+    /// this event and stored as the proposal's `proposer`.
     pub proposer: Address,
+    /// Contract queued by `submit`; `execute` invokes `function` on it.
     pub target: Address,
+    /// Function symbol queued by `submit`; `execute` passes it, with the
+    /// stored args, to `invoke_contract` on `target`.
     pub function: Symbol,
+    /// Last ledger of the challenge window: `submit` sets it to the current
+    /// ledger sequence plus `OPTIMISTIC_CHALLENGE_WINDOW`, and `veto` rejects
+    /// votes strictly after it.
     pub challenge_deadline_ledger: u32,
 }
 

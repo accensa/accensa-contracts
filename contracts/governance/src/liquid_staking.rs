@@ -7,6 +7,7 @@ const LOCK_EPOCH_LEDGERS: u32 = 86400; // 1 day in ledgers (adjustable)
 // --- Error (defined manually to avoid conflict with governance Error) ---
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+/// Error codes returned by every fallible `liquid_staking` entry point.
 pub enum LiquidStakingError {
     /// The caller is not authorized.
     NotAuthorized = 1,
@@ -25,6 +26,7 @@ pub enum LiquidStakingError {
 // --- Event types (contractevent is fine, no name conflict) ---
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted by `mint`: `caller` locked `amount` underlying for `stacc_minted` stACC 1:1.
 pub struct Mint {
     #[topic]
     pub caller: Address,
@@ -34,6 +36,7 @@ pub struct Mint {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Event emitted by `burn`: `caller` burned `stacc_burned` for `underlying_redeemed` on `ledger`.
 pub struct Burn {
     #[topic]
     pub caller: Address,
@@ -45,6 +48,7 @@ pub struct Burn {
 // --- Data types (defined manually to avoid conflict with governance DataKey) ---
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Stored 1e6-precision exchange rate, written by `initialize` and `set_exchange_rate`.
 pub struct ExchangeRate {
     /// 1e6-precision stACC-per-underlying-token rate.
     pub rate: u64,
@@ -52,6 +56,7 @@ pub struct ExchangeRate {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Per-user state: stACC balance, underlying locked, and the ledger the lock epoch started on.
 pub struct UserData {
     /// stACC balance of this address.
     pub stacc_balance: u64,
@@ -78,6 +83,7 @@ pub enum LiquidStakingDataKey {
 }
 
 #[contract]
+/// Contract exposing `initialize`, `mint`, `burn`, the read-only getters and `set_exchange_rate`.
 pub struct LiquidStaking;
 
 /// Load the exchange rate written by [`LiquidStaking::initialize`].

@@ -233,7 +233,8 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use soroban_sdk::{testutils::Address as _, xdr::FromXdr, BytesN, Env};
+    use soroban_sdk::Event as _;
+    use soroban_sdk::{testutils::Address as _, testutils::Events as _, xdr::FromXdr, BytesN, Env};
 
     fn test_env() -> Env {
         let env = Env::default();
@@ -354,6 +355,137 @@ mod tests {
         assert_eq!(
             client.try_settle_fallback_dispute(&dispute_id, &false),
             Err(Ok(accensa_common::Error::DisputeClosed))
+        );
+    }
+
+    #[test]
+    fn fallback_dispute_requested_event_has_exact_topic_and_payload() {
+        let env = test_env();
+        let id = env.register(crate::VdfPolicy, ());
+        let client = crate::VdfPolicyClient::new(&env, &id);
+
+        let merchant = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let dispute_id = client.request_fallback_dispute(
+            &merchant,
+            &oracle,
+            &payment_ref(&env, 1),
+            &recipient,
+            &100,
+        );
+
+        let events = env.events().all().filter_by_contract(&client.address);
+        assert_eq!(events.events().len(), 1, "Expected exactly one event");
+
+        let expected = FallbackDisputeRequestedEvent {
+            dispute_id,
+            oracle: oracle.clone(),
+            payment_ref: payment_ref(&env, 1),
+            merchant: merchant.clone(),
+            recipient: recipient.clone(),
+            amount: 100,
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&env, &client.address));
+    }
+
+    #[test]
+    fn fallback_dispute_settled_event_distinguishes_refund_branches() {
+        let env = test_env();
+        let id = env.register(crate::VdfPolicy, ());
+        let client = crate::VdfPolicyClient::new(&env, &id);
+
+        let merchant = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let dispute_id = client.request_fallback_dispute(
+            &merchant,
+            &oracle,
+            &payment_ref(&env, 2),
+            &recipient,
+            &75,
+        );
+
+        client.settle_fallback_dispute(&dispute_id, &true);
+
+        let events = env.events().all().filter_by_contract(&client.address);
+        assert_eq!(events.events().len(), 1, "Expected exactly one event");
+
+        let expected_true = FallbackDisputeSettledEvent {
+            dispute_id,
+            refund: true,
+            oracle: oracle.clone(),
+            payment_ref: payment_ref(&env, 2),
+        };
+        assert_eq!(
+            &events.events()[0],
+            &expected_true.to_xdr(&env, &client.address)
+        );
+
+        let dispute_id2 = client.request_fallback_dispute(
+            &merchant,
+            &oracle,
+            &payment_ref(&env, 3),
+            &recipient,
+            &30,
+        );
+        client.settle_fallback_dispute(&dispute_id2, &false);
+
+        let events2 = env.events().all().filter_by_contract(&client.address);
+        assert_eq!(events2.events().len(), 1, "Expected exactly one event");
+
+        let expected_false = FallbackDisputeSettledEvent {
+            dispute_id: dispute_id2,
+            refund: false,
+            oracle,
+            payment_ref: payment_ref(&env, 3),
+        };
+        assert_eq!(
+            &events2.events()[0],
+            &expected_false.to_xdr(&env, &client.address)
+        );
+    }
+
+    #[test]
+    fn fallback_dispute_settle_exactly_once_no_second_event() {
+        let env = test_env();
+        let id = env.register(crate::VdfPolicy, ());
+        let client = crate::VdfPolicyClient::new(&env, &id);
+
+        let merchant = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let dispute_id = client.request_fallback_dispute(
+            &merchant,
+            &oracle,
+            &payment_ref(&env, 4),
+            &recipient,
+            &50,
+        );
+
+        client.settle_fallback_dispute(&dispute_id, &true);
+
+        let events_before = env.events().all().filter_by_contract(&client.address);
+        assert_eq!(
+            events_before.events().len(),
+            1,
+            "Expected one event after first settlement"
+        );
+
+        let result = client.try_settle_fallback_dispute(&dispute_id, &false);
+        assert_eq!(
+            result,
+            Err(Ok(accensa_common::Error::DisputeClosed)),
+            "Second settlement should fail with DisputeClosed"
+        );
+
+        let events_after = env.events().all().filter_by_contract(&client.address);
+        assert!(
+            events_after.events().is_empty(),
+            "Second settlement must not publish an event"
         );
     }
 }

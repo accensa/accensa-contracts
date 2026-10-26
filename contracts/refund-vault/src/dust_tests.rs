@@ -225,3 +225,137 @@ fn sweep_requires_merchant_auth() {
     s.env.set_auths(&[]);
     s.client.sweep_dust(&pref);
 }
+
+// ── Dust event XDR shapes (issue #637) ─────────────────────────────────────
+//
+// `src/dust.rs` publishes `DustSweptEvent` on every successful `sweep_dust`;
+// the existing cases above prove the state transitions by balances and
+// `Option` reads, but never touched `env.events()`, leaving the trail an
+// off-chain reconciler follows unasserted. These cases pin the exact
+// `("dust_swept_event", payment_ref)` topic tuple and the amount/treasury
+// data — including the reclaim branch, where `amount == 0` and the event is
+// the only evidence anything happened — the way
+// `state-channel/src/hashlock_test.rs` compares event XDR.
+
+/// Exact-XDR assertions for `DustSweptEvent` (issue #637).
+mod dust_event_shapes {
+    use super::*;
+    use crate::dust::DustSweptEvent;
+    use soroban_sdk::{events::Event as _, testutils::Events, xdr::ContractEvent};
+
+    /// Assert the last invocation published exactly one event on `vault`,
+    /// and that it serialises to `expected` (full XDR: topics and data).
+    fn assert_only_event(env: &Env, vault: &Address, expected: ContractEvent) {
+        let events = env.events().all().filter_by_contract(vault);
+        assert_eq!(events.events().len(), 1, "expected exactly one event");
+        assert_eq!(&events.events()[0], &expected);
+    }
+
+    /// Assert the last invocation published no event at all on `vault`.
+    fn assert_no_event(env: &Env, vault: &Address) {
+        let events = env.events().all().filter_by_contract(vault);
+        assert_eq!(events.events().len(), 0, "expected no event");
+    }
+
+    /// The transfer branch: a partial-dust sweep moves the residual to the
+    /// treasury and reports exactly that amount and that treasury.
+    #[test]
+    fn partial_sweep_event_carries_the_amount_and_treasury() {
+        let s = setup();
+        let treasury = Address::generate(&s.env);
+        s.client.set_dust_config(&100, &treasury);
+
+        let pref = payment_ref(&s.env, 1);
+        let paid_at = s.env.ledger().sequence();
+        refund(&s, &pref, PAYMENT - 42);
+
+        advance_past_delay(&s.env, paid_at);
+        assert_eq!(s.client.sweep_dust(&pref), 42);
+
+        // `events().all()` covers the last invocation only: the sweep itself.
+        assert_only_event(
+            &s.env,
+            &s.vault,
+            DustSweptEvent {
+                payment_ref: pref.clone(),
+                amount: 42,
+                treasury: treasury.clone(),
+            }
+            .to_xdr(&s.env, &s.vault),
+        );
+        // The event's amount is what actually moved.
+        assert_eq!(s.token.balance(&treasury), 42);
+    }
+
+    /// The reclaim branch: a fully refunded record transfers nothing, but
+    /// still emits the event with `amount == 0` — a silent no-event sweep
+    /// would leave the deletion unevidenced, and must fail this test.
+    #[test]
+    fn reclaimed_record_emits_the_event_with_a_zero_amount() {
+        let s = setup();
+        let treasury = Address::generate(&s.env);
+        s.client.set_dust_config(&100, &treasury);
+
+        let pref = payment_ref(&s.env, 2);
+        let paid_at = s.env.ledger().sequence();
+        refund(&s, &pref, PAYMENT);
+
+        advance_past_delay(&s.env, paid_at);
+        assert_eq!(s.client.sweep_dust(&pref), 0);
+
+        assert_only_event(
+            &s.env,
+            &s.vault,
+            DustSweptEvent {
+                payment_ref: pref.clone(),
+                amount: 0,
+                treasury: treasury.clone(),
+            }
+            .to_xdr(&s.env, &s.vault),
+        );
+        // Nothing was transferred, but the record was still reclaimed.
+        assert_eq!(s.token.balance(&treasury), 0);
+        assert_eq!(s.client.get_refund(&pref), None);
+    }
+
+    /// Every rejection path is silent: a non-dust residual, a sweep inside
+    /// the 90-day delay, and an unknown record each emit no dust event, so
+    /// the trail never reports a sweep that did not happen.
+    #[test]
+    fn rejected_sweeps_emit_no_dust_event() {
+        let s = setup();
+        let treasury = Address::generate(&s.env);
+        s.client.set_dust_config(&100, &treasury);
+
+        // Residual not strictly below the threshold.
+        let pref = payment_ref(&s.env, 3);
+        let paid_at = s.env.ledger().sequence();
+        refund(&s, &pref, PAYMENT - DEFAULT_DUST_THRESHOLD);
+        advance_past_delay(&s.env, paid_at);
+        assert_eq!(
+            s.client.try_sweep_dust(&pref),
+            Err(Ok(Error::InvalidAmount))
+        );
+        assert_no_event(&s.env, &s.vault);
+
+        // Sweep attempted before the delay has elapsed.
+        let pref = payment_ref(&s.env, 4);
+        let paid_at = s.env.ledger().sequence();
+        refund(&s, &pref, PAYMENT - 1);
+        s.env
+            .ledger()
+            .set_sequence_number(paid_at + WINDOW + DUST_SWEEP_DELAY_LEDGERS);
+        assert_eq!(
+            s.client.try_sweep_dust(&pref),
+            Err(Ok(Error::TimelockNotExpired))
+        );
+        assert_no_event(&s.env, &s.vault);
+
+        // No record under that reference at all.
+        assert_eq!(
+            s.client.try_sweep_dust(&payment_ref(&s.env, 9)),
+            Err(Ok(Error::RefundNotFound))
+        );
+        assert_no_event(&s.env, &s.vault);
+    }
+}

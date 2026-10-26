@@ -22,27 +22,43 @@ pub const PROTOCOL: Symbol = symbol_short!("accensa");
 pub mod modules {
     use soroban_sdk::{symbol_short, Symbol};
 
+    /// Module topic for the refund vault: the `vault` short symbol, second
+    /// element of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn vault() -> Symbol {
         symbol_short!("vault")
     }
+    /// Module topic for state channels: the `channel` short symbol, second
+    /// element of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn channel() -> Symbol {
         symbol_short!("channel")
     }
+    /// Module topic for receipts: the `receipt` short symbol, second
+    /// element of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn receipt() -> Symbol {
         symbol_short!("receipt")
     }
+    /// Module topic for cross-chain bridging: the `bridge` short symbol, second
+    /// element of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn bridge() -> Symbol {
         symbol_short!("bridge")
     }
+    /// Module topic for governance: the `gov` short symbol, second
+    /// element of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn gov() -> Symbol {
         symbol_short!("gov")
     }
+    /// Module topic for the treasury: the `treasury` short symbol, second
+    /// element of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn treasury() -> Symbol {
         symbol_short!("treasury")
     }
+    /// Module topic for multisig accounts: the `multisig` short symbol, second
+    /// element of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn multisig() -> Symbol {
         symbol_short!("multisig")
     }
+    /// Module topic for authorization: the `auth` short symbol, second
+    /// element of the `[Protocol, Module, Action]` tuple. Infallible, takes no arguments.
     pub fn auth() -> Symbol {
         symbol_short!("auth")
     }
@@ -145,11 +161,17 @@ pub struct GranularEventPayload {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferEventPayload {
+    /// Address sending the transfer.
     pub sender: Address,
+    /// Address receiving the transfer.
     pub receiver: Address,
+    /// Address of the transferred asset.
     pub asset: Address,
+    /// Amount attributed to this transfer, in units of `asset`.
     pub amount: i128,
+    /// Fee attributed to this transfer, in the same units as `amount`.
     pub fee: i128,
+    /// Timestamp from the ledger when this event was emitted.
     pub timestamp: u64,
 }
 

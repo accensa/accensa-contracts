@@ -21,7 +21,7 @@ above apply with no exception.
 
 ## Release Process
 
-When preparing a release, follow these steps to ensure reproducible builds and provenance:
+When preparing a release, follow these steps. They guarantee provenance — every deployed WASM traces back to its exact source commit — but **not** byte-identical builds across machines unless the same compiler is used; step 3 states exactly what is and is not reproducible, and the toolchain involved:
 
 ### 1. Update Versions and Changelog
 Update the `version` field in both `Cargo.toml` files:
@@ -41,12 +41,19 @@ git tag -a v1.0.0 -m "Release v1.0.0"
 git push origin main --tags
 ```
 
-### 3. Build Reproducibly
+### 3. Build the WASM and Record the Toolchain
 Build the WebAssembly artifacts using the optimized release profile:
 ```bash
 cargo build --target wasm32v1-none --release
 ```
-Our `build.rs` scripts automatically embed the current `GIT_SHA` into the compiled WASM, ensuring that any deployed contract can be traced back to its exact source code commit.
+Our `build.rs` scripts embed the current `GIT_SHA` into the compiled WASM, so any deployed contract can be traced back to its exact source code commit. That source-to-commit provenance — commit → tag → artifact — is what this release process guarantees.
+
+Byte-identical WASM is **not** guaranteed by the repository as it stands: no Rust toolchain is pinned (there is no `rust-toolchain.toml` and no `.cargo/config.toml` in the tree), and CI installs `stellar-cli` with `cargo install --locked` rather than recording a compiler version (`.github/workflows/ci.yml`). Different `rustc` versions emit different WASM bytes for the same commit, so the same source built on two toolchains yields two hashes. The release toolchain is Rust `stable` with the `wasm32v1-none` target — the same channel CI builds with. To make a released artifact reproducible, record the exact compiler when cutting the release and build with it:
+```bash
+rustc --version   # record alongside the tag (tag message or DEPLOYMENTS.md)
+cargo --version
+```
+With the source tag and the recorded `rustc`/`cargo` versions as inputs, a reader can rebuild the released artifact from source; without them, only the commit provenance is reproducible.
 
 "Optimized" here means the cargo profile (`opt-level = "z"`, LTO, single codegen
 unit), not the deployable binary. `./deploy.sh` runs `stellar contract build`,

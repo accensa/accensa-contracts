@@ -24,8 +24,8 @@ use std::string::{String, ToString};
 use super::*;
 use budget_macros::budget_cpu_lt;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    vec, Address, Bytes, BytesN, Env, Vec,
+    testutils::{Address as _, Events as _, Ledger},
+    vec, Address, Bytes, BytesN, Env, IntoVal, Symbol, Vec,
 };
 
 /// Logical shard used by these budget tests (single-stream).
@@ -270,4 +270,130 @@ fn measure_verify_receipt_leaf_by_depth() {
         );
         assert!(mem * 10 < TX_MAX_MEMORY_BYTES, "depth {depth}: mem {mem}");
     }
+}
+
+// ── Canonical event schema and signature message (#697) ─────────────────────
+//
+// `ReceiptAction::topic`, `events::publish` and `signatures::canonical_message`
+// were not named by any test in this workspace. These tests drive each unit and
+// assert the exact symbol, event tuple or byte layout it produces, rather than
+// only that the call succeeded.
+
+/// `ReceiptAction::topic` maps each variant to the symbol an indexer
+/// subscribes to; both arms of the match are pinned.
+#[test]
+fn receipt_action_topic_maps_each_variant() {
+    let env = Env::default();
+    assert_eq!(
+        events::ReceiptAction::Anchor.topic(&env),
+        Symbol::new(&env, "anchor")
+    );
+    assert_eq!(
+        events::ReceiptAction::Prune.topic(&env),
+        Symbol::new(&env, "prune")
+    );
+}
+
+/// `events::publish` writes the canonical `(receipt, action, anchor_id)` topic
+/// tuple with the payload as the data map — the anchor arm, with a scalar
+/// payload.
+#[test]
+fn publish_writes_canonical_anchor_event() {
+    let env = Env::default();
+    let cid = env.register(ReceiptAnchor, ());
+
+    env.as_contract(&cid, || {
+        events::publish(&env, events::ReceiptAction::Anchor, 7, 5u32);
+    });
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&cid),
+        vec![
+            &env,
+            (
+                cid.clone(),
+                (
+                    Symbol::new(&env, "receipt"),
+                    Symbol::new(&env, "anchor"),
+                    7u64
+                )
+                    .into_val(&env),
+                5u32.into_val(&env)
+            )
+        ]
+    );
+}
+
+/// The prune arm of `events::publish`, with a `PrunePayload` struct: the data
+/// map is the payload's own encoding, not a wrapped envelope.
+#[test]
+fn publish_writes_canonical_prune_event() {
+    let env = Env::default();
+    let cid = env.register(ReceiptAnchor, ());
+
+    let payload = events::PrunePayload {
+        schema_version: events::SCHEMA_VERSION,
+        timestamp: 1_700_000_000,
+        shard_id: 3,
+        start_batch_id: 10,
+        end_batch_id: 12,
+    };
+    env.as_contract(&cid, || {
+        events::publish(&env, events::ReceiptAction::Prune, 9, payload.clone());
+    });
+
+    assert_eq!(
+        env.events().all().filter_by_contract(&cid),
+        vec![
+            &env,
+            (
+                cid.clone(),
+                (
+                    Symbol::new(&env, "receipt"),
+                    Symbol::new(&env, "prune"),
+                    9u64
+                )
+                    .into_val(&env),
+                payload.into_val(&env)
+            )
+        ]
+    );
+}
+
+/// `signatures::canonical_message` lays out the message exactly as documented:
+/// `domain_len(u32 BE) || domain || payload_len(u32 BE) || payload ||
+/// signer_count(u32 BE) || pubkey_1(32) || ... || mask(u32 BE)`. The expected
+/// bytes are written by hand so the assertion pins the layout rather than
+/// re-deriving it.
+#[test]
+fn canonical_message_pins_documented_layout() {
+    let env = Env::default();
+    let domain = Bytes::from_slice(&env, b"d");
+    let payload = Bytes::from_slice(&env, &[0x9A, 0x9B]);
+    let k1 = BytesN::from_array(&env, &[0x11; 32]);
+    let k2 = BytesN::from_array(&env, &[0x22; 32]);
+    let mut keys = vec![&env];
+    keys.push_back(k1.clone());
+    keys.push_back(k2.clone());
+
+    let mut want: std::vec::Vec<u8> = std::vec::Vec::new();
+    want.extend_from_slice(&1u32.to_be_bytes());
+    want.push(b'd');
+    want.extend_from_slice(&2u32.to_be_bytes());
+    want.extend_from_slice(&[0x9A, 0x9B]);
+    want.extend_from_slice(&2u32.to_be_bytes());
+    want.extend_from_slice(&[0x11; 32]);
+    want.extend_from_slice(&[0x22; 32]);
+    want.extend_from_slice(&2u32.to_be_bytes());
+
+    assert_eq!(
+        signatures::canonical_message(&env, &domain, &payload, &keys, 0b10),
+        Bytes::from_slice(&env, &want)
+    );
+
+    // The mask is part of the signed bytes: flipping a bit changes the message
+    // even though every other input is identical.
+    let same_prefix = signatures::canonical_message(&env, &domain, &payload, &keys, 0b01);
+    let original = signatures::canonical_message(&env, &domain, &payload, &keys, 0b10);
+    assert_ne!(same_prefix, original);
 }

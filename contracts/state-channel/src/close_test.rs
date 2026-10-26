@@ -4,6 +4,7 @@ extern crate std;
 
 use super::*;
 use crate::close::{close_payload, ChannelClosedCooperative, MutualCloseState};
+use crate::{close, watchtower};
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
@@ -57,15 +58,21 @@ fn pubkey(env: &Env, sk: &SigningKey) -> BytesN<32> {
 }
 
 impl Setup {
-    /// Open a channel and register the receiver's key.
-    fn open(&self) -> u64 {
-        let id = self.client.open_channel(
+    /// Open a channel without registering the receiver's key, so a test can
+    /// drive the window between `open_channel` and `register_receiver_key`.
+    fn open_unregistered(&self) -> u64 {
+        self.client.open_channel(
             &self.sender,
             &self.receiver,
             &pubkey(&self.env, &self.sender_sk),
             &DEPOSIT,
             &CHALLENGE,
-        );
+        )
+    }
+
+    /// Open a channel and register the receiver's key.
+    fn open(&self) -> u64 {
+        let id = self.open_unregistered();
         self.client
             .register_receiver_key(&id, &pubkey(&self.env, &self.receiver_sk));
         id
@@ -272,13 +279,7 @@ fn split_must_add_up_to_the_escrow() {
 #[test]
 fn mutual_close_requires_a_registered_receiver_key() {
     let s = setup();
-    let id = s.client.open_channel(
-        &s.sender,
-        &s.receiver,
-        &pubkey(&s.env, &s.sender_sk),
-        &DEPOSIT,
-        &CHALLENGE,
-    );
+    let id = s.open_unregistered();
     let state = s.final_state(id, 500, 500);
     assert_eq!(
         s.client.try_mutual_close(
@@ -320,14 +321,211 @@ fn finalized_channel_cannot_be_mutually_closed() {
 #[should_panic]
 fn only_the_receiver_can_register_its_key() {
     let s = setup();
-    let id = s.client.open_channel(
-        &s.sender,
-        &s.receiver,
-        &pubkey(&s.env, &s.sender_sk),
-        &DEPOSIT,
-        &CHALLENGE,
-    );
+    let id = s.open_unregistered();
     s.env.set_auths(&[]);
     s.client
         .register_receiver_key(&id, &pubkey(&s.env, &s.receiver_sk));
+}
+
+// ── `close::receiver_key`, `watchtower::set_bounty`, `watchtower::reward_bps`
+// (issue #711)
+//
+// The three units above are the storage reader and writers behind
+// `get_receiver_key`, `set_watchtower_bounty` and `get_watchtower_bounty`. They
+// are called by name here — the two pure readers through `env.as_contract`, and
+// `set_bounty`'s pre-authorization arms directly — so a regression in a unit
+// fails even when a test elsewhere still passes through the public entry point.
+// `set_bounty` past its authorization check, and the events it publishes, are
+// driven through `set_watchtower_bounty`: inside `env.as_contract` the host
+// rejects a nested auth frame, and events from the closure never reach
+// `env.events()`, so neither half could be observed from a direct call.
+
+#[test]
+fn receiver_key_is_none_until_registered_and_scoped_to_its_channel() {
+    let s = setup();
+    let id = s.open_unregistered();
+
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(close::receiver_key(&s.env, id), None);
+    });
+    assert_eq!(s.client.get_receiver_key(&id), None);
+
+    let pk = pubkey(&s.env, &s.receiver_sk);
+    s.client.register_receiver_key(&id, &pk);
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(close::receiver_key(&s.env, id), Some(pk.clone()));
+    });
+    assert_eq!(s.client.get_receiver_key(&id), Some(pk.clone()));
+
+    // A second channel gets its own slot rather than inheriting the first
+    // channel's key: the reader is scoped by `channel_id`, not global.
+    StellarAssetClient::new(&s.env, &s.token).mint(&s.sender, &DEPOSIT);
+    let other = s.open_unregistered();
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(close::receiver_key(&s.env, other), None);
+        assert_eq!(close::receiver_key(&s.env, id), Some(pk));
+    });
+}
+
+#[test]
+fn receiver_key_reads_the_replacement_after_re_registration() {
+    let s = setup();
+    let id = s.open();
+    let original = pubkey(&s.env, &s.receiver_sk);
+
+    let rotated = SigningKey::from_bytes(&[7u8; 32]);
+    let replacement = pubkey(&s.env, &rotated);
+    s.client.register_receiver_key(&id, &replacement);
+
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(close::receiver_key(&s.env, id), Some(replacement.clone()));
+    });
+    assert_eq!(s.client.get_receiver_key(&id), Some(replacement));
+    assert_ne!(s.client.get_receiver_key(&id), Some(original));
+}
+
+#[test]
+fn receiver_key_is_gone_once_mutual_close_deletes_the_channel() {
+    let s = setup();
+    let id = s.open();
+    let state = s.final_state(id, DEPOSIT, 0);
+    s.client.mutual_close(
+        &state,
+        &s.sign(&s.sender_sk, &state),
+        &s.sign(&s.receiver_sk, &state),
+    );
+
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(close::receiver_key(&s.env, id), None);
+    });
+}
+
+#[test]
+fn set_bounty_stores_the_reward_and_publishes_the_event() {
+    let s = setup();
+    let id = s.open();
+
+    // Unconfigured reads back as 0, not as a missing entry.
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(watchtower::reward_bps(&s.env, id), 0);
+    });
+    assert_eq!(s.client.get_watchtower_bounty(&id), 0);
+
+    s.client.set_watchtower_bounty(&id, &1_000);
+
+    let events = s.env.events().all().filter_by_contract(&s.contract);
+    assert_eq!(
+        events.events().last().unwrap(),
+        &watchtower::WatchtowerBountySetEvent {
+            channel_id: id,
+            reward_bps: 1_000,
+        }
+        .to_xdr(&s.env, &s.contract)
+    );
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(watchtower::reward_bps(&s.env, id), 1_000);
+    });
+    assert_eq!(s.client.get_watchtower_bounty(&id), 1_000);
+}
+
+#[test]
+fn set_bounty_caps_the_reward_at_twenty_percent() {
+    let s = setup();
+    let id = s.open();
+
+    assert_eq!(
+        s.client
+            .try_set_watchtower_bounty(&id, &(watchtower::MAX_REWARD_BPS + 1)),
+        Err(Ok(Error::InvalidRatio))
+    );
+    s.env.as_contract(&s.contract, || {
+        // The rejected call wrote nothing.
+        assert_eq!(watchtower::reward_bps(&s.env, id), 0);
+    });
+
+    // The cap itself is inclusive.
+    s.client
+        .set_watchtower_bounty(&id, &watchtower::MAX_REWARD_BPS);
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(
+            watchtower::reward_bps(&s.env, id),
+            watchtower::MAX_REWARD_BPS
+        );
+    });
+    assert_eq!(
+        s.client.get_watchtower_bounty(&id),
+        watchtower::MAX_REWARD_BPS
+    );
+}
+
+#[test]
+fn set_bounty_needs_an_existing_channel_that_is_not_finalized() {
+    let s = setup();
+    let missing = 42u64;
+
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(
+            watchtower::set_bounty(&s.env, missing, 1_000),
+            Err(Error::ChannelNotFound)
+        );
+        assert_eq!(watchtower::reward_bps(&s.env, missing), 0);
+    });
+
+    let id = s.open();
+    let update = StateUpdate {
+        nonce: 1,
+        balance: 100,
+    };
+    s.client
+        .close_channel(&id, &update, &s.sign_update(&update));
+    s.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += CHALLENGE + 1);
+    s.client.claim(&id);
+    assert_eq!(s.client.get_channel(&id).phase, ChannelPhase::Finalized);
+
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(
+            watchtower::set_bounty(&s.env, id, 1_000),
+            Err(Error::ChannelAlreadyClosed)
+        );
+        assert_eq!(watchtower::reward_bps(&s.env, id), 0);
+    });
+}
+
+#[test]
+fn set_bounty_keeps_the_recorded_watchtower_when_the_reward_changes() {
+    let s = setup();
+    let id = s.open();
+    let defender = Address::generate(&s.env);
+
+    s.client.set_watchtower_bounty(&id, &1_000);
+    s.env.as_contract(&s.contract, || {
+        watchtower::record(&s.env, id, defender.clone());
+        assert_eq!(watchtower::reward_bps(&s.env, id), 1_000);
+    });
+
+    // Re-pricing the bounty must not forget who already earned it.
+    s.client.set_watchtower_bounty(&id, &1_500);
+    s.env.as_contract(&s.contract, || {
+        assert_eq!(watchtower::reward_bps(&s.env, id), 1_500);
+        let stored: Option<watchtower::WatchtowerBounty> =
+            s.env.storage().instance().get(&DataKey::Bounty(id));
+        assert_eq!(
+            stored,
+            Some(watchtower::WatchtowerBounty {
+                reward_bps: 1_500,
+                watchtower: Some(defender),
+            })
+        );
+    });
+}
+
+#[test]
+#[should_panic]
+fn only_the_receiver_can_set_the_bounty() {
+    let s = setup();
+    let id = s.open();
+    s.env.set_auths(&[]);
+    s.client.set_watchtower_bounty(&id, &1_000);
 }

@@ -101,10 +101,15 @@ pub struct BucketState {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchRecord {
+    /// SHA-256 Merkle root over the batch's receipt leaves, supplied to `anchor_batch` and read by `verify_receipt`.
     pub root: BytesN<32>,
+    /// Number of receipt leaves in the batch, caller-supplied; `anchor_batch` rejects values above `MAX_BATCH_SIZE`.
     pub count: u32,
+    /// Caller-supplied start of the batch's reporting period, stored verbatim; the contract never interprets it.
     pub period_start: u64,
+    /// Caller-supplied end of the batch's reporting period, stored verbatim; the contract never interprets it.
     pub period_end: u64,
+    /// Ledger sequence when the record was written, set by the storage shard from `env.ledger().sequence()`.
     pub anchored_ledger: u32,
 }
 
@@ -147,13 +152,20 @@ pub trait ShardInterface {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnchorEvent {
     #[topic]
+    /// Shard identifier for the anchored receipt stream.
     pub shard_id: u64,
     #[topic]
+    /// Identifier of the anchored batch within the shard.
     pub batch_id: u64,
+    /// Root hash committed for this batch.
     pub root: BytesN<32>,
+    /// Number of receipts included in the batch.
     pub count: u32,
+    /// Start of the batch's covered receipt period.
     pub period_start: u64,
+    /// End of the batch's covered receipt period.
     pub period_end: u64,
+    /// Ledger sequence at which this batch was anchored.
     pub anchored_ledger: u32,
 }
 
@@ -182,11 +194,23 @@ pub struct PruneEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShardCreatedEvent {
     #[topic]
+    /// Logical `shard_id` whose independent batch stream this storage shard
+    /// serves, as supplied by the merchant to `anchor_batch`.
     pub shard_id: u64,
     #[topic]
+    /// Zero-based index of this storage shard within `shard_id`'s stream,
+    /// computed by `anchor_batch` as `(batch_id - 1) / SHARD_CAPACITY`.
     pub shard_index: u64,
+    /// Address of the deployed `ReceiptShard`, derived from the deterministic
+    /// `(shard_id, shard_index)` salt and stored under
+    /// `DataKey::Shard(shard_id, shard_index)`; `get_shard_address` reads it.
     pub shard_address: Address,
+    /// First batch id this shard accepts (inclusive), computed when the shard
+    /// is deployed as `shard_index * SHARD_CAPACITY + 1`.
     pub start_batch_id: u64,
+    /// One past the last batch id this shard accepts, so the shard covers the
+    /// half-open range `[start_batch_id, end_batch_id)` and is deployed with
+    /// `end_batch_id = start_batch_id + SHARD_CAPACITY`.
     pub end_batch_id: u64,
 }
 

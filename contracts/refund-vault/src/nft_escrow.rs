@@ -551,4 +551,177 @@ mod tests {
         assert_eq!(claimed, token_id);
         assert_eq!(holder(&h.env, &h.nft, token_id), h.merchant);
     }
+
+    // ── NFT escrow event assertions (issue #639) ────────────────────────────
+
+    #[test]
+    fn nft_deposit_emits_nft_deposited_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::Event as _;
+
+        let h = setup();
+        mint_and_deposit(&h, 7);
+
+        let events = h.env.events().all().filter_by_contract(&h.vault_id);
+        assert_eq!(events.events().len(), 1);
+
+        // Topics: ("nft_deposited_event", nft_contract, token_id).
+        let expected = super::NftDepositedEvent {
+            nft_contract: h.nft.clone(),
+            token_id: 7,
+            merchant: h.merchant.clone(),
+            buyer: h.buyer.clone(),
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&h.env, &h.vault_id));
+
+        // Tie the payload to the escrow key: the escrow is stored under
+        // DataKey::NftEscrow(nft_contract, token_id), so reading it back
+        // by the same (contract, token_id) pair must yield the record whose
+        // parties match the event payload.
+        let escrow = h
+            .vault
+            .get_nft_escrow(&h.nft, &7)
+            .expect("escrow must exist");
+        assert_eq!(escrow.merchant, h.merchant);
+        assert_eq!(escrow.buyer, h.buyer);
+    }
+
+    #[test]
+    fn nft_claim_emits_nft_claimed_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::Event as _;
+
+        let h = setup();
+        mint_and_deposit(&h, 42);
+
+        // Before the claim the escrow lives under (nft, 42); after the claim
+        // it is deleted — so capture the key tie-in before the release.
+        assert!(h.vault.get_nft_escrow(&h.nft, &42).is_some());
+
+        h.vault.claim_nft(&h.merchant, &h.nft, &42);
+
+        let events = h.env.events().all().filter_by_contract(&h.vault_id);
+        assert_eq!(events.events().len(), 1);
+
+        // Topics: ("nft_claimed_event", nft_contract, token_id).
+        let expected = super::NftClaimedEvent {
+            nft_contract: h.nft.clone(),
+            token_id: 42,
+            merchant: h.merchant.clone(),
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&h.env, &h.vault_id));
+
+        // The escrow is gone after the claim, and the NFT is back with the
+        // merchant — the released token_id is the very one that was escrowed
+        // under (nft, 42).
+        assert!(!h.vault.get_nft_escrow(&h.nft, &42).is_some());
+        assert_eq!(MockNftClient::new(&h.env, &h.nft).owner(&42), h.merchant);
+    }
+
+    #[test]
+    fn nft_refund_emits_nft_refunded_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::Event as _;
+
+        let h = setup();
+        mint_and_deposit(&h, 99);
+
+        // Before the refund the escrow lives under (nft, 99); after the
+        // refund it is deleted — capture the key tie-in before the release.
+        assert!(h.vault.get_nft_escrow(&h.nft, &99).is_some());
+
+        h.vault.refund_nft(&h.buyer, &h.nft, &99);
+
+        let events = h.env.events().all().filter_by_contract(&h.vault_id);
+        assert_eq!(events.events().len(), 1);
+
+        // Topics: ("nft_refunded_event", nft_contract, token_id).
+        let expected = super::NftRefundedEvent {
+            nft_contract: h.nft.clone(),
+            token_id: 99,
+            buyer: h.buyer.clone(),
+        };
+        assert_eq!(&events.events()[0], &expected.to_xdr(&h.env, &h.vault_id));
+
+        // The escrow is gone after the refund, and the NFT is back with the
+        // buyer — the released token_id is the very one that was escrowed
+        // under (nft, 99).
+        assert!(!h.vault.get_nft_escrow(&h.nft, &99).is_some());
+        assert_eq!(MockNftClient::new(&h.env, &h.nft).owner(&99), h.buyer);
+    }
+
+    #[test]
+    fn nft_deposit_rejected_double_escrow_emits_no_event() {
+        use soroban_sdk::testutils::Events as _;
+
+        let h = setup();
+        mint_and_deposit(&h, 7);
+
+        let res = h.vault.try_deposit_nft(&h.merchant, &h.buyer, &h.nft, &7);
+        assert_eq!(res, Err(Ok(accensa_common::Error::NftAlreadyEscrowed)));
+
+        // A rejected deposit never transfers the NFT and never publishes.
+        let events = h.env.events().all().filter_by_contract(&h.vault_id);
+        assert_eq!(events.events().len(), 0);
+
+        // The original escrow is still in place under (nft, 7).
+        assert!(h.vault.get_nft_escrow(&h.nft, &7).is_some());
+        assert_eq!(holder(&h.env, &h.nft, 7), h.vault_id);
+    }
+
+    #[test]
+    fn nft_deposit_rejected_unauthorized_emits_no_event() {
+        use soroban_sdk::testutils::Events as _;
+
+        let h = setup();
+        MockNftClient::new(&h.env, &h.nft).mint(&h.merchant, &7);
+        let outsider = Address::generate(&h.env);
+
+        let res = h.vault.try_deposit_nft(&outsider, &h.buyer, &h.nft, &7);
+        assert_eq!(res, Err(Ok(accensa_common::Error::Unauthorized)));
+
+        // A rejected deposit never transfers the NFT and never publishes.
+        let events = h.env.events().all().filter_by_contract(&h.vault_id);
+        assert_eq!(events.events().len(), 0);
+
+        // The NFT was minted to the merchant but never moved into the vault.
+        assert_eq!(holder(&h.env, &h.nft, 7), h.merchant);
+        assert!(!h.vault.get_nft_escrow(&h.nft, &7).is_some());
+    }
+
+    #[test]
+    fn nft_claim_rejected_not_found_emits_no_event() {
+        use soroban_sdk::testutils::Events as _;
+
+        let h = setup();
+        mint_and_deposit(&h, 3);
+
+        let res = h.vault.try_claim_nft(&h.merchant, &h.nft, &1234);
+        assert_eq!(res, Err(Ok(accensa_common::Error::NftEscrowNotFound)));
+
+        // No escrow existed for 1234, so nothing was transferred and nothing
+        // was published.
+        let events = h.env.events().all().filter_by_contract(&h.vault_id);
+        assert_eq!(events.events().len(), 0);
+    }
+
+    #[test]
+    fn nft_refund_rejected_wrong_party_emits_no_event() {
+        use soroban_sdk::testutils::Events as _;
+
+        let h = setup();
+        mint_and_deposit(&h, 5);
+        let stranger = Address::generate(&h.env);
+
+        let res = h.vault.try_refund_nft(&stranger, &h.nft, &5);
+        assert_eq!(res, Err(Ok(accensa_common::Error::Unauthorized)));
+
+        // The buyer check fails before any transfer or publish.
+        let events = h.env.events().all().filter_by_contract(&h.vault_id);
+        assert_eq!(events.events().len(), 0);
+
+        // The escrow is still intact under (nft, 5).
+        assert!(h.vault.get_nft_escrow(&h.nft, &5).is_some());
+        assert_eq!(holder(&h.env, &h.nft, 5), h.vault_id);
+    }
 }

@@ -28,6 +28,8 @@ use soroban_sdk::{
     BytesN, Env, Vec,
 };
 
+#[cfg(test)]
+mod admin_guard_tests;
 pub mod groth16;
 pub mod stealth;
 #[cfg(test)]
@@ -64,6 +66,12 @@ pub enum Error {
     AmountBelowMinimum = 4,
     /// The escrow has already been verified (or otherwise left `Pending`).
     AlreadyVerified = 5,
+    /// The instance has no admin key under [`DataKey::Admin`]: the
+    /// constructor never bound one, or the entry was evicted. Carries the
+    /// same meaning (and would carry the same `u32` value) as
+    /// `accensa_common::Error::NotInitialized`, but stays local to this
+    /// contract per the note above; codes are appended, never renumbered.
+    NotInitialized = 6,
 }
 
 #[contracttype]
@@ -134,11 +142,17 @@ pub struct EscrowRejectedEvent {
     pub escrow_id: u64,
 }
 
-fn admin(env: &Env) -> Address {
+/// Resolve the instance's admin address.
+///
+/// # Errors
+/// - [`Error::NotInitialized`]: no admin key is present — the constructor
+///   never bound one, or the entry was evicted. Admin-guarded entry points
+///   propagate this instead of trapping.
+fn admin(env: &Env) -> Result<Address, Error> {
     env.storage()
         .instance()
         .get(&DataKey::Admin)
-        .expect("initialized in the constructor")
+        .ok_or(Error::NotInitialized)
 }
 
 fn load_vk(env: &Env) -> Result<VerifyingKey, Error> {
@@ -175,8 +189,12 @@ impl Privacy {
 
     /// Admin-only: install the Groth16 verifying key used by
     /// [`verify_escrow`](Self::verify_escrow).
+    ///
+    /// # Errors
+    /// - `InvalidProof`: any of the key's required points is empty.
+    /// - `NotInitialized`: the instance has no admin key.
     pub fn set_verifying_key(env: Env, vk: VerifyingKey) -> Result<(), Error> {
-        admin(&env).require_auth();
+        admin(&env)?.require_auth();
         if vk.ic.is_empty()
             || vk.alpha_g1.is_empty()
             || vk.beta_g2.is_empty()
@@ -196,7 +214,9 @@ impl Privacy {
     /// # Errors
     /// - `InvalidCommitment`: the commitment is all-zero.
     /// - `AmountBelowMinimum`: `min_amount` is negative.
+    /// - `NotInitialized`: the instance has no admin key.
     pub fn create_escrow(env: Env, commitment: BytesN<32>, min_amount: i128) -> Result<u64, Error> {
+        admin(&env)?;
         if commitment.to_array().iter().all(|&b| b == 0) {
             return Err(Error::InvalidCommitment);
         }
@@ -235,12 +255,14 @@ impl Privacy {
     /// - `AlreadyVerified`: the escrow is no longer `Pending`.
     /// - `AmountBelowMinimum`: the proven amount is below the escrow floor.
     /// - `InvalidProof`: no verifying key is installed.
+    /// - `NotInitialized`: the instance has no admin key.
     pub fn verify_escrow(
         env: Env,
         escrow_id: u64,
         proof: Groth16Proof,
         public_inputs: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
+        admin(&env)?;
         let mut escrow = match load_escrow(&env, escrow_id) {
             Some(e) => e,
             None => return Ok(false),
@@ -297,7 +319,10 @@ impl Privacy {
     }
 
     /// Read-only: the contract admin.
-    pub fn get_admin(env: Env) -> Address {
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the instance has no admin key.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
         admin(&env)
     }
 }

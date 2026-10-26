@@ -1,8 +1,9 @@
 #![no_std]
 
 use accensa_common::{
-    math::add_amounts, storage::extend_instance_ttl, Error, PolicyContext, RefundPolicyClient,
-    TimePolicyParams, VaultInit, VdfPolicyParams,
+    math::{add_amounts, div_amounts, mul_amounts, mul_ratio, sub_amounts},
+    storage::extend_instance_ttl,
+    Error, PolicyContext, RefundPolicyClient, TimePolicyParams, VaultInit, VdfPolicyParams,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contractmeta, contracttype, token, xdr::ToXdr, Address,
@@ -23,6 +24,7 @@ contractmeta!(
     val = r#"{"repository":"https://github.com/accensa/accensa-contracts","description":"Policy-bounded merchant refund vault for x402 on Stellar"}"#
 );
 
+/// Parameters for a single refund item processed in a batch via [`RefundVault::process_batch`].
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundParam {
@@ -51,6 +53,7 @@ pub struct RefundParam {
 // contract-spec text is embedded in the wasm, which is capped at Stellar's
 // 128 KiB contract-code limit. The live layout is documented in
 // `docs/storage-audit.md`.
+/// Storage keys for the vault's instance, temporary, and persistent state.
 #[contracttype(export = false)]
 pub enum DataKey {
     Admin,
@@ -186,6 +189,7 @@ pub enum DataKey {
     TierState,
 }
 
+/// Persistent record tracking cumulative refund history and metadata for a payment reference.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundRecord {
@@ -255,6 +259,7 @@ pub struct RefundClaim {
     pub vdf_proof: Option<BytesN<256>>,
 }
 
+/// Snapshot of the vault's yield strategy configuration and deployment metrics.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct YieldInfo {
@@ -339,6 +344,7 @@ pub struct FeeConfigUpdatedEvent {
     pub fee_recipient: Address,
 }
 
+/// Emitted when funds are deposited into the vault float via [`RefundVault::deposit`].
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DepositEvent {
@@ -371,6 +377,7 @@ pub struct UnpauseEvent {
     pub ledger: u32,
 }
 
+/// Emitted when funds are withdrawn from the vault float via [`RefundVault::withdraw`].
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WithdrawEvent {
@@ -381,6 +388,7 @@ pub struct WithdrawEvent {
     pub nonce: u64,
 }
 
+/// Emitted when the admin initiates a two-step admin transfer via [`RefundVault::transfer_admin`].
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminTransferInitiatedEvent {
@@ -390,6 +398,7 @@ pub struct AdminTransferInitiatedEvent {
     pub to: Address,
 }
 
+/// Emitted when the pending admin accepts the role transfer via [`RefundVault::accept_admin`].
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminTransferAcceptedEvent {
@@ -535,6 +544,7 @@ pub mod dust;
 pub mod flash_loan;
 pub mod nft_escrow;
 pub mod oracle;
+pub mod permit;
 pub mod settlement;
 
 pub mod strategy;
@@ -680,7 +690,24 @@ fn persist_yield_ttl(env: &Env, key: &DataKey) {
 fn refund_fee(amount: i128, fee_bps: u32) -> i128 {
     let q = amount / 10_000;
     let r = amount % 10_000;
-    q * fee_bps as i128 + (r * fee_bps as i128 + 9_999) / 10_000
+    // `refund_fee` returns a plain `i128`, so the failure arm is the stated
+    // precondition `fee_bps <= 10_000` — enforced by `set_fee_bps` and by the
+    // constant `FLASH_LOAN_FEE_BPS` — plus the callers' `amount > 0`. Under it
+    // both decomposition terms are provably in range: `q * fee_bps <=
+    // q * 10_000 <= amount` and `|r * fee_bps| <= 9_999 * 10_000`. Every step
+    // is checked rather than relying on the release profile's overflow trap
+    // (issue #717); the `.expect` arms state the invariant instead of clamping.
+    let whole = mul_amounts(q, fee_bps as i128)
+        .expect("fee_bps <= 10_000, so q * fee_bps <= q * 10_000 <= amount");
+    let fractional = add_amounts(
+        mul_amounts(r, fee_bps as i128)
+            .expect("r is within -9_999..=9_999 and fee_bps <= 10_000, so the product fits"),
+        9_999,
+    )
+    .expect("r * fee_bps <= 99_990_000, so adding 9_999 cannot overflow");
+    let rounded =
+        div_amounts(fractional, 10_000).expect("the denominator is the non-zero constant 10_000");
+    add_amounts(whole, rounded).expect("whole + rounded is at most |amount| plus one unit")
 }
 
 /// The address that receives refund fees: the explicitly-configured fee
@@ -943,7 +970,11 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
         token_client.transfer(&env.current_contract_address(), &r, &fee);
     }
 
-    let cumulative_refunded = previous_refunded + claim.amount;
+    // Checked rather than bare: with `[profile.release]` setting
+    // `overflow-checks = true` and `panic = "abort"`, a bare `+` here would
+    // abort the host call. `add_amounts` maps to `Error::MathOverflow` instead
+    // (issue #718).
+    let cumulative_refunded = add_amounts(previous_refunded, claim.amount)?;
     let current_ledger = env.ledger().sequence();
     let record = RefundRecord {
         amount_refunded: cumulative_refunded,
@@ -2429,7 +2460,11 @@ impl RefundVault {
         // total_value = liquid tokens + deployed principal
         // (harvested yield has already been transferred to the vault and is part of token_balance,
         //  but it belongs to the operator, not the principal pool — subtract it)
-        let total_value = token_balance + deployed - harvested;
+        // Checked rather than bare: an overflowing `+`/`-` here would abort
+        // the host call under the release profile's overflow checks.
+        // `add_amounts`/`sub_amounts` map to `Error::MathOverflow` instead
+        // (issue #719).
+        let total_value = sub_amounts(add_amounts(token_balance, deployed)?, harvested)?;
 
         // Reserve check: after deployment, liquid tokens must cover the reserve.
         let reserve_ratio: u32 = env
@@ -2438,7 +2473,8 @@ impl RefundVault {
             .get(&DataKey::ReserveRatio)
             .unwrap_or(0);
         let post_deploy_balance = token_balance - amount;
-        let reserve_required = total_value * reserve_ratio as i128 / 10_000;
+        // Checked ratio: the intermediate product is what can overflow.
+        let reserve_required = mul_ratio(total_value, reserve_ratio as i128, 10_000)?;
         if post_deploy_balance < reserve_required {
             return Err(Error::InsufficientReserve);
         }
@@ -2449,8 +2485,8 @@ impl RefundVault {
             .persistent()
             .get(&DataKey::MaxDeployRatio)
             .unwrap_or(10_000);
-        let post_deploy_total = deployed + amount;
-        let max_deploy = total_value * max_deploy_ratio as i128 / 10_000;
+        let post_deploy_total = add_amounts(deployed, amount)?;
+        let max_deploy = mul_ratio(total_value, max_deploy_ratio as i128, 10_000)?;
         if post_deploy_total > max_deploy {
             return Err(Error::DeploymentExceedsMax);
         }
@@ -2463,7 +2499,7 @@ impl RefundVault {
 
         env.storage()
             .persistent()
-            .set(&DataKey::DeployedPrincipal, &(deployed + amount));
+            .set(&DataKey::DeployedPrincipal, &post_deploy_total);
         persist_yield_ttl(&env, &DataKey::DeployedPrincipal);
 
         let nonce = increment_nonce(&env);
@@ -2809,6 +2845,12 @@ impl RefundVault {
     }
 }
 
+/// Boundary test for `claim_single`'s checked cumulative sum (issue #718).
+#[cfg(test)]
+mod claim_single_overflow_tests;
+/// Boundary tests for `deploy_to_yield`'s checked arithmetic (issue #719).
+#[cfg(test)]
+mod deploy_to_yield_overflow_tests;
 /// Typed failure for the missing `DataKey::Token` in `deploy_to_yield` (issue #685).
 #[cfg(test)]
 mod deploy_to_yield_token_tests;
@@ -2833,6 +2875,9 @@ mod preview_settlement_overflow_tests;
 mod recall_principal_overflow_tests;
 #[cfg(test)]
 mod reentrancy_tests;
+/// Boundary test for `refund_fee`'s checked fee decomposition (issue #717).
+#[cfg(test)]
+mod refund_fee_overflow_tests;
 #[cfg(test)]
 mod settlement_ceiling_test;
 #[cfg(test)]
@@ -2861,5 +2906,3 @@ mod commit_reveal_tests;
 // free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
 #[cfg(all(test, feature = "budget-assert"))]
 mod budget_test;
-mod dual_asset;
-pub use dual_asset::*;

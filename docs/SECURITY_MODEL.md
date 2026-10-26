@@ -275,5 +275,5 @@ For Classic Stellar assets wrapped in a Stellar Asset Contract (like USDC), the 
 ## Vulnerability Reporting
 
 If you discover a vulnerability that breaks any of the security properties or
-nitigations described in this document, please follow our private disclosure
+mitigations described in this document, please follow our private disclosure
 guidelines in [SECURITY.md](../SECURITY.md).

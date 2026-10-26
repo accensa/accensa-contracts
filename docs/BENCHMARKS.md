@@ -22,10 +22,15 @@ run the benchmark before and after changes and compare the printed
 ### `verify_receipt_leaf` (root-history path)
 
 `contracts/receipt-anchor/src/budget_test.rs::measure_verify_receipt_leaf_by_depth`
-(run with `--features budget-assert` after building both contracts to WASM)
-measures the real `receipt_anchor` WASM, budget reset immediately before the
-call. The proof is checked against the shard's retained roots in the router
-itself, with no cross-contract call to a storage shard.
+(`contracts/receipt-anchor/src/budget_test.rs:245`; run with `--features
+budget-assert` after building both contracts to WASM) measures the real
+`receipt_anchor` WASM, budget reset immediately before the call. The proof is
+checked against the shard's retained roots in the router itself, with no
+cross-contract call to a storage shard.
+
+Profile: Tier A, `wasm32v1-none` release WASM invoked by the Soroban test host.
+The source does not commit a measurement date for this table, so these rows are
+undated; re-run the test to produce a dated result.
 
 | Proof depth | Batch size up to | CPU instructions | Memory (bytes) |
 | --- | --- | --- | --- |
@@ -36,73 +41,146 @@ itself, with no cross-contract call to a storage shard.
 | 7 | 128 | 2,167,578 | 1,524,819 |
 | 10 (`MAX_PROOF_LEN`) | 1,024 | 2,811,397 | 1,524,891 |
 
+Source for every CPU and memory value in this table:
+`contracts/receipt-anchor/src/budget_test.rs:245`
+(`measure_verify_receipt_leaf_by_depth`).
+
 CPU grows by ~212k instructions per level; memory is flat (~24 bytes per
 level). The worst case uses 2.8% of the 100,000,000-instruction and 3.6% of
 the 41,943,040-byte per-transaction limits; the measurement test fails if
-either exceeds 10%. `budget_verify_receipt_leaf_depth_{1,10}` gate CPU at the
+either exceeds 10%. `budget_verify_receipt_leaf_depth_{1,10}`
+(`contracts/receipt-anchor/src/budget_test.rs:210-233`) gate CPU at the
 baseline × 1.15.
-
 
 ## Methodology
 
-- **Test Environment:** (To be defined upon measurement)
-- **Soroban SDK Version:** `27.0.4`
-- **Measurement Infrastructure:** Tests using `soroban_sdk::Env::budget()` to capture CPU instructions and memory bytes.
-- **Contract Version:** (To be defined)
+The figures in this document come from two local profiles. Neither is a Mainnet
+or Testnet simulation.
+
+- **Tier A (`budget_test.rs`):** the contract is built for `wasm32v1-none` in
+  release mode and invoked by the Soroban test host. CPU is read from
+  `env.cost_estimate().budget().cpu_instruction_cost()` immediately after the
+  budget is reset, with setup outside the measured window. These gates assert
+  CPU only (`#[budget_cpu_lt]`).
+- **Test-host regressions (`fuzz_test.rs`):** the same budget accessors run
+  against the test host. These baselines gate both CPU and memory with a 15%
+  headroom (`HEADROOM_PERCENT = 15`).
+- **Soroban SDK:** `27.0.6` (`Cargo.lock:2103-2104`).
+- **Tolerance:** every gate is `baseline × 1.15`, the 15% tolerance described in
+  `budget.toml:18-23` and `contracts/receipt-anchor/src/budget_test.rs:8-10`.
+  The tables below report the committed **baseline**, not the 15%-raised failure
+  threshold. For example, `authorize` is gated at
+  `713,619 × 1.15 = 820,662`, rounded up to `825,000` at
+  `contracts/upto-authorization/src/budget_test.rs:72-75`.
+- **Fresh measurements:** `cargo test --package receipt-anchor
+  benchmark_gas_and_cpu_instructions` and `cargo test --package refund-vault
+  test_refund_resource_cost_budget` (`CONTRIBUTING.md:63-64`). The Tier A gates
+  need their WASM built first; the build command is at the top of each
+  `budget_test.rs` (for example
+  `contracts/upto-authorization/src/budget_test.rs:10-11`).
 
 ### Benchmark Scenarios
-- **A. Fresh Authorization:** The payer begins without relevant pre-existing state. We measure `authorize`, `settle`, and their pair total.
-- **B. Existing Payer Token State:** The payer already has relevant token/account state. We measure if this affects ledger reads, writes, CPU, memory, or fees.
-- **C. Settlement Amount Variation:** We measure settlement at 1%, 50%, and 100% of the authorization cap.
-- **D. Recipient Trustline Variation:** We measure with and without an existing recipient trustline, if applicable.
-- **E. Concurrent Authorizations:** We test realistic contention/burst behavior for multiple authorizations from the same payer (within simulation capabilities).
+
+These scenarios are inherited from the `upto` scheme
+(`docs/ADR-002-upto-scheme.md`). Only scenarios with a committed baseline are
+reported; the rest are explicitly unmeasured rather than guessed.
+
+| Scenario | Entry point | Status |
+| --- | --- | --- |
+| A. Fresh Authorization | `authorize`, `settle` (`contracts/upto-authorization/src/lib.rs:147`, `:371`) | Measured: `budget_authorize` (`contracts/upto-authorization/src/budget_test.rs:76`) and `budget_settle_at_cap` (`:88`) |
+| B. Existing Payer Token State | `authorize`, `settle` | Unmeasured: no differential run with pre-existing payer token/account state is committed |
+| C. Settlement Amount Variation | `settle` | Partly measured: only the cap and the 1-unit minimum are gated (`budget_settle_at_cap`, `budget_settle_at_min_boundary`); 1% and 50% are unmeasured |
+| D. Recipient Trustline Variation | `settle` | Unmeasured: no run with and without a recipient trustline is committed |
+| E. Concurrent Authorizations | `authorize` | Unmeasured: no multi-payer or concurrency test is committed |
+
+`exact` is not an entry point. It names the authorisation scheme that
+`authorize` implements when `max_slippage_bps = 0`
+(`contracts/upto-authorization/src/lib.rs:145-155`), so the old
+`Exact Baseline | exact` row is removed.
 
 ## Resource Results
 
-*Measurements are pending `#65`.*
+### Committed baselines
 
-| Scenario | Operation | CPU Instructions | Memory (bytes) | Ledger Reads | Ledger Writes | Fee (Stroops) | Fee (USD) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| A. Fresh | `authorize` | TBD | TBD | TBD | TBD | TBD | TBD |
-| A. Fresh | `settle` | TBD | TBD | TBD | TBD | TBD | TBD |
-| A. Fresh | **Pair Total** | TBD | TBD | TBD | TBD | TBD | TBD |
-| B. Existing State | `authorize` | TBD | TBD | TBD | TBD | TBD | TBD |
-| B. Existing State | `settle` | TBD | TBD | TBD | TBD | TBD | TBD |
-| B. Existing State | **Pair Total** | TBD | TBD | TBD | TBD | TBD | TBD |
-| C. Variation (1%) | `settle` | TBD | TBD | TBD | TBD | TBD | TBD |
-| C. Variation (50%) | `settle` | TBD | TBD | TBD | TBD | TBD | TBD |
-| C. Variation (100%)| `settle` | TBD | TBD | TBD | TBD | TBD | TBD |
-| D. No Trustline | `authorize` | TBD | TBD | TBD | TBD | TBD | TBD |
-| Exact Baseline | `exact` | TBD | TBD | TBD | TBD | TBD | TBD |
+Every figure below is the value committed in the cited source; none is estimated.
+The line numbers point at the baseline constant or measurement comment and at the
+test that produces the value.
+
+| Entry point | Contract | CPU instructions | Memory (bytes) | Baseline source | Profile | Measured on |
+| --- | --- | --- | --- | --- | --- | --- |
+| `authorize` | `upto-authorization` | 713,619 | Not measured (1) | `contracts/upto-authorization/src/budget_test.rs:72` (`budget_authorize`, `:76`) | Tier A WASM | 2026-10-16 |
+| `settle` (at cap) | `upto-authorization` | 985,389 | Not measured (1) | `contracts/upto-authorization/src/budget_test.rs:84` (`budget_settle_at_cap`, `:88`) | Tier A WASM | 2026-10-16 |
+| `settle` (1-unit minimum) | `upto-authorization` | 985,389 | Not measured (1) | `contracts/upto-authorization/src/budget_test.rs:97` (`budget_settle_at_min_boundary`, `:101`) | Tier A WASM | 2026-10-16 |
+| `refund` | `refund-vault` | 704,621 | 197,217 | `contracts/refund-vault/src/fuzz_test.rs:390-391` (`test_refund_resource_cost_budget`, `:394`) | test-host regression | 2026-08-30 |
+| `anchor_batch` (N=1000) | `receipt-anchor` | 1,881,937 | 3,981,062 | `contracts/receipt-anchor/src/fuzz_test.rs:1064-1065` (`benchmark_gas_and_cpu_instructions`, `:1076`) | test-host regression | 2026-09-24 |
+| `verify_receipt` (4-leaf) | `receipt-anchor` | 780,762 | 1,378,946 | `contracts/receipt-anchor/src/fuzz_test.rs:1072-1073` (`benchmark_gas_and_cpu_instructions`, `:1076`) | test-host regression | 2026-08-29 |
+
+The `verify_receipt_leaf` values are in the table above; that test is the only
+source for them (`contracts/receipt-anchor/src/budget_test.rs:245`).
+
+(1) No memory baseline is committed for `authorize` or `settle`: the Tier A
+`#[budget_cpu_lt]` gates assert CPU only. Memory baselines exist only for the
+test-host regressions listed above.
+
+### Unmeasured dimensions
+
+| Dimension | Applies to | Reason |
+| --- | --- | --- |
+| Memory (bytes) | `authorize`, `settle` | No committed memory baseline; Tier A gates CPU only (see note 1) |
+| Ledger reads and writes | all scenarios | Require a Tier B network simulation. `budget.toml:40-45` notes these entry points need pre-funded fixture state, so no read/write limits are committed |
+| Fees (stroops) | all scenarios | No committed fee measurement exists |
+| Fees (USD) | all scenarios | Requires a dated XLM/USD quote (see Economic Comparison) |
+| Scenarios B, D and E | `authorize`, `settle` | No committed differential, trustline or concurrency test |
+| Scenario C at 1% and 50% | `settle` | Only the cap and the 1-unit minimum are gated by `budget_settle_at_cap` and `budget_settle_at_min_boundary` |
 
 ## Network Limit Comparison
 
-| Operation | Metric | Network Limit | Measured Value | Percentage Used | Percentage Headroom |
-| --- | --- | --- | --- | --- | --- |
-| `authorize` | CPU | TBD | TBD | TBD% | TBD% |
-| `authorize` | Memory | TBD | TBD | TBD% | TBD% |
-| `settle` | CPU | TBD | TBD | TBD% | TBD% |
-| `settle` | Memory | TBD | TBD | TBD% | TBD% |
-| **Pair Total** | (Aggregate info across operations, for cost reference only) | - | - | - | - |
+CPU limit is 100,000,000 instructions (`budget.toml:27`,
+`contracts/receipt-anchor/src/budget_test.rs:237`). Memory limit is 40 MiB =
+41,943,040 bytes (`contracts/receipt-anchor/src/budget_test.rs:238`;
+`budget.toml:28` rounds this to 40,000,000).
 
-> *Important:* The Pair Total represents the aggregate cost for a metered payment. It must not be directly compared to a single per-transaction network limit since `authorize` and `settle` are executed in separate transactions.
+Measured values below are the committed baselines from the Resource Results
+section; percentages are `baseline / network limit`. The 15% gate ceiling is
+still below 1.2% of the CPU limit for either entry point.
+
+| Operation | Metric | Network Limit | Measured Value (baseline) | Percentage Used | Percentage Headroom |
+| --- | --- | --- | --- | --- | --- |
+| `authorize` | CPU | 100,000,000 | 713,619 | 0.71% | 99.29% |
+| `authorize` | Memory | 41,943,040 | Not measured (1) | Not measured | Not measured |
+| `settle` | CPU | 100,000,000 | 985,389 | 0.99% | 99.01% |
+| `settle` | Memory | 41,943,040 | Not measured (1) | Not measured | Not measured |
+| **Pair Total** | CPU (aggregate) | - | 1,699,008 | 1.70% | 98.30% |
+| **Pair Total** | Memory (aggregate) | - | Not measured (1) | Not measured | Not measured |
+
+The pair total is the sum of the two committed CPU baselines. The Pair Total is
+information only: it must not be compared directly to a single per-transaction
+limit because `authorize` and `settle` execute in separate transactions.
 
 ## Economic Comparison
 
-- **Current XLM/USD Price:** TBD (Source: TBD, Timestamp: TBD)
-- **Metered Request Price Assumptions:**
+- **Current XLM/USD Price:** Not measured. No dated price source or timestamp is
+  committed, so the CPU/memory baselines cannot be converted to USD here.
+- **Metered Request Price Assumptions (inputs, not measurements):**
   - $0.001
   - $0.005
   - $0.01
 
 ### Viability Analysis
 
-| Scenario | Request Price (USD) | Pair Cost (USD) | Cost Percentage | Economically Viable? |
-| --- | --- | --- | --- | --- |
-| Fresh | $0.001 | TBD | TBD% | TBD |
-| Fresh | $0.005 | TBD | TBD% | TBD |
-| Fresh | $0.010 | TBD | TBD% | TBD |
+| Scenario | Request Price (USD) | Pair Cost (USD) | Cost Percentage | Economically Viable? | Blocking reason |
+| --- | --- | --- | --- | --- | --- |
+| Fresh | $0.001 | Not measured | Not measured | Not determined | No dated XLM/USD quote |
+| Fresh | $0.005 | Not measured | Not measured | Not determined | No dated XLM/USD quote |
+| Fresh | $0.010 | Not measured | Not measured | Not determined | No dated XLM/USD quote |
 
 ## Conclusion
 
-*(To be written when measurements are complete. Example: "The two-invocation design remains economically viable above the measured threshold because the pair costs X% or less of the representative request price.")*
+The only fully measured `upto` path is CPU: `authorize` at 713,619 and `settle`
+at 985,389 instructions, 1,699,008 combined (1.70% of the 100,000,000-instruction
+per-transaction limit). Memory, ledger I/O and fees are unmeasured for
+`authorize`/`settle`, and the USD economic comparison is blocked on a dated
+XLM/USD quote. The baselines that do exist for `refund`, `anchor_batch`,
+`verify_receipt` and `verify_receipt_leaf` are listed above with their file,
+line, profile and measurement date. No figure in this document is inferred or
+aspirational.

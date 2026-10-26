@@ -6,6 +6,9 @@
     <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
     <img src="https://img.shields.io/badge/soroban--sdk-27.0.4-orange.svg" alt="soroban--sdk 27" />
     <img src="https://img.shields.io/badge/testnet-deployed-success.svg" alt="Deployed on testnet" />
+    <a href="https://scorecard.dev/viewer/?uri=github.com/accensa/accensa-contracts">
+      <img src="https://api.scorecard.dev/projects/github.com/accensa/accensa-contracts/badge" alt="OpenSSF Scorecard" />
+    </a>
   </p>
   <p>
     <a href="DEPLOYMENTS.md"><strong>Live on Testnet</strong></a> ·
@@ -40,6 +43,15 @@ Accensa bridges x402 to Stellar via two Soroban smart contracts:
 1. **ReceiptAnchor** — Merchants batch and anchor payment receipt roots on-chain using Merkle trees, giving agents verifiable proof of payment that survives server loss.
 2. **RefundVault** — A policy-bounded vault holding merchant float for automated refunds, restricted by time windows, balance limits, and merchant authorization.
 
+**ReceiptAnchor is immutable; RefundVault is admin-upgradeable.** The anchor ships
+with no upgrade entry point and no `update_current_contract_wasm`, so anchored
+receipts verify against one well-known contract ID for the life of the deployment.
+The vault, which holds live merchant float, exposes a deliberate two-phase
+`migrate_state` + `upgrade_wasm` path that is strictly `admin.require_auth()`-gated.
+Both postures are security choices, not omissions: see
+[ADR 003](docs/ADR-003-upgradeability.md) and
+[REFUND_VAULT_MIGRATION.md](docs/REFUND_VAULT_MIGRATION.md).
+
 ## Enforced Invariants & Test Coverage Mapping
 
 Enforced invariants, each covered by a test:
@@ -51,7 +63,7 @@ Enforced invariants, each covered by a test:
 - **Float-bounded** — a refund can never exceed vault balance (`InsufficientFloat`).
   *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_exceeding_float_fails`, `test_withdraw_exceeding_float_fails`
 - **Merchant-only** — every state-changing call requires merchant/admin auth (`Unauthorized`), with the explicit exception of `initialize` (which initializes the contract instance and does not require prior auth, see #145).
-  *Mapped Tests:* `contracts/refund-vault/src/test.rs` -> `test_refund_requires_merchant_auth`, `test_deposit_from_non_merchant_fails`, `test_pause_requires_merchant_auth`, `test_unpause_requires_merchant_auth`, `test_transfer_admin_requires_auth`, `test_cancel_admin_transfer_requires_auth`, `test_accept_admin_requires_pending_auth`; `contracts/receipt-anchor/src/test.rs` -> `test_anchor_batch_requires_merchant_auth`, `test_prune_batches_requires_admin_auth`
+  *Mapped Tests:* `contracts/refund-vault/src/test.rs` -> `test_refund_requires_merchant_auth`, `test_deposit_from_non_merchant_fails`, `test_pause_requires_merchant_auth`, `test_unpause_requires_merchant_auth`, `test_transfer_admin_requires_auth`, `test_cancel_admin_transfer_requires_auth`, `test_accept_admin_requires_pending_auth`; `contracts/receipt-anchor/src/test.rs` -> `test_anchor_batch_requires_merchant_auth`, `test_set_anchor_rate_limit_requires_admin_auth`
 - **Pausable** — operations are halted if the vault is paused (`Paused`).
   *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_refund_when_paused_fails`, `test_deposit_when_paused_fails`, `test_withdraw_when_paused_fails`
 This design is only economical on Stellar:

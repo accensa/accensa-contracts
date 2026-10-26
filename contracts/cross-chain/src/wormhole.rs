@@ -63,10 +63,15 @@ pub struct VaaBody {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedVaa {
+    /// VAA format version from the raw header's first byte; `parse_vaa` rejects any value other than `1`.
     pub version: u32,
+    /// Guardian-set index (big-endian header bytes 1-4) written by `parse_vaa`; `verify_vaa` requires it to equal the active `GuardianSet::index`.
     pub guardian_set_index: u32,
+    /// Header signatures in wire order as written by `parse_vaa`; `verify_vaa` requires at least the guardian set's quorum.
     pub signatures: Vec<GuardianSignature>,
+    /// Body header and payload decoded from the raw VAA by `parse_vaa`.
     pub body: VaaBody,
+    /// Raw body bytes (51-byte body header plus payload) sliced by `parse_vaa`; `verify_vaa` hashes them for signature checks.
     pub body_bytes: Bytes,
 }
 
@@ -242,6 +247,8 @@ pub fn verify_vaa(env: &Env, vaa: &ParsedVaa, guardian_set: &GuardianSet) -> Res
 
         let recovered_addr = pubkey_to_address(env, &recovered_pubkey);
 
+        // Public-data comparison: both addresses are drawn from the public
+        // VAA, so standard equality cannot leak a secret-derived prefix.
         if recovered_addr != expected_addr {
             return Err(Error::InvalidSignature);
         }
