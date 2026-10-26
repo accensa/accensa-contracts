@@ -1,9 +1,5 @@
 # Roadmap
 
-## Issue #743: rustdoc for liquid_staking's 6 public items
-
-- [x] Document `LiquidStakingError`, `Mint`, `Burn`, `ExchangeRate`, `UserData` and `LiquidStaking` (#743)
-  - `contracts/governance/src/liquid_staking.rs` — doc comments only; each item states its role, no signature, body or reorder change, and `missing_docs` is deliberately not enabled
 ## Issue #780: rustdoc for ShardStats's 5 exported fields
 
 - [x] Document the struct's 5 public fields (#780)
@@ -31,9 +27,7 @@
 - [x] Document the publicly exported fields of `YieldInfo` in refund-vault (#785)
 - [x] Document the publicly exported fields of `CouponAppliedEvent` in refund-vault (#783)
 - [x] Document the publicly exported fields of `HtlcAddedEvent` in state-channel (#786)
-- [x] Document the publicly exported fields of `ProposalCreated` in governance (#774)
 - [x] Document the publicly exported fields of `OptimisticQueuedEvent` in governance (#775)
-- [x] Document the publicly exported fields of `ParsedVaa` in cross-chain (#773)
 ## Issue #660: PR template verification step runs the full workspace suite
 
 - [x] Point the PR template's Verification checkbox at `cargo test --workspace` (#660)
@@ -92,35 +86,10 @@
 - [x] Document `settle`, `anchor`, `prune`, `pause` and `unpause` (#760)
   - `contracts/common/src/events.rs` — doc comments only, inside the lines #760 names and nowhere else in the file
 
-## Issue #766: rustdoc for `AnchorEvent`'s exported fields
-
-- [x] Document the public fields of `AnchorEvent` (#766)
-  - `contracts/receipt-anchor/src/lib.rs` — doc comments only; field, type, order and derives unchanged
-
-## Issue #767: rustdoc for `TransferEventPayload`'s exported fields
-
-- [x] Document the public fields of `TransferEventPayload` (#767)
-  - `contracts/common/src/events.rs` — doc comments only; amount and fee are in the asset's units
-
-## Issue #768: rustdoc for `OptimisticProposal`'s exported fields
-
-- [x] Document the public fields of `OptimisticProposal` (#768)
-  - `contracts/governance/src/optimistic.rs` — doc comments only; field, type, order and derives unchanged
-
 ## Issue #769: rustdoc for `FallbackDisputeRequestedEvent`'s 6 public fields
 
 - [x] Document `dispute_id`, `oracle`, `payment_ref`, `merchant`, `recipient` and `amount` (#769)
   - `contracts/refund-policy-vdf/src/fallback.rs` — doc comments only; field, type, order and derives unchanged, and no unit invented for `amount`
-
-## Issue #770: rustdoc for `RefundVector`'s exported fields
-
-- [x] Document the public fields of `RefundVector` (#770)
-  - `contracts/refund-vault/src/refund_vectors.rs` — doc comments only; field, type, order and derives unchanged
-
-## Issue #678: error arm for absent state in receipt-shard::has_live_records
-
-- [x] `has_live_records` returns `Result<bool, Error>` with `Error::NotInitialized` on missing state (#678)
-  - `contracts/receipt-shard/src/consolidation.rs` — returns typed error instead of unwrap on missing `StartBatchId` or `EndBatchId`
 
 ## Issue #650: Cover the reputation badge authority guard's two failure arms
 
@@ -148,54 +117,8 @@
   - `contracts/refund-vault/src/settlement.rs` — typed `Error::MathOverflow` instead of a host abort
   - `contracts/refund-vault/src/preview_settlement_overflow_tests.rs` — boundary test pins both operands at `i128::MAX` and asserts the returned error variant
 
-## Issue #696: cover `governance::burn` and the ragequit path
-
-- [x] Cover `LiquidStaking::burn`, `ragequit::{is_approved, process}` and the `ArityMismatch`/`InvalidMembers` constructor variants (#696)
-  - `contracts/governance/tests/receipt_anchor_admin.rs` — integration tests only, no `src/` changes
-
-## Issue #697: cover `receipt-anchor::{topic, publish, canonical_message}`
-
-- [x] Cover `ReceiptAction::topic`, `events::publish` and `signatures::canonical_message` (#697)
-  - `contracts/receipt-anchor/src/budget_test.rs` — tests only, no contract source changes
-
-## Issue #698: cover `receipt-anchor::{verify_batch_zk_proof, fold_proof, get_min_anchor_interval}`
-
-- [x] Cover `zk_verifier::verify_batch_zk_proof`, `merkle::fold_proof` and `ReceiptAnchor::get_min_anchor_interval` (#698)
-  - `contracts/receipt-anchor/src/fuzz_test.rs` — tests only, no contract source changes
-
-## Issue #695: cover `cross-chain::{execute_withdrawal_to_evm, get_destination_chain_id, is_trusted_peer}`
-
-- [x] Cover `outbound::execute_withdrawal_to_evm`, `get_destination_chain_id` and `is_trusted_peer` (#695)
-  - `contracts/cross-chain/src/wormhole_test.rs` — tests only, no contract source changes
-## Issue #652: test: Pin the oracle admin getter and the round staleness bound
-
-- [x] Pin `get_admin` unset/bound states, the typed `AlreadyInitialized` double-initialize guard, and the inclusive staleness boundary in `contracts/oracle/src/staleness_test.rs` (#652)
-
-## Issue #653: test: Cover the cross-chain config getters' uninitialized arms
-
-- [x] Cover all four config getters unset/set/rebound and both `require_admin` verdicts without mocked auth in `contracts/cross-chain/src/config_readers_test.rs` (#653)
-
-## Issue #654: test: Cover the factory's already-tracked address branch on deploy
-
-- [x] Drive the already-tracked address collision branch and pin registry/salt invariants in `contracts/refund-vault-factory/tests/tracked_address.rs` (#654)
-
-## Issue #656: test: Assert treasury schedule entries keep their TTL across claims
-
-- [x] Assert schedule TTL at registration, re-bump after decay on a successful claim, and no shortening on a rejected claim in `contracts/treasury/tests/schedule_ttl.rs` (#656)
-## Issue #741: rustdoc for refund-vault-factory/lib's 7 public items
-
-- [x] Document `Error`, `RefundVaultFactory`, `get_admin`, `get_vault_wasm`, `get_time_policy_contract`, `get_vdf_policy_contract` and `get_next_salt` (#741)
-  - `contracts/refund-vault-factory/src/lib.rs` — doc comments only, no signature, body or ordering change
-
-
 ## Issue #740: rustdoc for `common/events`' 8 module symbols
 
-- [x] `prune_batches` answers `Error::NotInitialized` instead of aborting the host call when `Router`, `EndBatchId` or `PrunedUpTo` is absent (before construction or after the instance entry ages out) (#679)
-
-## Issue #746: rustdoc for governance/lib's 4 undocumented public items
-
-- [x] Document `Error`, `DataKey`, `RingSignature` and `Governance` (#746)
-  - `contracts/governance/src/lib.rs` — doc comments only, no signature, body or test changes
 - [x] Document `vault`, `channel`, `receipt`, `bridge`, `gov`, `treasury`, `multisig` and `auth` (#740)
   - `contracts/common/src/events.rs` — doc comments only, no signature, body or ordering change
 
@@ -228,14 +151,6 @@
 
 ## Issue #687: walk the fee ladder in `tier_for_volume` without indexing
 
-- [x] Route both `recall_principal` sums through `add_amounts` (#723)
-  - `contracts/refund-vault/src/strategy.rs` — typed `Error::MathOverflow` instead of a host abort
-  - `contracts/refund-vault/src/recall_principal_overflow_tests.rs` — boundary tests drive both sums to `i128::MAX`
-
-## Issue #779: rustdoc for `ShardCreatedEvent`'s 5 exported fields
-
-- [x] Document `shard_id`, `shard_index`, `shard_address`, `start_batch_id` and `end_batch_id` (#779)
-  - `contracts/receipt-anchor/src/lib.rs` — doc comments only; struct layout, field types and topic tuple unchanged
 - [x] Iterate the ladder in `tier_for_volume` instead of `ladder.get(i).unwrap()` (#687)
   - `contracts/refund-vault/src/tiers.rs` — enumerated iteration, no trap path, unchanged behaviour
 
@@ -288,11 +203,6 @@
 - [x] Route `deploy_to_yield`'s totals, ratios and post-deployment sum through the checked `accensa_common::math` helpers (#719)
   - `contracts/refund-vault/src/lib.rs` — `add_amounts`/`sub_amounts`/`mul_ratio` instead of bare operators
   - `contracts/refund-vault/src/deploy_to_yield_overflow_tests.rs` — boundary tests drive the total, reserve-ratio product and max-deploy product to the type's maximum
-## Issue #777: Add /// to BatchRecord's exported fields
-
-- [x] Add `///` doc comments to `BatchRecord`'s five exported fields (#777)
-  - Documented `root`, `count`, `period_start`, `period_end`, and `anchored_ledger` in `contracts/receipt-anchor/src/lib.rs`
-  - Verified `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked --workspace`, and rustdoc rendering
 ## Issue #787: rustdoc for `ChannelOpenedEvent`'s 5 public fields
 
 - [x] Document the struct's 5 public fields (#787)
@@ -308,10 +218,6 @@
 - [x] Document `payment_id`, `from`, `to`, `cap` and `expiry` (#792)
   - `contracts/upto-authorization/src/lib.rs` — doc comments only, field/type/order/derives unchanged
 
-## Issue #771: rustdoc for `StreamCreatedEvent`'s 6 public fields
-
-- [x] Document `stream_id`, `buyer`, `start_ledger`, `stop_ledger`, `rate_per_ledger` and `deposit` (#771)
-  - `contracts/stream-vault/src/lib.rs` — doc comments only, field/type/order/derives unchanged
 ## Issue #666: Update ARCHITECTURE.md beyond the two-contract framing
 
 - [x] Broaden `docs/ARCHITECTURE.md`'s scope statement and add the full workspace contract inventory (#666)
@@ -352,7 +258,22 @@
 - [x] Add `///` rustdoc to `MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open` and `get` (#751)
   - `contracts/state-channel/src/multi_asset.rs` — doc comments only; role, pre-conditions and each `Error` arm documented, signatures and bodies unchanged
 
-## Issue #776: Document the public fields of `PrunePayload`
+## Issue #711: Cover state-channel `receiver_key`
 
-- [x] Add `///` rustdoc to `schema_version`, `timestamp`, `shard_id`, `start_batch_id` and `end_batch_id` (#776)
-  - `contracts/receipt-anchor/src/events.rs` — one doc line per field stating its domain and the `prune_batches` call site that writes it; field/type/order/derives unchanged
+- [x] Test `close::receiver_key`, `watchtower::set_bounty` and `watchtower::reward_bps` (#711)
+  - `contracts/state-channel/src/close_test.rs` — tests only; the units they call and every other file are unchanged
+
+## Issue #710: Cover refund-vault `get_coupon`, `set_settlement_contract`
+
+- [x] Test `get_coupon`, `set_settlement_contract` and `get_claim_cooldown` (#710)
+  - `contracts/refund-vault/tests/multisig_admin_vault.rs` — tests only; contract sources unchanged
+
+## Issue #738: Make fix_lib.sh fail fast
+
+- [x] Carry the fail-fast rule onto the shell tooling that still exists (#738)
+  - `fix_lib.sh` is no longer in the tree: #843 deleted it from the repository root as a stray automation scratch file (issue #557), which is the removal of the stale command this issue allowed for. `benchmark/run.sh` was the last tracked script without `set -euo pipefail` and now has it.
+
+## Issue #737: Give fix_common.sh set -euo pipefail
+
+- [x] Give the surviving benchmark entry point `set -euo pipefail` (#737)
+  - `fix_common.sh` was deleted by the same #843 cleanup; `benchmark/run.sh` now aborts at the first measurement that fails instead of reporting a green run over a broken suite
