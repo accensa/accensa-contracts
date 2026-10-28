@@ -21,6 +21,14 @@
 //! prints `BENCHMARK` lines) whenever one of the gates trips after a
 //! legitimate change; never widen a ceiling without a fresh measurement.
 //!
+//! The wasm artifact is resolved at test runtime, in this order:
+//! `MULTISIG_ACCOUNT_WASM` (full path to the artifact, explicit override) →
+//! `CARGO_TARGET_DIR` (absolute as given, or relative to the workspace root)
+//! joined with `wasm32v1-none/release/multisig_account.wasm` → the first
+//! ancestor of the test binary that contains that relative path (honours
+//! `--target-dir`, since test binaries live under `<target-dir>/debug/deps`) →
+//! the default workspace `target/` path.
+//!
 //! The contract must be compiled to WASM first:
 //! `cargo build -p multisig-account --target wasm32v1-none --release`
 
@@ -30,6 +38,7 @@
 // file's own helper uses `std::fs`/`std::vec::Vec`; bring `std` in explicitly.
 extern crate std;
 use std::format;
+use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
 
 use budget_macros::budget_cpu_lt;
@@ -40,21 +49,87 @@ use soroban_sdk::{
 
 use crate::{Call, MultisigAccountClient};
 
-/// Path (relative to this crate's root, where `cargo test` runs) of the real
-/// artifact under measurement.
+/// Location of the artifact inside any cargo target directory.
+const WASM_REL: &str = "wasm32v1-none/release/multisig_account.wasm";
+
+/// Default path (relative to this crate's root, where `cargo test` runs) of
+/// the real artifact under measurement.
 const WASM_PATH: &str = "../../target/wasm32v1-none/release/multisig_account.wasm";
 
-/// Reads the real `multisig_account.wasm` built for `wasm32v1-none --release`.
+/// Resolves `multisig_account.wasm` without reading any environment: every
+/// input is passed in, so the resolution order is unit-testable.
+///
+/// First match wins:
+/// 1. the explicit `MULTISIG_ACCOUNT_WASM` override, verbatim;
+/// 2. `CARGO_TARGET_DIR` joined with `wasm32v1-none/release/…` — absolute as
+///    given, relative resolved against the workspace root (two levels above
+///    this crate, where `cargo` resolves a relative `CARGO_TARGET_DIR`);
+/// 3. the first ancestor of the test binary's path that actually contains
+///    the artifact (honours `--target-dir` with no env var, because the test
+///    binary lives under `<target-dir>/debug/deps`);
+/// 4. the workspace-default `default_path`.
+fn resolve_wasm_path(
+    override_path: Option<&str>,
+    cargo_target_dir: Option<&str>,
+    exe_ancestors: &[PathBuf],
+    default_path: &Path,
+) -> PathBuf {
+    if let Some(over) = override_path {
+        return PathBuf::from(over);
+    }
+    if let Some(dir) = cargo_target_dir {
+        let dir = Path::new(dir);
+        return if dir.is_absolute() {
+            dir.join(WASM_REL)
+        } else {
+            Path::new("../..").join(dir).join(WASM_REL)
+        };
+    }
+    for ancestor in exe_ancestors {
+        let candidate = ancestor.join(WASM_REL);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    default_path.to_path_buf()
+}
+
+/// Reads the real `multisig_account.wasm` built for `wasm32v1-none --release`,
+/// resolved at runtime (not `include_bytes!`) so the same test binary can
+/// measure an artifact built into any cargo target directory or at an
+/// explicit override path.
 ///
 /// The gates deliberately load the compiled WASM instead of registering
 /// `MultisigAccount` natively: the CPU slope of `execute_batch`'s loop and of
 /// `rotate_signers_and_threshold`'s signer scans only exists in the on-chain
 /// binary.
 fn load_wasm() -> std::vec::Vec<u8> {
-    std::fs::read(WASM_PATH).expect(
-        "multisig-account wasm not found; run `cargo build -p multisig-account \
-         --target wasm32v1-none --release` before the budget tests",
-    )
+    let override_path = std::env::var("MULTISIG_ACCOUNT_WASM").ok();
+    let cargo_target_dir = std::env::var("CARGO_TARGET_DIR").ok();
+    let exe_ancestors: std::vec::Vec<PathBuf> = std::env::current_exe()
+        .map(|exe| exe.ancestors().map(Path::to_path_buf).collect())
+        .unwrap_or_default();
+    let chosen = resolve_wasm_path(
+        override_path.as_deref(),
+        cargo_target_dir.as_deref(),
+        &exe_ancestors,
+        Path::new(WASM_PATH),
+    );
+    std::fs::read(&chosen).unwrap_or_else(|e| {
+        panic!(
+            "multisig-account wasm not found at `{}` ({e}); build it with \
+             `cargo build -p multisig-account --target wasm32v1-none --release` \
+             before the budget tests, or set MULTISIG_ACCOUNT_WASM to the full \
+             path of the artifact. Consulted, in order: MULTISIG_ACCOUNT_WASM={}, \
+             CARGO_TARGET_DIR={} (then {} ancestors of the test binary, then \
+             the default `{}`)",
+            chosen.display(),
+            override_path.as_deref().unwrap_or("<unset>"),
+            cargo_target_dir.as_deref().unwrap_or("<unset>"),
+            exe_ancestors.len(),
+            WASM_PATH,
+        )
+    })
 }
 
 /// Registers the real `multisig_account` WASM as an account with `n_signers`
@@ -232,4 +307,62 @@ fn measure_execute_batch_and_rotate_cpu() {
     client.rotate_signers_and_threshold(&to_add, &original, &10);
     let cpu = env.cost_estimate().budget().cpu_instruction_cost();
     std::println!("BENCHMARK rotate_signers_and_threshold signers=10 cpu={cpu}");
+}
+
+// ── wasm artifact path resolver (#598) ─────────────────────────────────────
+//
+// Pure-function tests of `resolve_wasm_path`: the inputs are passed in, no
+// environment variable is read.
+
+#[test]
+fn wasm_path_explicit_override_wins() {
+    let got = resolve_wasm_path(
+        Some("/tmp/ms-override/multisig_account.wasm"),
+        Some("/custom/target"),
+        &[PathBuf::from("/exe/deps")],
+        Path::new(WASM_PATH),
+    );
+    assert_eq!(got, PathBuf::from("/tmp/ms-override/multisig_account.wasm"));
+}
+
+#[test]
+fn wasm_path_cargo_target_dir_next() {
+    // Absolute CARGO_TARGET_DIR is used as given…
+    let got = resolve_wasm_path(
+        None,
+        Some("/custom/target"),
+        &[PathBuf::from("/exe/deps")],
+        Path::new(WASM_PATH),
+    );
+    assert_eq!(got, Path::new("/custom/target").join(WASM_REL));
+    // …and a relative one resolves against the workspace root (`../..` from
+    // the crate root where `cargo test` runs).
+    let got = resolve_wasm_path(None, Some("my-target"), &[], Path::new(WASM_PATH));
+    assert_eq!(got, Path::new("../../my-target").join(WASM_REL));
+}
+
+#[test]
+fn wasm_path_ancestor_walk_then_default() {
+    // An ancestor that does not hold the artifact is skipped…
+    let base = std::env::temp_dir().join("multisig_budget_path_resolver_test");
+    let artifact = base.join(WASM_REL);
+    std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    std::fs::write(&artifact, b"stub").unwrap();
+    let got = resolve_wasm_path(
+        None,
+        None,
+        &[PathBuf::from("/nonexistent-exe-deps"), base.clone()],
+        Path::new(WASM_PATH),
+    );
+    assert_eq!(got, artifact);
+    let _ = std::fs::remove_dir_all(&base);
+
+    // …and with no ancestor holding it, the workspace default is returned.
+    let got = resolve_wasm_path(
+        None,
+        None,
+        &[PathBuf::from("/nonexistent-exe-deps")],
+        Path::new(WASM_PATH),
+    );
+    assert_eq!(got, Path::new(WASM_PATH));
 }
