@@ -250,7 +250,7 @@ pub(crate) fn propose_with_simulation(
         .storage()
         .instance()
         .get(&DataKey::VotingPeriod)
-        .unwrap();
+        .ok_or(Error::InvalidVotingPeriod)?;
     let deadline_ledger = env.ledger().sequence() + voting_period;
 
     let proposal = crate::Proposal {
