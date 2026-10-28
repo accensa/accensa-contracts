@@ -256,6 +256,22 @@
 
 - [x] Add `description` to the `[package]` table of `contracts/testutils/Cargo.toml` (#732)
 
+## Issue #733: package description for upto-authorization
+
+- [x] Add `description` to the `[package]` table of `contracts/upto-authorization/Cargo.toml` (#733)
+
+## Issue #734: abort benchmark/run.sh on the first failing command
+
+- [x] Add `set -euo pipefail` after the shebang in `benchmark/run.sh` (#734)
+
+## Issue #735: abort fix.sh on the first failing command
+
+- [x] Add `set -euo pipefail` after the shebang in `fix.sh` (#735)
+
+## Issue #736: abort fix_budget.sh on the first failing command
+
+- [x] Add `set -euo pipefail` after the shebang in `fix_budget.sh` (#736)
+
 ## Issue #751: Document 4 public items in multi_asset
 
 - [x] Add `///` rustdoc to `MultiAssetChannelOpenedEvent`, `MultiAssetSettledEvent`, `open` and `get` (#751)

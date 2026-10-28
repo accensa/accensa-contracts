@@ -1,5 +1,6 @@
 [package]
 name = "upto-authorization"
+description = "Upto payment authorization with caps and expiry (x402-style flows)"
 version = "0.1.0"
 edition = "2021"
 
