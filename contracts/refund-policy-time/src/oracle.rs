@@ -79,11 +79,16 @@ pub struct TimeOraclePolicyParams {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleResolutionApplied {
+    /// 32-byte payment reference from the report, after `resolve` checked it matches the claim.
     #[topic]
     pub payment_ref: BytesN<32>,
+    /// Delivery oracle consulted, copied from `TimeOraclePolicyParams::oracle` by `resolve`.
     pub oracle: Address,
+    /// Oracle-reported state that decided the claim; `Pending` never reaches this event.
     pub status: DeliveryStatus,
+    /// Unix timestamp in seconds when the oracle observed `status`, from `DeliveryReport::timestamp`.
     pub reported_at: u64,
+    /// Opaque oracle evidence for `status`, copied from `DeliveryReport::proof` by `resolve`.
     pub proof: BytesN<32>,
 }
 

@@ -28,6 +28,7 @@
 - [x] Document the publicly exported fields of `CouponAppliedEvent` in refund-vault (#783)
 - [x] Document the publicly exported fields of `HtlcAddedEvent` in state-channel (#786)
 - [x] Document the publicly exported fields of `OptimisticQueuedEvent` in governance (#775)
+- [x] Document the publicly exported fields of `OracleResolutionApplied` in refund-policy-time (#782)
 ## Issue #660: PR template verification step runs the full workspace suite
 
 - [x] Point the PR template's Verification checkbox at `cargo test --workspace` (#660)
