@@ -9,10 +9,21 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+# Tollcraft/soroban-budget-assert — Tier A local assertion macros, used only
+# by the `#[cfg(test)]`-gated `budget_test` module. Cargo does not allow
+# optional *dev*-dependencies, so this lives here, optional, gated by the
+# `budget-assert` feature; it never links into a real (non-test) build.
+# NOTE: pin this to a released tag (e.g. `tag = "v0.1.0"`) once a tag exists;
+# `main` is used here so the dependency always resolves.
+budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git", branch = "main", package = "budget-macros", optional = true }
 
 [features]
 default = []
 testutils = ["soroban-sdk/testutils"]
+# Enables the Tier A budget-assertion tests in `src/budget_test.rs`. Off by
+# default so ordinary `cargo test` / `cargo clippy` runs do not require the
+# prebuilt WASM artifact or pull in the `budget_macros` dependency.
+budget-assert = ["dep:budget_macros"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

@@ -1395,6 +1395,7 @@ dependencies = [
 name = "multisig-account"
 version = "0.1.0"
 dependencies = [
+ "budget-macros",
  "ed25519-dalek 3.0.0",
  "soroban-sdk",
 ]

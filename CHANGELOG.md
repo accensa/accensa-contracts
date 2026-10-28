@@ -8,6 +8,14 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 **minor** version, and they are called out as such.
 
 ## [Unreleased]
+
+- **`multisig-account` (issue #598): Tier A CPU budget suite for `execute_batch`
+  and `rotate_signers_and_threshold`.** `execute_batch` at 1, 5 and 20 calls
+  and a 10-signer rotation are gated with `#[budget_cpu_lt]` ceilings in the new
+  `contracts/multisig-account/src/budget_test.rs`, behind the new
+  `budget-assert` feature and optional `budget_macros` dependency;
+  `measure_execute_batch_and_rotate_cpu` prints the measured baselines the
+  ceilings are derived from. Test-only — no contract behavior change.
 - **`state-channel` (issue #711): cover `close::receiver_key`,
   `watchtower::set_bounty` and `watchtower::reward_bps`.** Eight tests appended
   to `contracts/state-channel/src/close_test.rs` call the three `pub(crate)`
