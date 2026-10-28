@@ -26,7 +26,7 @@ accensa-common = { workspace = true }
 # Wesolowski VDF verification (issue #138): big-integer modular exponentiation
 # in pure WASM. `default-features = false` keeps it no_std / no rand; it adds
 # no new crates over what the vault previously pulled in transitively.
-crypto-bigint = { version = "0.5.5", default-features = false }
+crypto-bigint = { version = "0.6.1", default-features = false }
 # Tollcraft/soroban-budget-assert — Tier A local assertion macros, used only
 # by the `#[cfg(test)]`-gated `budget_test` module. Cargo does not allow
 # optional *dev*-dependencies, so this lives here, optional, gated by the
