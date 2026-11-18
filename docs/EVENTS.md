@@ -301,3 +301,12 @@ guardian.
 - **Data Map**:
   - `previous` (`Option<Address>`): The guardian before the change.
   - `new` (`Option<Address>`): The guardian after the change; `None` = no guardian.
+
+---
+
+## Additional Contract Events
+
+Events for `Governance` (beyond `AnonymousVoteCast` above), `UptoAuthorization`
+and `CrossChain` are catalogued in
+[`EVENTS_GOVERNANCE.md`](EVENTS_GOVERNANCE.md). The same stability policy
+applies.
