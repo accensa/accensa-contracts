@@ -260,7 +260,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 27,
+    "protocol_version": 29,
     "sequence_number": 201,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -664,7 +664,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "80adeeb8d4b6e7d0d2f2ca848e4d0776ac80266b89199f13c6b3245cca76017e"
                   },
                   "storage": [
                     {
@@ -1507,8 +1507,8 @@
           "data": {
             "contract_code": {
               "ext": "v0",
-              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-              "code": ""
+              "hash": "80adeeb8d4b6e7d0d2f2ca848e4d0776ac80266b89199f13c6b3245cca76017e",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f4341414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414154594f4e"
             }
           },
           "ext": "v0"

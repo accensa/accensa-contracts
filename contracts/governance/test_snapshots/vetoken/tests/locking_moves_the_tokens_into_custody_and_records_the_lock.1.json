@@ -119,7 +119,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 27,
+    "protocol_version": 29,
     "sequence_number": 1000,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -307,7 +307,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "36cb30a16206e339600b3e02e18c499ee8ebafd6221bb78473568e1fe0c2db8b"
                   },
                   "storage": [
                     {
@@ -443,7 +443,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "95616f137b71f2524c5c1a9911d7c51abf81930f93f7a6cae2fa8967c03d14fb"
                   },
                   "storage": null
                 }
@@ -667,8 +667,22 @@
           "data": {
             "contract_code": {
               "ext": "v0",
-              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-              "code": ""
+              "hash": "36cb30a16206e339600b3e02e18c499ee8ebafd6221bb78473568e1fe0c2db8b",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f43414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141484b334d"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1099
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
+              "ext": "v0",
+              "hash": "95616f137b71f2524c5c1a9911d7c51abf81930f93f7a6cae2fa8967c03d14fb",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f434141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414d445234"
             }
           },
           "ext": "v0"

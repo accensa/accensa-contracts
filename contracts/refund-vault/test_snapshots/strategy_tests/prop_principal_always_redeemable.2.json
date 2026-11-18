@@ -163,8 +163,9 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "i128": "353896"
-                }
+                  "i128": "3696542"
+                },
+                "void"
               ]
             }
           },
@@ -182,7 +183,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                     },
                     {
-                      "i128": "353896"
+                      "i128": "3696542"
                     }
                   ]
                 }
@@ -203,7 +204,7 @@
               "function_name": "deploy_to_yield",
               "args": [
                 {
-                  "i128": "46006"
+                  "i128": "3400818"
                 }
               ]
             }
@@ -222,7 +223,7 @@
               "function_name": "simulate_yield",
               "args": [
                 {
-                  "i128": "302138"
+                  "i128": "60121"
                 }
               ]
             }
@@ -247,13 +248,13 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                 },
                 {
-                  "i128": "222954"
+                  "i128": "1441651"
                 },
                 {
                   "u32": 0
                 },
                 {
-                  "i128": "222954"
+                  "i128": "1441651"
                 },
                 "void",
                 {
@@ -271,7 +272,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 27,
+    "protocol_version": 29,
     "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -513,7 +514,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "0d6d61ed9340595cb73d424cebeddb6def971a72143eafd77ef9806c3724701a"
                   },
                   "storage": null
                 }
@@ -536,7 +537,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "2a328055ea55cfba1e2fb7bd557ac5c7dc07d6bde588834cb02fc953a00ee8c2"
                   },
                   "storage": null
                 }
@@ -590,7 +591,31 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "46006"
+                "i128": "2254891"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 518400
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "HarvestedYield"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "i128": "20258"
               }
             }
           },
@@ -671,7 +696,7 @@
                       "symbol": "amount_refunded"
                     },
                     "val": {
-                      "i128": "222954"
+                      "i128": "1441651"
                     }
                   },
                   {
@@ -695,7 +720,7 @@
                       "symbol": "payment_amount"
                     },
                     "val": {
-                      "i128": "222954"
+                      "i128": "1441651"
                     }
                   },
                   {
@@ -801,7 +826,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "95616f137b71f2524c5c1a9911d7c51abf81930f93f7a6cae2fa8967c03d14fb"
                   },
                   "storage": [
                     {
@@ -861,7 +886,19 @@
                         ]
                       },
                       "val": {
-                        "u64": "3"
+                        "u64": "4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "ReentrancyLock"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {
@@ -989,7 +1026,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "604717fe3f12ac67985d74bf337e8e0fd36a19e068e8315706bf06b8edac4d4a"
                   },
                   "storage": [
                     {
@@ -1025,7 +1062,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "46006"
+                        "i128": "2254891"
                       }
                     },
                     {
@@ -1037,7 +1074,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "302138"
+                        "i128": "39863"
                       }
                     }
                   ]
@@ -1074,7 +1111,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "9646104"
+                      "i128": "6303458"
                     }
                   },
                   {
@@ -1126,7 +1163,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "84936"
+                      "i128": "20258"
                     }
                   },
                   {
@@ -1178,7 +1215,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "10046006"
+                      "i128": "12234633"
                     }
                   },
                   {
@@ -1230,7 +1267,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "222954"
+                      "i128": "1441651"
                     }
                   },
                   {
@@ -1366,8 +1403,50 @@
           "data": {
             "contract_code": {
               "ext": "v0",
-              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-              "code": ""
+              "hash": "0d6d61ed9340595cb73d424cebeddb6def971a72143eafd77ef9806c3724701a",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f4341414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414149544134"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
+              "ext": "v0",
+              "hash": "2a328055ea55cfba1e2fb7bd557ac5c7dc07d6bde588834cb02fc953a00ee8c2",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f434141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414b33494d"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
+              "ext": "v0",
+              "hash": "604717fe3f12ac67985d74bf337e8e0fd36a19e068e8315706bf06b8edac4d4a",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f434141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414f4c5a4d"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
+              "ext": "v0",
+              "hash": "95616f137b71f2524c5c1a9911d7c51abf81930f93f7a6cae2fa8967c03d14fb",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f434141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414d445234"
             }
           },
           "ext": "v0"
