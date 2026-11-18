@@ -382,13 +382,14 @@ impl Model {
 const HEADROOM_PERCENT: u64 = 15;
 
 /// Cost baselines for `RefundVault::refund`
-/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and `env.cost_estimate().budget().memory_bytes_cost()` on 2026-08-30.
-/// Re-baselined after the partial-refund, TTL-guard, reentrancy-guard,
-/// oracle-policy and commit-reveal additions grew the `refund` path (see
-/// `docs/RELEASING.md` re-baselining procedure; measured with the oracle
-/// policy *unset* but after the commit-reveal lookup hooked into `claim_single`).
-const REFUND_BASELINE_CPU: u64 = 704_621;
-const REFUND_BASELINE_MEM: u64 = 197_217;
+/// Measured via `env.cost_estimate().budget().cpu_instruction_cost()` and
+/// `env.cost_estimate().budget().memory_bytes_cost()` on 2026-11-18, with the
+/// oracle policy *unset* but after the commit-reveal lookup hooked into
+/// `claim_single`. Re-measured on the soroban-sdk 29 upgrade: the host charges
+/// ~16% more memory for the same refund path while CPU fell ~7%, so both
+/// numbers were refreshed rather than carrying the pre-upgrade pair.
+const REFUND_BASELINE_CPU: u64 = 651_939;
+const REFUND_BASELINE_MEM: u64 = 229_690;
 
 #[test]
 fn test_refund_resource_cost_budget() {

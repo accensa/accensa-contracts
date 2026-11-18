@@ -60,14 +60,42 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
 
+      - name: Install Stellar CLI
+        # soroban-sdk 29's build script refuses a wasm build that is not driven
+        # by stellar-cli (it must shake the contract spec), so the contract
+        # build below goes through `stellar contract build`. Pinned prebuilt
+        # release with a checksum: a source `cargo install` costs minutes on
+        # every PR. 28.1.0 is the release that matches soroban-sdk 29.
+        env:
+          STELLAR_CLI_VERSION: 28.1.0
+          STELLAR_CLI_SHA256: c1680deee94301d33ada7a17f98411e642a4248c727afbd2e43050d345746462
+        run: |
+          set -euo pipefail
+          archive="stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/${archive}" \
+            -o "${RUNNER_TEMP}/${archive}"
+          echo "${STELLAR_CLI_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check -
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
+          install -m 0755 "${RUNNER_TEMP}/stellar" /usr/local/bin/stellar
+          stellar --version
+
       - name: Build every contract to WASM
         # One build serves clippy, the test suite, the Tier A budget macros and
-        # the size gate. Exclude `testutils`: it is a std crate (no `#![no_std]`)
-        # and its soroban-sdk `testutils` feature is not supported on wasm, so it
-        # cannot compile for wasm32v1-none. `--all-targets` lints and the
-        # contractimport!-using tests pull in receipt-shard, receipt-anchor and
-        # refund-vault, all inside this set.
-        run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
+        # the size gate. `stellar contract build` is invoked per contract
+        # manifest because, at the workspace root, it builds only the five
+        # `default-members` — the deployable set is every crate with
+        # `crate-type = ["cdylib"]`, which excludes the rlib-only `common` and
+        # `cross-chain` and the std `testutils` crate whose `testutils` feature
+        # is not supported on wasm. `--optimize=false`: the pinned wasm-opt in
+        # `scripts/optimize_wasm.sh` stays the one optimizer, so the size gate
+        # measures the same bytes it always did.
+        run: |
+          set -euo pipefail
+          for manifest in contracts/*/Cargo.toml; do
+            grep -q '"cdylib"' "$manifest" || continue
+            stellar contract build --locked --optimize=false --manifest-path "$manifest"
+          done
 
       - name: Optimize wasms
         # `deploy.sh` builds with `stellar contract build`, which optimizes the
@@ -85,19 +113,6 @@ jobs:
         # Includes `testutils`, which the `benchmark-budgets` job used to run
         # again on its own under the `release-with-logs` profile.
         run: cargo test --locked --workspace
-
-      - name: Install stellar-cli for WASM budget inspection
-        # Merges only. This is a multi-minute source build, and its only
-        # consumer is the informational `soroban contract inspect --wasm` block
-        # in the budget script below (that block runs `|| true` per contract, so
-        # it cannot fail a run either way). The size gate does not need it.
-        if: github.event_name != 'pull_request'
-        run: |
-          if command -v stellar &>/dev/null; then
-            echo "stellar-cli already installed"
-          else
-            cargo install --locked stellar-cli 2>/dev/null || echo "stellar-cli install skipped"
-          fi
 
       - name: WASM size budget
         # The binding gate is this script, not the inline loops that used to run

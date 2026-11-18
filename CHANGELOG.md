@@ -9,6 +9,18 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`soroban-sdk` 27.0.6 → 29.0.1.** SDK 29 removes
+  `contracttype(export = false)` (the spec is now limited to types reachable
+  from the contract boundary), so the attribute is dropped from the storage-key
+  enums in `contracts/common/src/keys.rs` and `contracts/refund-vault/src/lib.rs`;
+  they stay out of the spec because no entry point accepts or returns them.
+  `deploy_v2` and `update_current_contract_wasm` are deprecated in favour of
+  `deploy_contract(ContractExecutable::Wasm(_), ..)` and
+  `update_current_contract(..)` in the vault factory, shard router and budget
+  test deployers. Contract behaviour is unchanged. CI now builds through
+  stellar-cli (`stellar contract build --optimize=false`), which SDK 29
+  requires to shake the contract spec.
+
 - **`multisig-account` (issue #598): Tier A CPU budget suite for `execute_batch`
   and `rotate_signers_and_threshold`.** `execute_batch` at 1, 5 and 20 calls
   and a 10-signer rotation are gated with `#[budget_cpu_lt]` ceilings in the new

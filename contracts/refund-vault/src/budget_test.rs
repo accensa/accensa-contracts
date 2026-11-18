@@ -25,7 +25,7 @@ use crate::test_helpers::vault_init;
 use budget_macros::budget_cpu_lt;
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _, token::StellarAssetClient, Address, Bytes,
-    BytesN, Env,
+    BytesN, ContractExecutable, Env,
 };
 
 const FLOAT: i128 = 1_000_000;
@@ -48,7 +48,7 @@ impl TestDeployer {
     pub fn deploy(env: Env, wasm_hash: BytesN<32>, salt: BytesN<32>, init: VaultInit) -> Address {
         env.deployer()
             .with_current_contract(salt)
-            .deploy_v2(wasm_hash, (init,))
+            .deploy_contract(ContractExecutable::Wasm(wasm_hash), (init,))
     }
 }
 
@@ -65,7 +65,7 @@ fn setup(env: &Env, window: u32) -> (RefundVaultClient<'static>, Address, Addres
     StellarAssetClient::new(env, &token).mint(&merchant, &FLOAT);
     let init = vault_init(env, &merchant, &token, window);
     let salt = BytesN::from_array(env, &[0u8; 32]);
-    // `deploy_v2`/`with_current_contract` only run inside a contract context
+    // `deploy_contract`/`with_current_contract` only run inside a contract context
     // (the test harness has no current contract ID), so the vault is deployed
     // through a tiny natively-registered deployer contract.
     let deployer = env.register(TestDeployer, ());

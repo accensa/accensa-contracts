@@ -114,11 +114,9 @@ pub fn verify_groth16(
             break;
         }
     }
-    if c_all_zero {
-        return Ok(false);
-    }
-
-    Ok(true)
+    // All-zero c is the only remaining reject condition; every other
+    // component was checked above.
+    Ok(!c_all_zero)
 }
 
 /// Structural pre-filter for a batch validity proof against a state root.
@@ -155,9 +153,7 @@ pub fn verify_batch_zk_proof(
             break;
         }
     }
-    if is_all_zero {
-        return Ok(false);
-    }
-
-    Ok(true)
+    // All-zero a is the only remaining reject condition; the length and
+    // emptiness checks ran above.
+    Ok(!is_all_zero)
 }

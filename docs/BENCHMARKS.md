@@ -111,7 +111,7 @@ test that produces the value.
 | `authorize` | `upto-authorization` | 713,619 | Not measured (1) | `contracts/upto-authorization/src/budget_test.rs:72` (`budget_authorize`, `:76`) | Tier A WASM | 2026-10-16 |
 | `settle` (at cap) | `upto-authorization` | 985,389 | Not measured (1) | `contracts/upto-authorization/src/budget_test.rs:84` (`budget_settle_at_cap`, `:88`) | Tier A WASM | 2026-10-16 |
 | `settle` (1-unit minimum) | `upto-authorization` | 985,389 | Not measured (1) | `contracts/upto-authorization/src/budget_test.rs:97` (`budget_settle_at_min_boundary`, `:101`) | Tier A WASM | 2026-10-16 |
-| `refund` | `refund-vault` | 704,621 | 197,217 | `contracts/refund-vault/src/fuzz_test.rs:390-391` (`test_refund_resource_cost_budget`, `:394`) | test-host regression | 2026-08-30 |
+| `refund` | `refund-vault` | 651,939 | 229,690 | `contracts/refund-vault/src/fuzz_test.rs:391-392` (`test_refund_resource_cost_budget`, `:395`) | test-host regression | 2026-11-18 |
 | `anchor_batch` (N=1000) | `receipt-anchor` | 1,881,937 | 3,981,062 | `contracts/receipt-anchor/src/fuzz_test.rs:1064-1065` (`benchmark_gas_and_cpu_instructions`, `:1076`) | test-host regression | 2026-09-24 |
 | `verify_receipt` (4-leaf) | `receipt-anchor` | 780,762 | 1,378,946 | `contracts/receipt-anchor/src/fuzz_test.rs:1072-1073` (`benchmark_gas_and_cpu_instructions`, `:1076`) | test-host regression | 2026-08-29 |
 

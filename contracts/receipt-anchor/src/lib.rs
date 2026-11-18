@@ -9,7 +9,7 @@ pub mod zk_verifier;
 use accensa_common::Error;
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contractmeta, contracttype, Address,
-    BytesN, Env, InvokeError, Vec,
+    BytesN, ContractExecutable, Env, InvokeError, Vec,
 };
 pub use zk_verifier::{VerifyingKey, ZkProof};
 
@@ -1172,8 +1172,8 @@ impl ReceiptAnchor {
         // storage index (low 8 bytes), so (shard_id, index) always resolves to
         // the same address and distinct pairs never collide.
         let salt = Self::shard_salt(env, shard_id, shard_index);
-        let shard_addr = env.deployer().with_current_contract(salt).deploy_v2(
-            wasm_hash,
+        let shard_addr = env.deployer().with_current_contract(salt).deploy_contract(
+            ContractExecutable::Wasm(wasm_hash),
             (env.current_contract_address(), start_batch_id, end_batch_id),
         );
 

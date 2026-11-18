@@ -7,7 +7,7 @@ use accensa_common::{
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contractmeta, contracttype, token, xdr::ToXdr, Address,
-    Bytes, BytesN, Env, Symbol, Vec,
+    Bytes, BytesN, ContractExecutable, Env, Symbol, Vec,
 };
 
 contractmeta!(key = "name", val = "RefundVault");
@@ -48,13 +48,13 @@ pub struct RefundParam {
     pub vdf_proof: Option<BytesN<256>>,
 }
 
-// `export = false`: the vault's storage keys are internal. No entry point takes
-// or returns one, so publishing them would only inflate the wasm — and the
-// contract-spec text is embedded in the wasm, which is capped at Stellar's
-// 128 KiB contract-code limit. The live layout is documented in
+// soroban-sdk 29 removed `contracttype(export = false)`: the contract spec now
+// includes only types reachable from the contract boundary. These keys are
+// internal (no entry point takes or returns one), so they stay out of the spec
+// without an attribute. The live layout is documented in
 // `docs/storage-audit.md`.
 /// Storage keys for the vault's instance, temporary, and persistent state.
-#[contracttype(export = false)]
+#[contracttype]
 pub enum DataKey {
     Admin,
     /// Per-instance domain separator (issue #136): `sha256(contract_address)`,
@@ -1967,7 +1967,8 @@ impl RefundVault {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
-        env.deployer().update_current_contract_wasm(wasm_hash);
+        env.deployer()
+            .update_current_contract(ContractExecutable::Wasm(wasm_hash));
         Ok(())
     }
 

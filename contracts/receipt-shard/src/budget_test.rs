@@ -61,7 +61,9 @@ use std::string::{String, ToString};
 
 use super::*;
 use budget_macros::budget_cpu_lt;
-use soroban_sdk::{testutils::Address as _, vec, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{
+    testutils::Address as _, vec, Address, Bytes, BytesN, ContractExecutable, Env, Vec,
+};
 
 /// Batch id anchored into this shard by the gates below. Any id inside the
 /// shard's `[start, end)` range behaves identically — the record key is a
@@ -124,7 +126,10 @@ fn setup_shard(env: &Env) -> (ReceiptShardClient<'static>, Address) {
     let id = env
         .deployer()
         .with_address(router.clone(), BytesN::from_array(env, &[0u8; 32]))
-        .deploy_v2(wasm_hash, (router.clone(), START_BATCH_ID, END_BATCH_ID));
+        .deploy_contract(
+            ContractExecutable::Wasm(wasm_hash),
+            (router.clone(), START_BATCH_ID, END_BATCH_ID),
+        );
     (ReceiptShardClient::new(env, &id), router)
 }
 
