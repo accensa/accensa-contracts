@@ -29,7 +29,7 @@ use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
-    Address, Bytes, BytesN, Env,
+    Address, Bytes, BytesN, ContractExecutable, Env,
 };
 
 const BUYER_FUNDS: i128 = 10_000_000;
@@ -62,7 +62,7 @@ impl TestDeployer {
     ) -> Address {
         env.deployer()
             .with_current_contract(salt)
-            .deploy_v2(wasm_hash, (merchant, token))
+            .deploy_contract(ContractExecutable::Wasm(wasm_hash), (merchant, token))
     }
 }
 

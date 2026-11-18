@@ -44,7 +44,7 @@ git push origin main --tags
 ### 3. Build the WASM and Record the Toolchain
 Build the WebAssembly artifacts using the optimized release profile:
 ```bash
-cargo build --target wasm32v1-none --release
+stellar contract build --locked --optimize=false
 ```
 Our `build.rs` scripts embed the current `GIT_SHA` into the compiled WASM, so any deployed contract can be traced back to its exact source code commit. That source-to-commit provenance — commit → tag → artifact — is what this release process guarantees.
 
@@ -62,7 +62,7 @@ every contract by roughly 25% — a size that matters, because a contract code
 ledger entry is capped at 131072 bytes. To measure the artifact that actually
 gets deployed (this is what CI does before the size gate):
 ```bash
-cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
+stellar contract build --locked --optimize=false
 bash scripts/optimize_wasm.sh
 ```
 

@@ -38,15 +38,18 @@ jobs:
           # Find changed files in PR
           CHANGED_FILES=$(git diff --name-only "$BASE" "$HEAD")
 
-          # Check if contract source files are modified
-          CONTRACT_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^contracts/.*/src/' || true)
+          # Here-strings, not `echo | grep`: `grep -q` exits on the first match,
+          # so with a long changed-file list `echo` dies of SIGPIPE and
+          # `pipefail` turns the pipeline into a failure — which used to read as
+          # "CHANGELOG.md was not updated" on PRs that did update it.
+          CONTRACT_CHANGED=$(grep -E '^contracts/.*/src/' <<<"$CHANGED_FILES" || true)
 
           if [ -n "$CONTRACT_CHANGED" ]; then
             echo "Contract source files modified:"
             echo "$CONTRACT_CHANGED"
 
             # Check if CHANGELOG.md is in modified files
-            if ! echo "$CHANGED_FILES" | grep -q '^CHANGELOG.md$'; then
+            if ! grep -q '^CHANGELOG.md$' <<<"$CHANGED_FILES"; then
               echo "Error: CHANGELOG.md was not updated for contract source changes."
               echo "Add a changelog entry under ## [Unreleased], or add the 'skip-changelog' label to your PR for internal changes."
               exit 1

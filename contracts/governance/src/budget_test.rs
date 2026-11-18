@@ -38,8 +38,8 @@ use std::string::{String, ToString};
 use super::*;
 use budget_macros::budget_cpu_lt;
 use soroban_sdk::{
-    contract, contractimpl, testutils::Address as _, Address, Bytes, BytesN, Env, IntoVal, Symbol,
-    Val, Vec,
+    contract, contractimpl, testutils::Address as _, Address, Bytes, BytesN, ContractExecutable,
+    Env, IntoVal, Symbol, Val, Vec,
 };
 
 fn load_wasm(env: &Env, path: &str) -> Bytes {
@@ -70,8 +70,8 @@ impl TestDeployer {
         threshold_bps: u32,
         voting_period_ledgers: u32,
     ) -> Address {
-        env.deployer().with_current_contract(salt).deploy_v2(
-            wasm_hash,
+        env.deployer().with_current_contract(salt).deploy_contract(
+            ContractExecutable::Wasm(wasm_hash),
             (members, deposits, threshold_bps, voting_period_ledgers),
         )
     }

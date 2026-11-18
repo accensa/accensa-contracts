@@ -517,7 +517,7 @@ cargo install --locked stellar-cli
 
 ```bash
 cargo test
-cargo build --target wasm32v1-none --release    # wasm artifacts
+stellar contract build --locked               # wasm artifacts
 ```
 
 ### Deploy your own

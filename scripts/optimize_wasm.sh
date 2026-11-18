@@ -85,7 +85,7 @@ WASM_OPT="$(find_wasm_opt)"
 
 if ! compgen -G "$WASM_DIR/*.wasm" >/dev/null; then
   echo "Error: no wasm artifacts in $WASM_DIR; build them first with" >&2
-  echo "  cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release" >&2
+  echo "  stellar contract build --locked --optimize=false" >&2
   exit 1
 fi
 

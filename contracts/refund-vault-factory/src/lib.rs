@@ -22,7 +22,7 @@ mod fee;
 use accensa_common::VaultInit;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, xdr::ToXdr, Address,
-    BytesN, Env, Symbol, Vec,
+    BytesN, ContractExecutable, Env, Symbol, Vec,
 };
 
 pub mod tvl;
@@ -162,7 +162,7 @@ impl RefundVaultFactory {
         let vault = env
             .deployer()
             .with_current_contract(salt)
-            .deploy_v2(wasm_hash, (vault_init,));
+            .deploy_contract(ContractExecutable::Wasm(wasm_hash), (vault_init,));
 
         let mut vaults: Vec<Address> = env
             .storage()
