@@ -1,5 +1,10 @@
 # RefundVault state migration
 
+> For the end-to-end redeploy-and-migrate procedure (freeze, export, deploy,
+> verify, wind down) used when a contract cannot be upgraded in place, or when
+> the in-place path below is unsuitable, see
+> [`UPGRADE_AND_MIGRATION.md`](UPGRADE_AND_MIGRATION.md).
+
 RefundVault upgrades use a two-phase process so a storage migration is
 auditable and survives the WASM handoff:
 
