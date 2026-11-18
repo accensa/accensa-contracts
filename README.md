@@ -54,7 +54,11 @@ Both postures are security choices, not omissions: see
 
 ## Enforced Invariants & Test Coverage Mapping
 
-Enforced invariants, each covered by a test:
+Enforced invariants, each covered by a test. The matrix for all eight
+contracts (`RefundVault`, `ReceiptAnchor`, `Governance`, `MultisigAccount`,
+`UptoAuthorization`, `CrossChain`, `StreamVault`, `Treasury`) lives in
+[`docs/INVARIANTS_INDEX.md`](docs/INVARIANTS_INDEX.md); the two original
+contracts are summarised here:
 
 - **No double refunds** — a `payment_ref` can only be refunded once (`AlreadyRefunded`).
   *Mapped Test:* `contracts/refund-vault/src/test.rs` -> `test_double_refund_same_payment_ref_fails`
