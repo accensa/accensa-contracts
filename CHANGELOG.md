@@ -19,7 +19,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   `update_current_contract(..)` in the vault factory, shard router and budget
   test deployers. Contract behaviour is unchanged. CI now builds through
   stellar-cli (`stellar contract build --optimize=false`), which SDK 29
-  requires to shake the contract spec.
+  requires to shake the contract spec. The Changelog gate reads the changed-file
+  list through a here-string, so a large PR no longer trips SIGPIPE under
+  `pipefail` and reports a false "CHANGELOG.md was not updated".
 
 - **Internal: `ctutils` bumped to 0.4.4 and clippy 1.100 `needless_bool`
   fixed.** The lockfile bump clears RUSTSEC-2026-0385 from the `cargo deny`
