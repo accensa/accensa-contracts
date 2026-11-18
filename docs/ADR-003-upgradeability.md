@@ -1,6 +1,10 @@
 # ADR 003: Upgradeability and Immutability Posture
 
-> **Status: ACCEPTED**
+> **Status: ACCEPTED** (final; not an open question). Consequences, scope per
+> contract and the triggers for reopening this decision are recorded in
+> [`UPGRADE_DECISION_LOG.md`](UPGRADE_DECISION_LOG.md). The operational procedure
+> for contracts that cannot be upgraded in place is
+> [`UPGRADE_AND_MIGRATION.md`](UPGRADE_AND_MIGRATION.md).
 
 ## Context
 
