@@ -21,6 +21,10 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   stellar-cli (`stellar contract build --optimize=false`), which SDK 29
   requires to shake the contract spec.
 
+- **Internal: `ctutils` bumped to 0.4.4 and clippy 1.100 `needless_bool`
+  fixed.** The lockfile bump clears RUSTSEC-2026-0385 from the `cargo deny`
+  gate; `zk_verifier`'s two structural pre-filters now return the negated
+  all-zero flag directly. No contract behavior change.
 - **`multisig-account` (issue #598): Tier A CPU budget suite for `execute_batch`
   and `rotate_signers_and_threshold`.** `execute_batch` at 1, 5 and 20 calls
   and a 10-signer rotation are gated with `#[budget_cpu_lt]` ceilings in the new
