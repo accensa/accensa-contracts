@@ -9,6 +9,21 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`state-channel` (issue #1007): share state validation between update_state paths.**
+  Extracted common channel phase validation, balance checks, nonce window
+  consumption, storage update, and event emission into private helper
+  `apply_state_update`, called by both direct and delegated state updates.
+- **`multisig-account` (issue #1028): deduplicate delegate addresses in `tally_weight`.**
+  `tally_weight` now deduplicates approvers to ensure a delegate listed multiple
+  times is counted only once toward the multisig threshold.
+- **`multisig-account` (issue #1030): expose `remaining_today` allowance view.**
+  Added public read-only getter `remaining_today` on `MultisigAccount` to query
+  unspent daily spending allowance for a given signer and token.
+- **`upto-authorization` (issue #1032): pin authorization digest against domain separator edits.**
+  Added integration test `authorization_digest` asserting equality of
+  `get_authorization_digest` against a fixed golden reference digest.
+
+
 - **`soroban-sdk` 27.0.6 → 29.0.1.** SDK 29 removes
   `contracttype(export = false)` (the spec is now limited to types reachable
   from the contract boundary), so the attribute is dropped from the storage-key
