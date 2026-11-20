@@ -9,6 +9,24 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`refund-policy-vdf` (issue #988): expose modulus fingerprint getter.**
+  Added read-only `get_modulus_fingerprint() -> BytesN<32>` returning
+  `sha256(MODULUS)` to identify the fixed VDF group, with integration test
+  pinning the digest and rejecting the all-zero modulus hash.
+- **`receipt-shard` (issue #990): pin Merkle-depth bounds in diagnostics.**
+  Added integration coverage anchoring batch counts `0, 1, 2, 1000, 2049,
+  u32::MAX` and asserting `max_merkle_depth`/`consistent` diagnostics,
+  including degradation (not trap) at `u32::MAX`.
+- **`stream-vault` (issue #999): expose stream creation count getter.**
+  Added read-only `get_stream_count() -> u64` backed by the monotonic
+  `StreamCount` counter, with integration test covering initial zero,
+  increments on creation, and no decrement on cancellation.
+- **`stream-vault` (issue #1001): pin stream id monotonicity after cancel.**
+  Added integration test proving cancelled stream ids are never reused, removed
+  ids stay unavailable (`StreamNotFound`), and surviving streams keep
+  independent accounting.
+
+
 - **`treasury` (issue #1016): cover get_deployed_total and get_yield_earned on fresh treasury.**
   Added integration tests asserting `get_deployed_total` and `get_yield_earned` return
   zero on initialized treasury with empty allocations and remain zero after neutral recalls.
