@@ -9,6 +9,10 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`treasury` (issue #1020): cover execute_buyback threshold and slippage guards.**
+  Added integration tests asserting buybacks below minimum order threshold and those
+  violating slippage floors are rejected with balances intact.
+
 - **`state-channel` (issue #1007): share state validation between update_state paths.**
   Extracted common channel phase validation, balance checks, nonce window
   consumption, storage update, and event emission into private helper
