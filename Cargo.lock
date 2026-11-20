@@ -2599,6 +2599,7 @@ name = "treasury"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "proptest",
  "soroban-sdk",
 ]
 
