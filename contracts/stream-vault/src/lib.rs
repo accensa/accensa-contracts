@@ -489,6 +489,17 @@ impl StreamVault {
         env.storage().persistent().get(&DataKey::Stream(stream_id))
     }
 
+    /// Total number of streams ever created by this vault.
+    ///
+    /// Monotonic and never decremented, so callers can enumerate created stream
+    /// ids in `[0, get_stream_count())` without probing past the end.
+    pub fn get_stream_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::StreamCount)
+            .unwrap_or(0)
+    }
+
     /// Amount the merchant could claim on `stream_id` at the current ledger.
     ///
     /// # Errors
