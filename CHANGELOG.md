@@ -9,6 +9,31 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`receipt-shard` / `receipt-anchor` (issue #995): reject re-anchoring a
+  different root at an occupied batch id.** Added `anchor_batch_checked`, which
+  returns `Error::DuplicateRoot` instead of overwriting a stored record whose
+  root differs; re-submitting the identical anchoring request is an idempotent
+  no-op that leaves the record (including its first `anchored_ledger`),
+  diagnostics counters and TTLs untouched. The
+  legacy `anchor_batch` delegates to it (so the non-try client traps), the
+  router calls the checked entry through `unwrap_shard_result`, and the
+  `DuplicateRoot` doc now covers the batch-id conflict.
+- **`receipt-anchor` (issue #996): pin `BatchRecord`'s wire shape.**
+  Added a committed XDR fixture and integration test that decode it into both
+  the shard and router copies of `BatchRecord`, compare all five fields and
+  re-encode it byte-for-byte, so any one-sided rename, reorder or retype turns
+  the suite red.
+- **`receipt-shard` (issue #997): pin prune cursor semantics for absent ids.**
+  Added integration coverage showing an unanchored id between two anchored
+  ones consumes one unit of `max_batches`, advances the cursor without touching
+  diagnostics counters, and is never reported as a removal.
+- **`receipt-shard` / `receipt-anchor` (issue #998): confine prune-bounty
+  payouts to a configured asset.** The shard constructor now takes a
+  `bounty_asset`; `claim_prune_bounty` rejects every other token with
+  `Error::UnsupportedAsset` (checked before the accrual or balance is read) and
+  fails closed when no asset is recorded. The router gained an admin-gated,
+  event-emitting `set_bounty_asset` plus `get_bounty_asset`, refuses to deploy
+  a shard until one is configured, and passes it to every shard it creates.
 - **`refund-policy-vdf` (issue #988): expose modulus fingerprint getter.**
   Added read-only `get_modulus_fingerprint() -> BytesN<32>` returning
   `sha256(MODULUS)` to identify the fixed VDF group, with integration test

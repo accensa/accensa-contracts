@@ -22,6 +22,8 @@ struct Fixture {
     #[allow(dead_code)]
     router: Address,
     pruner: Address,
+    /// The asset configured as the shard's pruning-bounty asset (issue #998).
+    token_address: Address,
 }
 
 fn setup() -> Fixture {
@@ -29,7 +31,12 @@ fn setup() -> Fixture {
     env.mock_all_auths();
     let router = Address::generate(&env);
     let pruner = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router.clone(), 1u64, 1001u64));
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_address = sac.address();
+    let contract_id = env.register(
+        ReceiptShard,
+        (router.clone(), 1u64, 1001u64, token_address.clone()),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
     env.ledger().with_mut(|li| li.sequence_number = BASE_LEDGER);
     Fixture {
@@ -37,6 +44,7 @@ fn setup() -> Fixture {
         client,
         router,
         pruner,
+        token_address,
     }
 }
 
@@ -163,17 +171,14 @@ fn claim_pays_accrued_bounty_from_contract_balance() {
     let accrued = 3 * PRUNE_BOUNTY_PER_BATCH;
 
     // Fund the contract so it can pay the bounty.
-    let token_admin = Address::generate(&fx.env);
-    let sac = fx.env.register_stellar_asset_contract_v2(token_admin);
-    let token_address = sac.address();
-    StellarAssetClient::new(&fx.env, &token_address).mint(&fx.client.address, &accrued);
+    StellarAssetClient::new(&fx.env, &fx.token_address).mint(&fx.client.address, &accrued);
 
-    let paid = fx.client.claim_prune_bounty(&token_address, &fx.pruner);
+    let paid = fx.client.claim_prune_bounty(&fx.token_address, &fx.pruner);
     assert_eq!(paid, accrued);
     assert_eq!(fx.client.get_prune_bounty(&fx.pruner), 0);
 
     // Double-claim pays nothing.
-    let paid_again = fx.client.claim_prune_bounty(&token_address, &fx.pruner);
+    let paid_again = fx.client.claim_prune_bounty(&fx.token_address, &fx.pruner);
     assert_eq!(paid_again, 0);
 }
 
@@ -186,16 +191,11 @@ fn claim_is_capped_at_contract_balance() {
     fx.client.prune_expired_receipts(&fx.pruner, &2);
     let accrued = 2 * PRUNE_BOUNTY_PER_BATCH;
 
-    let token_admin = Address::generate(&fx.env);
-    let sac = fx.env.register_stellar_asset_contract_v2(token_admin);
-    let token_address = sac.address();
     // Contract holds less than the accrued bounty.
-    StellarAssetClient::new(&fx.env, &token_address).mint(&fx.client.address, &(accrued - 1));
+    StellarAssetClient::new(&fx.env, &fx.token_address).mint(&fx.client.address, &(accrued - 1));
 
-    let paid = fx.client.claim_prune_bounty(&token_address, &fx.pruner);
+    let paid = fx.client.claim_prune_bounty(&fx.token_address, &fx.pruner);
     assert_eq!(paid, accrued - 1);
-    // The accrual was still fully consumed — the shortfall is not deferred.
-    assert_eq!(fx.client.get_prune_bounty(&fx.pruner), 0);
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────

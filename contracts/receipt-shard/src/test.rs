@@ -11,7 +11,10 @@ fn setup() -> (Env, ReceiptShardClient<'static>, Address, u64, u64) {
     env.mock_all_auths();
     let router = Address::generate(&env);
     let (start, end) = (1u64, 1001u64);
-    let contract_id = env.register(ReceiptShard, (router.clone(), start, end));
+    let contract_id = env.register(
+        ReceiptShard,
+        (router.clone(), start, end, Address::generate(&env)),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
     (env, client, router, start, end)
 }

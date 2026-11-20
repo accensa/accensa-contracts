@@ -73,7 +73,9 @@ pub enum Error {
     /// A shard call failed or returned a value that would not decode (not a
     /// deliberate `BatchNotFound`).
     ShardCallFailed = 102,
-    /// An attempt was made to anchor a Merkle root identical to the currently active root.
+    /// An attempt was made to anchor a Merkle root identical to the currently
+    /// active root, or to re-anchor a batch id whose stored root differs from
+    /// the submitted one (issue #995). The stored record is never overwritten.
     DuplicateRoot = 103,
     /// Destination shard must differ from the source shard (issue #551).
     DestinationMismatch = 104,

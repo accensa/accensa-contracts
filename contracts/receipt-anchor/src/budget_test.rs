@@ -71,6 +71,15 @@ fn setup_router(env: &Env) -> (ReceiptAnchorClient<'static>, Address) {
     env.mock_all_auths();
     let merchant = Address::generate(env);
     client.initialize(&merchant, &shard_wasm_hash);
+    // Every shard deploys with the router's configured bounty asset (#998).
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(env))
+        .address();
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&crate::DataKey::BountyAsset, &token);
+    });
     (client, merchant)
 }
 

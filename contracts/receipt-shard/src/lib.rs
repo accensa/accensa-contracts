@@ -40,6 +40,11 @@ pub enum DataKey {
     /// Decommissioned shards retain their address for historical discovery but
     /// no longer accept writes.
     Active,
+    /// The single token asset in which this shard pays pruning bounties
+    /// (issue #998). Set at construction; a shard that carries no recorded
+    /// asset refuses every `claim_prune_bounty` with [`Error::UnsupportedAsset`]
+    /// rather than paying in a caller-chosen token.
+    BountyAsset,
 }
 
 /// Structurally identical to `ReceiptAnchor::BatchRecord`. Soroban cross-contract
@@ -105,7 +110,13 @@ pub struct ReceiptShard;
 impl ReceiptShard {
     /// Runs atomically with `deploy_v2`, so a shard is never observable in an
     /// uninitialized state between deployment and setup.
-    pub fn __constructor(env: Env, router: Address, start_batch_id: u64, end_batch_id: u64) {
+    pub fn __constructor(
+        env: Env,
+        router: Address,
+        start_batch_id: u64,
+        end_batch_id: u64,
+        bounty_asset: Address,
+    ) {
         env.storage().instance().set(&DataKey::Router, &router);
         env.storage()
             .instance()
@@ -116,6 +127,9 @@ impl ReceiptShard {
         env.storage()
             .instance()
             .set(&DataKey::PrunedUpTo, &start_batch_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::BountyAsset, &bounty_asset);
         env.storage().instance().set(&DataKey::Active, &true);
         env.storage()
             .instance()
@@ -126,7 +140,35 @@ impl ReceiptShard {
     /// shard's assigned `[start, end)` range — the router is solely
     /// responsible for computing that correctly, so a violation here means a
     /// router bug, not a recoverable user error.
+    ///
+    /// This is the legacy entry point kept for interface stability. It
+    /// delegates to [`Self::anchor_batch_checked`]; a caller that invokes it
+    /// through the generated client traps on the returned error instead of
+    /// silently overwriting a record.
     pub fn anchor_batch(
+        env: Env,
+        batch_id: u64,
+        root: BytesN<32>,
+        count: u32,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<(), Error> {
+        Self::anchor_batch_checked(env, batch_id, root, count, period_start, period_end)
+    }
+
+    /// Router-facing variant of [`Self::anchor_batch`] that reports, rather
+    /// than traps on, a conflict (issue #995).
+    ///
+    /// A record already stored at `batch_id` is never overwritten by a
+    /// different root: the call returns [`Error::DuplicateRoot`] so the router
+    /// can surface it to the merchant. Re-submitting the exact same anchoring
+    /// request (root, count and both period bounds) is an idempotent no-op —
+    /// the record, including the ledger it was first anchored at, its
+    /// diagnostics counters and its TTLs are all left untouched — so a replay
+    /// can never bump the live totals. A same-root record whose other fields
+    /// differ (for example a corrected `count`) still updates in place,
+    /// preserving the historical re-anchor accounting.
+    pub fn anchor_batch_checked(
         env: Env,
         batch_id: u64,
         root: BytesN<32>,
@@ -163,16 +205,31 @@ impl ReceiptShard {
             return Err(Error::BatchNotFound);
         }
 
+        let anchored_ledger = env.ledger().sequence();
+        let previous: Option<BatchRecord> =
+            env.storage().persistent().get(&DataKey::Batch(batch_id));
+        if let Some(prev) = previous.as_ref() {
+            if prev.root != root {
+                return Err(Error::DuplicateRoot);
+            }
+            // The caller asked for exactly what is already stored, so keep
+            // the first record (and the ledger it was anchored at) as is.
+            if prev.count == count
+                && prev.period_start == period_start
+                && prev.period_end == period_end
+            {
+                return Ok(());
+            }
+        }
+
         let record = BatchRecord {
             root,
             count,
             period_start,
             period_end,
-            anchored_ledger: env.ledger().sequence(),
+            anchored_ledger,
         };
 
-        let previous: Option<BatchRecord> =
-            env.storage().persistent().get(&DataKey::Batch(batch_id));
         diagnostics::record_anchor(&env, batch_id, previous.as_ref(), count);
 
         env.storage()
@@ -346,6 +403,18 @@ impl ReceiptShard {
             .instance()
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
         Ok(router)
+    }
+
+    /// Returns the single token asset this shard pays pruning bounties in
+    /// (issue #998), or `NotInitialized` when the instance carries no
+    /// `BountyAsset` entry. `claim_prune_bounty` fails closed with
+    /// [`Error::UnsupportedAsset`] in that state rather than paying an
+    /// arbitrary caller-chosen token.
+    pub fn get_bounty_asset(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::BountyAsset)
+            .ok_or(Error::NotInitialized)
     }
 
     /// Returns `(start_batch_id, end_batch_id)`, the shard's assigned

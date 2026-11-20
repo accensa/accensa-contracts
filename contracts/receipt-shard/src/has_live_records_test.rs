@@ -18,7 +18,7 @@ fn test_has_live_records_uninitialised_shard_returns_not_initialized() {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64));
+    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64, Address::generate(&env)));
 
     env.as_contract(&contract_id, || {
         env.storage().instance().remove(&DataKey::StartBatchId);
@@ -36,7 +36,7 @@ fn test_has_live_records_missing_end_batch_id_returns_not_initialized() {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64));
+    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64, Address::generate(&env)));
 
     env.as_contract(&contract_id, || {
         env.storage().instance().remove(&DataKey::EndBatchId);
@@ -53,7 +53,7 @@ fn test_has_live_records_missing_start_batch_id_returns_not_initialized() {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64));
+    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64, Address::generate(&env)));
 
     env.as_contract(&contract_id, || {
         env.storage().instance().remove(&DataKey::StartBatchId);
@@ -70,7 +70,7 @@ fn test_has_live_records_empty_shard_returns_ok_false() {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64));
+    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64, Address::generate(&env)));
 
     env.as_contract(&contract_id, || {
         assert_eq!(
@@ -86,7 +86,7 @@ fn test_has_live_records_with_batch_returns_ok_true() {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64));
+    let contract_id = env.register(ReceiptShard, (router, 1u64, 5u64, Address::generate(&env)));
 
     env.as_contract(&contract_id, || {
         let record = sample_batch_record(&env);

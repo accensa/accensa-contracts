@@ -33,7 +33,7 @@
 //! transfer so a claim cannot pay out twice.
 
 use crate::{
-    BatchRecord, DataKey, ReceiptShard, ReceiptShardArgs, ReceiptShardClient, TTL_EXTEND,
+    BatchRecord, DataKey, Error, ReceiptShard, ReceiptShardArgs, ReceiptShardClient, TTL_EXTEND,
     TTL_THRESHOLD,
 };
 use soroban_sdk::{contractevent, contractimpl, token::Client as TokenClient, Address, Env};
@@ -156,11 +156,26 @@ impl ReceiptShard {
 
     /// Settle a caller's accrued pruning bounty.
     ///
+    /// Pays only in the shard's configured bounty asset (issue #998): a claim
+    /// naming any other token is rejected with [`Error::UnsupportedAsset`]
+    /// before the accrual or the token balance is read, and a shard whose
+    /// `BountyAsset` entry is missing fails closed with the same error instead
+    /// of paying an arbitrary token it happens to hold.
+    ///
     /// Transfers `claimer`'s full accrued balance from the contract's own
-    /// balance of `token` (capped at what the contract actually holds) and
-    /// zeroes the accrual *before* the transfer, so a re-entered or
-    /// repeated claim cannot pay out twice. Returns the amount paid.
-    pub fn claim_prune_bounty(env: Env, token: Address, claimer: Address) -> i128 {
+    /// balance of that asset (capped at what the contract actually holds) and
+    /// zeroes the accrual *before* the transfer, so a re-entered or repeated
+    /// claim cannot pay out twice. Returns the amount paid.
+    pub fn claim_prune_bounty(env: Env, token: Address, claimer: Address) -> Result<i128, Error> {
+        let bounty_asset: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::BountyAsset)
+            .ok_or(Error::UnsupportedAsset)?;
+        if token != bounty_asset {
+            return Err(Error::UnsupportedAsset);
+        }
+
         claimer.require_auth();
 
         let accrued: i128 = env
@@ -180,9 +195,9 @@ impl ReceiptShard {
             if payout > 0 {
                 TokenClient::new(&env, &token).transfer(&contract_addr, &claimer, &payout);
             }
-            return payout;
+            return Ok(payout);
         }
-        0
+        Ok(0)
     }
 
     /// The bounty `caller` has accrued but not yet claimed, in stroops.
