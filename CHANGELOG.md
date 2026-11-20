@@ -15,6 +15,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`treasury` (issue #1017): ensure_liquidity reports shortfall with InsufficientBalance.**
   `ensure_liquidity` now validates that recalled liquidity meets the required
   balance, returning `Error::InsufficientBalance` on shortfalls.
+- **`treasury` (issue #1018): property-test split_by_weights sums and dust allocation.**
+  Added property-based tests verifying partition sum conservation and deterministic
+  dust assignment to earliest index among tied maximum weights.
 
 - **`state-channel` (issue #1007): share state validation between update_state paths.**
   Extracted common channel phase validation, balance checks, nonce window
