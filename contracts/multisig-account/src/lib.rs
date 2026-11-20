@@ -249,6 +249,18 @@ impl MultisigAccount {
         limits::spent_today(&env, &signer, &token)
     }
 
+    /// Read-only: remaining daily allowance for `signer` on `token`.
+    ///
+    /// Returns `limit - spent` (or the full limit if window has elapsed, and 0 if exhausted).
+    pub fn remaining_today(env: Env, signer: Address, token: Address) -> i128 {
+        let limit = limits::daily_limit(&env, &token);
+        if limit <= 0 {
+            return 0;
+        }
+        let spent = limits::spent_today(&env, &signer, &token);
+        limit.saturating_sub(spent).max(0)
+    }
+
     /// Verify an Ed25519 `signature` by `public_key` over `message`,
     /// rejecting malleable encodings.
     ///
