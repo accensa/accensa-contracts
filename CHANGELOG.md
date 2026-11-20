@@ -12,6 +12,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`treasury` (issue #1016): cover get_deployed_total and get_yield_earned on fresh treasury.**
   Added integration tests asserting `get_deployed_total` and `get_yield_earned` return
   zero on initialized treasury with empty allocations and remain zero after neutral recalls.
+- **`treasury` (issue #1017): ensure_liquidity reports shortfall with InsufficientBalance.**
+  `ensure_liquidity` now validates that recalled liquidity meets the required
+  balance, returning `Error::InsufficientBalance` on shortfalls.
 
 - **`state-channel` (issue #1007): share state validation between update_state paths.**
   Extracted common channel phase validation, balance checks, nonce window

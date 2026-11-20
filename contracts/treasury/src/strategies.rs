@@ -570,7 +570,11 @@ pub fn ensure_liquidity(
         let (principal, _) = recall(env, &alloc.strategy, take)?;
         outstanding = outstanding.saturating_sub(principal);
     }
-    Ok(client.balance(&env.current_contract_address()))
+    let current_balance = client.balance(&env.current_contract_address());
+    if current_balance < needed {
+        return Err(Error::InsufficientBalance);
+    }
+    Ok(current_balance)
 }
 
 /// Internal recall shared by `rebalance` and `recall_strategy`.
