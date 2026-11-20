@@ -18,6 +18,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`treasury` (issue #1018): property-test split_by_weights sums and dust allocation.**
   Added property-based tests verifying partition sum conservation and deterministic
   dust assignment to earliest index among tied maximum weights.
+- **`treasury` (issue #1019): reject treasury as its own vesting schedule beneficiary.**
+  `add_schedule` now validates that `beneficiary != env.current_contract_address()`,
+  returning `Error::InvalidSchedule` to prevent self-transfer lockups.
 
 - **`state-channel` (issue #1007): share state validation between update_state paths.**
   Extracted common channel phase validation, balance checks, nonce window

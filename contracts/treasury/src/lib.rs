@@ -273,6 +273,10 @@ impl Treasury {
         require_initialized(&env)?;
         require_admin(&env);
 
+        if beneficiary == env.current_contract_address() {
+            return Err(Error::InvalidSchedule);
+        }
+
         let schedule = VestingSchedule {
             beneficiary: beneficiary.clone(),
             total,
