@@ -9,6 +9,18 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`treasury` (issue #1016): cover get_deployed_total and get_yield_earned on fresh treasury.**
+  Added integration tests asserting `get_deployed_total` and `get_yield_earned` return
+  zero on initialized treasury with empty allocations and remain zero after neutral recalls.
+- **`treasury` (issue #1017): ensure_liquidity reports shortfall with InsufficientBalance.**
+  `ensure_liquidity` now validates that recalled liquidity meets the required
+  balance, returning `Error::InsufficientBalance` on shortfalls.
+- **`treasury` (issue #1018): property-test split_by_weights sums and dust allocation.**
+  Added property-based tests verifying partition sum conservation and deterministic
+  dust assignment to earliest index among tied maximum weights.
+- **`treasury` (issue #1019): reject treasury as its own vesting schedule beneficiary.**
+  `add_schedule` now validates that `beneficiary != env.current_contract_address()`,
+  returning `Error::InvalidSchedule` to prevent self-transfer lockups.
 - **`treasury` (issue #1020): cover execute_buyback threshold and slippage guards.**
   Added integration tests asserting buybacks below minimum order threshold and those
   violating slippage floors are rejected with balances intact.
