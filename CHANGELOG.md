@@ -18,6 +18,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`treasury` (issue #1022): track and expose schedule count.**
   Maintained monotonic schedule counter in instance storage incremented on each
   `add_schedule` call, exposed via public `get_schedule_count` getter.
+- **`governance` (issue #1025): pin 32-member governance capacity limit.**
+  Added integration tests proving governance initializes with 32 members and rejects
+  a 33rd member with `InvalidMembers`.
 
 - **`state-channel` (issue #1007): share state validation between update_state paths.**
   Extracted common channel phase validation, balance checks, nonce window
