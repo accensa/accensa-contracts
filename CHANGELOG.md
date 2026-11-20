@@ -9,6 +9,10 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`treasury` (issue #1016): cover get_deployed_total and get_yield_earned on fresh treasury.**
+  Added integration tests asserting `get_deployed_total` and `get_yield_earned` return
+  zero on initialized treasury with empty allocations and remain zero after neutral recalls.
+
 - **`state-channel` (issue #1007): share state validation between update_state paths.**
   Extracted common channel phase validation, balance checks, nonce window
   consumption, storage update, and event emission into private helper
