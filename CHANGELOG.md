@@ -15,6 +15,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`treasury` (issue #1021): reject under-delivering strategy recalls.**
   Added integration test asserting that strategies transferring less than reported
   are rejected with `StrategyUnderpaid` without corrupting allocations.
+- **`treasury` (issue #1022): track and expose schedule count.**
+  Maintained monotonic schedule counter in instance storage incremented on each
+  `add_schedule` call, exposed via public `get_schedule_count` getter.
 
 - **`state-channel` (issue #1007): share state validation between update_state paths.**
   Extracted common channel phase validation, balance checks, nonce window
