@@ -12,6 +12,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`treasury` (issue #1020): cover execute_buyback threshold and slippage guards.**
   Added integration tests asserting buybacks below minimum order threshold and those
   violating slippage floors are rejected with balances intact.
+- **`treasury` (issue #1021): reject under-delivering strategy recalls.**
+  Added integration test asserting that strategies transferring less than reported
+  are rejected with `StrategyUnderpaid` without corrupting allocations.
 
 - **`state-channel` (issue #1007): share state validation between update_state paths.**
   Extracted common channel phase validation, balance checks, nonce window
