@@ -108,6 +108,8 @@ pub enum DataKey {
     DistributionState,
     /// A user's yield distribution checkpoint and staking record.
     UserDistribution(Address),
+    /// Total number of vesting schedules created.
+    ScheduleCount,
 }
 
 /// Errors returned by [`Treasury`].
@@ -296,6 +298,15 @@ impl Treasury {
         env.storage().persistent().set(&key, &schedule);
         bump_ttl(&env, &key);
 
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ScheduleCount)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::ScheduleCount, &(count + 1));
+
         ScheduleCreatedEvent {
             beneficiary,
             total,
@@ -307,6 +318,14 @@ impl Treasury {
 
         extend_instance_ttl_default(&env);
         Ok(())
+    }
+
+    /// Read-only: total number of vesting schedules created.
+    pub fn get_schedule_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ScheduleCount)
+            .unwrap_or(0)
     }
 
     /// Admin-only convenience for the protocol's standard allocation: a
