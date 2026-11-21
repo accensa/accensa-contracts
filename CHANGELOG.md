@@ -9,6 +9,29 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`receipt-anchor` (issue #958): store the root ring buffer in persistent
+  storage.** `push_shard_root` wrote `DataKey::ShardRootBuffer(shard_id)` into
+  the router's *instance* entry, so a full 100-root history (~3.2 KB) grew the
+  single entry every call to the contract loads and archives - once per logical
+  shard. The buffer is now its own persistent entry per `shard_id`, extended
+  with the same `TTL_THRESHOLD` / `TTL_EXTEND` pair the rate-limit bucket uses;
+  `verify_receipt_by_root` and `get_root_buffer` read from persistent storage.
+  `tests/root_buffer_storage.rs` pins the tenancy, the 100-entry cap, and that
+  anchoring pays rent.
+- **`receipt-anchor` (issue #957): cover the rate-limit refill schedule.**
+  `tests/rate_limit_refill.rs` exercises the burst-2 window, the reject at the
+  interval boundary, and a call arriving more than one interval late - where the
+  interval clock restarts from the *late* call, not from the previous one.
+- **`receipt-anchor` (issue #955): prove a pending admin transfer grants
+  nothing.** `tests/admin_transfer_pending.rs` asserts the proposed admin cannot
+  act while the transfer is pending, that the swap happens only on
+  `accept_admin`, and that the refusal is a host-level authorization failure
+  rather than a contract error.
+- **`receipt-anchor` (issue #960): give the re-initialization guard teeth.**
+  `tests/reinitialize_guard.rs` replays `initialize` with a *different* admin and
+  an all-zero shard wasm hash, then anchors. Guarding after the writes would
+  rewrite the pinned hash and fail the anchor, so the assertion discriminates
+  the ordering instead of only the return value.
 - **`refund-policy-vdf` (issue #988): expose modulus fingerprint getter.**
   Added read-only `get_modulus_fingerprint() -> BytesN<32>` returning
   `sha256(MODULUS)` to identify the fixed VDF group, with integration test
