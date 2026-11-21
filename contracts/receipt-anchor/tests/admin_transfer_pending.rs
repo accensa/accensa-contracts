@@ -46,6 +46,10 @@ fn pending_window() -> (Env, ReceiptAnchorClient<'static>, Address, Address) {
         &admin,
         &env.deployer().upload_contract_wasm(shard_wasm::WASM),
     );
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    anchor.set_bounty_asset(&token);
 
     // The proposal is itself an admin action.
     anchor.transfer_admin(&proposed);

@@ -30,14 +30,15 @@ fn setup() -> Fixture {
     env.mock_all_auths();
     let router = Address::generate(&env);
     let pruner = Address::generate(&env);
-    let shard = env.register(ReceiptShard, (router, 1u64, 1001u64));
-    let client = ReceiptShardClient::new(&env, &shard);
-    env.ledger().with_mut(|li| li.sequence_number = BASE_LEDGER);
 
     let token_admin = Address::generate(&env);
     let token = env
         .register_stellar_asset_contract_v2(token_admin)
         .address();
+
+    let shard = env.register(ReceiptShard, (router, 1u64, 1001u64, token.clone()));
+    let client = ReceiptShardClient::new(&env, &shard);
+    env.ledger().with_mut(|li| li.sequence_number = BASE_LEDGER);
 
     Fixture {
         env,
@@ -130,10 +131,15 @@ fn empty_shard_balance_keeps_the_whole_accrual() {
 fn zero_accrual_makes_no_token_call_and_no_storage_write() {
     let fx = setup();
 
-    // A plain address is not a token contract: if the zero-accrual claim
-    // touched it at all, the host call would fail instead of returning 0.
+    // Calling with an unsupported token fails with UnsupportedAsset.
     let not_a_token = Address::generate(&fx.env);
-    assert_eq!(fx.client.claim_prune_bounty(&not_a_token, &fx.pruner), 0);
+    assert!(fx
+        .client
+        .try_claim_prune_bounty(&not_a_token, &fx.pruner)
+        .is_err());
+
+    // Calling with the configured bounty asset when accrual is zero returns 0 without writing storage.
+    assert_eq!(fx.client.claim_prune_bounty(&fx.token, &fx.pruner), 0);
 
     // No storage entry was created for the caller.
     assert!(!fx.env.as_contract(&fx.shard, || fx
@@ -143,6 +149,6 @@ fn zero_accrual_makes_no_token_call_and_no_storage_write() {
         .has(&DataKey::PruneBounty(fx.pruner.clone()))));
 
     // And a second claim still pays nothing.
-    assert_eq!(fx.client.claim_prune_bounty(&not_a_token, &fx.pruner), 0);
+    assert_eq!(fx.client.claim_prune_bounty(&fx.token, &fx.pruner), 0);
     assert_eq!(fx.client.get_prune_bounty(&fx.pruner), 0);
 }

@@ -25,6 +25,14 @@ fn setup() -> (Env, ReceiptAnchorClient<'static>, Address) {
     let merchant = Address::generate(&env);
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
     client.initialize(&merchant, &shard_wasm_hash);
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&crate::DataKey::BountyAsset, &token);
+    });
     (env, client, merchant)
 }
 

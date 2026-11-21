@@ -82,6 +82,10 @@ fn a_second_initialize_cannot_retarget_the_admin_or_the_shard_wasm() {
     // The pinned wasm is still the real shard: an anchor still factory-deploys
     // shard 0. With a stored all-zero hash this call fails to deploy, so this
     // is the assertion that catches the write-then-guard ordering.
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    anchor.set_bounty_asset(&token);
     let root = BytesN::from_array(&env, &[9u8; 32]);
     assert_eq!(anchor.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &10), 1);
     assert_eq!(

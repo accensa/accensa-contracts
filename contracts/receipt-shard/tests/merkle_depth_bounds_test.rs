@@ -7,7 +7,10 @@ fn anchor_case(count: u32, root_byte: u8) -> receipt_shard::diagnostics::ShardDi
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64));
+    let contract_id = env.register(
+        ReceiptShard,
+        (router, 1u64, 1001u64, Address::generate(&env)),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
     let root = BytesN::from_array(&env, &[root_byte; 32]);
     client.anchor_batch(&1, &root, &count, &0, &100);

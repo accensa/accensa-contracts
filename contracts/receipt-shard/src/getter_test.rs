@@ -22,7 +22,10 @@ fn uninitialised_shard() -> (Env, ReceiptShardClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64));
+    let contract_id = env.register(
+        ReceiptShard,
+        (router, 1u64, 1001u64, Address::generate(&env)),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
     env.as_contract(&contract_id, || {
         env.storage().instance().remove(&DataKey::Router);
@@ -57,7 +60,10 @@ fn test_get_range_missing_end_batch_id_returns_typed_error() {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64));
+    let contract_id = env.register(
+        ReceiptShard,
+        (router, 1u64, 1001u64, Address::generate(&env)),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
     env.as_contract(&contract_id, || {
         env.storage().instance().remove(&DataKey::EndBatchId);
@@ -73,7 +79,10 @@ fn test_getters_after_instance_ttl_window_return_typed_error() {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64));
+    let contract_id = env.register(
+        ReceiptShard,
+        (router, 1u64, 1001u64, Address::generate(&env)),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
 
     // Age the ledger to the very end of the instance's durability window and
@@ -118,7 +127,10 @@ fn test_getters_happy_path_returns_constructor_values() {
     env.mock_all_auths();
     let router = Address::generate(&env);
     let (start, end) = (1u64, 1001u64);
-    let contract_id = env.register(ReceiptShard, (router.clone(), start, end));
+    let contract_id = env.register(
+        ReceiptShard,
+        (router.clone(), start, end, Address::generate(&env)),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
 
     assert_eq!(client.get_router(), router);
@@ -133,7 +145,10 @@ fn test_successful_getter_read_extends_instance_ttl() {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64));
+    let contract_id = env.register(
+        ReceiptShard,
+        (router, 1u64, 1001u64, Address::generate(&env)),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
 
     // Age the instance until only half the low-water mark remains, exactly

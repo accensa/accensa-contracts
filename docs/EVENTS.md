@@ -94,6 +94,20 @@ between consecutive anchors via `set_min_anchor_interval(interval)`.
   - `new_interval` (`u32`): The interval in force after the change; `0` disables the check.
   - `ledger` (`u32`): The ledger sequence of the change.
 
+### 7. `BountyAssetUpdatedEvent`
+Emitted when the merchant reconfigures the token asset every newly deployed
+storage shard uses to pay pruning bounties via `set_bounty_asset(asset)`
+(issue #998). Shards already deployed keep the asset they were constructed
+with; the change applies only to shards created afterwards.
+
+- **Topics**: `("bounty_asset_updated_event", previous_asset: Option<Address>)`
+- **Data Map**:
+  - `new_asset` (`Address`): The bounty asset in force after the change.
+  - `ledger` (`u32`): The ledger sequence of the change.
+
+`previous_asset` is `None` on the first configuration and the replaced asset on
+every later call.
+
 ---
 
 ### `ReceiptLeafInsertedEvent`

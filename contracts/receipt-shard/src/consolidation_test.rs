@@ -9,7 +9,10 @@ use soroban_sdk::{
 fn setup(env: &Env) -> (ReceiptShardClient<'static>, Address) {
     env.mock_all_auths();
     let router = Address::generate(env);
-    let id = env.register(ReceiptShard, (router.clone(), 1u64, 201u64));
+    let id = env.register(
+        ReceiptShard,
+        (router.clone(), 1u64, 201u64, Address::generate(env)),
+    );
     (ReceiptShardClient::new(env, &id), router)
 }
 
@@ -27,7 +30,10 @@ fn record(env: &Env, root_byte: u8, count: u32) -> BatchRecord {
 fn consolidation_preserves_records_and_roots() {
     let env = Env::default();
     let (source, _router) = setup(&env);
-    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 201u64));
+    let target_id = env.register(
+        ReceiptShard,
+        (source.get_router(), 1u64, 201u64, Address::generate(&env)),
+    );
     let target = ReceiptShardClient::new(&env, &target_id);
 
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
@@ -66,7 +72,10 @@ fn consolidation_preserves_records_and_roots() {
 fn partial_consolidation_keeps_source_active() {
     let env = Env::default();
     let (source, _router) = setup(&env);
-    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 201u64));
+    let target_id = env.register(
+        ReceiptShard,
+        (source.get_router(), 1u64, 201u64, Address::generate(&env)),
+    );
     let root1 = BytesN::from_array(&env, &[4u8; 32]);
     let root2 = BytesN::from_array(&env, &[5u8; 32]);
     source.anchor_batch(&1, &root1, &1, &0, &1);
@@ -88,7 +97,10 @@ fn partial_consolidation_keeps_source_active() {
 fn destination_rejects_batch_outside_its_range() {
     let env = Env::default();
     let (source, _router) = setup(&env);
-    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 2u64));
+    let target_id = env.register(
+        ReceiptShard,
+        (source.get_router(), 1u64, 2u64, Address::generate(&env)),
+    );
     let target = ReceiptShardClient::new(&env, &target_id);
 
     let record = record(&env, 9, 1);
@@ -111,7 +123,10 @@ fn decommission_requires_empty_shard() {
 fn consolidation_emits_source_and_destination_ids() {
     let env = Env::default();
     let (source, _router) = setup(&env);
-    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 201u64));
+    let target_id = env.register(
+        ReceiptShard,
+        (source.get_router(), 1u64, 201u64, Address::generate(&env)),
+    );
     let root = BytesN::from_array(&env, &[8u8; 32]);
     source.anchor_batch(&1, &root, &1, &0, &1);
 
@@ -149,7 +164,10 @@ fn consolidation_rejects_same_source_and_destination() {
 fn consolidation_rejects_missing_batch_with_typed_error() {
     let env = Env::default();
     let (source, _router) = setup(&env);
-    let target_id = env.register(ReceiptShard, (source.get_router(), 1u64, 201u64));
+    let target_id = env.register(
+        ReceiptShard,
+        (source.get_router(), 1u64, 201u64, Address::generate(&env)),
+    );
 
     let res = source.try_consolidate(&target_id, &1, &2, &soroban_sdk::vec![&env, 99u64]);
     assert_eq!(res, Err(Ok(crate::Error::BatchNotFound)));

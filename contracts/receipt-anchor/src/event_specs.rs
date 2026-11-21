@@ -14,6 +14,7 @@ mod test {
         // ShardCreatedEvent: ("shard_created_event", shard_id: u64, shard_index: u64) | Data: shard_address, start_batch_id, end_batch_id
         // RateLimitUpdatedEvent: ("rate_limit_updated_event", previous_burst_capacity: u32, previous_refill_interval_secs: u32) | Data: new_burst_capacity, new_refill_interval_secs, ledger
         // AnchorIntervalUpdatedEvent: ("anchor_interval_updated_event", previous_interval: u32) | Data: new_interval, ledger
+        // BountyAssetUpdatedEvent: ("bounty_asset_updated_event", previous_asset: Option<Address>) | Data: new_asset, ledger
         
         let events = env.events().all();
         // This test validates that any emitted events from this crate follow the schema.

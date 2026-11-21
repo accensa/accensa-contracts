@@ -9,6 +9,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`receipt-anchor`, `receipt-shard` (issues #995, #998): reject re-anchor overwrites and configure bounty asset.**
+  Shards reject duplicate roots via `try_anchor_batch_checked`, and router requires configured `bounty_asset` before deploying shards. (#1085)
+
 - **`refund-policy-vdf` / `refund-policy-time` (issues #980, #981, #982, #983):
   pin the gaps the suite left open.** `refund-policy-time` gains
   `tests/statelessness_test.rs`, which reads all three storage maps as the policy

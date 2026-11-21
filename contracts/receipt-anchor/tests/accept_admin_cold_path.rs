@@ -35,6 +35,10 @@ fn setup() -> (Env, ReceiptAnchorClient<'static>, Address) {
     let anchor = ReceiptAnchorClient::new(&env, &anchor_id);
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
     anchor.initialize(&merchant, &shard_wasm_hash);
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    anchor.set_bounty_asset(&token);
 
     (env, anchor, merchant)
 }

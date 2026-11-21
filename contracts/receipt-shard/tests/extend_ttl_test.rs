@@ -25,7 +25,10 @@ fn setup() -> (Env, ReceiptShardClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64));
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64, token));
     let client = ReceiptShardClient::new(&env, &contract_id);
     env.ledger().with_mut(|li| li.sequence_number = BASE_LEDGER);
     (env, client, contract_id)
