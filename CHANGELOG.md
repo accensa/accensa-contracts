@@ -9,6 +9,30 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`state-channel` (issue #1006): reject self-paying channels at opening.**
+  `open_channel` now returns `Error::InvalidAmount` when the receiver is the
+  contract itself or equals the sender, before any token transfer or channel
+  record is written. `tests/open_channel_validation_test.rs` covers both
+  rejections and a legitimate distinct-party opening.
+
+- **`stream-vault` (issue #1004): add permissionless `extend_stream_ttl`.**
+  The new entry point reloads an existing stream and re-applies the persistent
+  `store()` TTL extension without changing its fields or requiring auth, so a
+  keeper can keep a long-running escrow from archiving. Unknown and cancelled
+  ids return `StreamNotFound`; `tests/extend_stream_ttl_test.rs` pins the TTL
+  bump, unchanged record, no auth, and both error paths.
+
+- **`stream-vault` (issue #1003): cover cancellation after a pre-start pause.**
+  Added `tests/cancel_paused_before_start_test.rs`, which pauses before
+  `start_ledger`, advances into the scheduled interval, and asserts the
+  merchant receives zero and the buyer the full deposit. Test-only.
+
+- **`stream-vault` (issue #1000): refresh instance TTL on pause and resume.**
+  `pause_stream` and `resume_stream` now call `extend_instance_ttl` after their
+  persistent writes, matching `claim_stream` and `cancel_stream`, so a stream
+  left paused cannot let the instance configuration archive. Covered by
+  `tests/pause_resume_ttl_test.rs`.
+
 - **`receipt-shard` (issue #994): keep the unpayable remainder of a prune bounty
   accrued.** `claim_prune_bounty` now reads the payout (`min(accrual, contract
   balance)`) before mutating storage and writes `accrued - payout` back instead

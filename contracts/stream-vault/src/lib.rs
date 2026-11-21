@@ -402,6 +402,7 @@ impl StreamVault {
         }
         stream.paused_at = Some(now);
         store(&env, stream_id, &stream);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         StreamPausedEvent {
             stream_id,
@@ -437,6 +438,7 @@ impl StreamVault {
             .ok_or(Error::MathOverflow)?;
         stream.paused_at = None;
         store(&env, stream_id, &stream);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         StreamResumedEvent {
             stream_id,
@@ -487,6 +489,12 @@ impl StreamVault {
     /// The open stream `stream_id`, or `None` once it is closed or cancelled.
     pub fn get_stream(env: Env, stream_id: u64) -> Option<DisbursementStream> {
         env.storage().persistent().get(&DataKey::Stream(stream_id))
+    }
+
+    pub fn extend_stream_ttl(env: Env, stream_id: u64) -> Result<(), Error> {
+        let stream = load(&env, stream_id)?;
+        store(&env, stream_id, &stream);
+        Ok(())
     }
 
     /// Total number of streams ever created by this vault.

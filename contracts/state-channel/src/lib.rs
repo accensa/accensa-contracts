@@ -272,6 +272,10 @@ impl StateChannel {
 
         sender.require_auth();
 
+        if receiver == env.current_contract_address() || sender == receiver {
+            return Err(Error::InvalidAmount);
+        }
+
         let token: Address = env
             .storage()
             .instance()
