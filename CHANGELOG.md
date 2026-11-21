@@ -9,6 +9,14 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`refund-policy-time` (issue #975): window gate fails closed on `u32` overflow.**
+  `check_time_gates` now computes `paid_at_ledger + window` with `checked_add`
+  and treats an unrepresentable sum as `Error::WindowExpired`. Previously the
+  addition overflowed into a host abort for an anchor within `window` of
+  `u32::MAX`, so one malformed payment anchor made a class of claims uncallable
+  instead of denied. `tests/window_overflow_test.rs` pins the denial and shows
+  every representable verdict is unchanged.
+
 - **`receipt-anchor` (issue #958): store the root ring buffer in persistent
   storage.** `push_shard_root` wrote `DataKey::ShardRootBuffer(shard_id)` into
   the router's *instance* entry, so a full 100-root history (~3.2 KB) grew the

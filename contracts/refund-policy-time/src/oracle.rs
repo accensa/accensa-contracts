@@ -149,8 +149,19 @@ pub(crate) fn check_time_gates(
     deadline: u64,
     ctx: &PolicyContext,
 ) -> Result<(), Error> {
-    if window > 0 && ctx.current_ledger > ctx.paid_at_ledger + window {
-        return Err(Error::WindowExpired);
+    // `paid_at_ledger + window` is a `u32` addition and the release profile
+    // turns an overflow into a host trap, which every caller handles
+    // differently. A payment anchor within `window` of `u32::MAX` therefore has
+    // no representable deadline: treat that as expired rather than panicking,
+    // so one malformed anchor cannot make a class of claims uncallable.
+    if window > 0 {
+        let outside_window = match ctx.paid_at_ledger.checked_add(window) {
+            Some(last_allowed) => ctx.current_ledger > last_allowed,
+            None => true,
+        };
+        if outside_window {
+            return Err(Error::WindowExpired);
+        }
     }
     if deadline > 0 && ctx.timestamp > deadline {
         return Err(Error::RefundExpired);
