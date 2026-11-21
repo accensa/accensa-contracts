@@ -42,6 +42,9 @@ pub struct VdfPolicy;
 #[cfg(test)]
 mod test;
 
+#[cfg(test)]
+mod fuzz_test;
+
 #[contractimpl]
 impl RefundPolicy for VdfPolicy {
     /// Rejects a claim when the configured delay is unproven.
