@@ -194,8 +194,8 @@ fn claim_is_capped_at_contract_balance() {
 
     let paid = fx.client.claim_prune_bounty(&token_address, &fx.pruner);
     assert_eq!(paid, accrued - 1);
-    // The accrual was still fully consumed — the shortfall is not deferred.
-    assert_eq!(fx.client.get_prune_bounty(&fx.pruner), 0);
+    // The unpayable remainder stays accrued instead of being burned.
+    assert_eq!(fx.client.get_prune_bounty(&fx.pruner), 1);
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
