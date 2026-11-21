@@ -43,6 +43,10 @@ fn setup() -> (Env, ReceiptAnchorClient<'static>) {
         &merchant,
         &env.deployer().upload_contract_wasm(shard_wasm::WASM),
     );
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    anchor.set_bounty_asset(&token);
     anchor.set_anchor_rate_limit(&BURST, &(INTERVAL as u32));
 
     (env, anchor)

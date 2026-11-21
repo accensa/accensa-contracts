@@ -29,6 +29,14 @@ fn setup<'a>() -> TestEnv<'a> {
     let anchor = ReceiptAnchorClient::new(&env, &anchor_id);
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
     anchor.initialize(&merchant, &shard_wasm_hash);
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    env.as_contract(&anchor_id, || {
+        env.storage()
+            .instance()
+            .set(&receipt_anchor::DataKey::BountyAsset, &token);
+    });
 
     TestEnv {
         env,

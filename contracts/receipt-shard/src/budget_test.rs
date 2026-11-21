@@ -128,7 +128,12 @@ fn setup_shard(env: &Env) -> (ReceiptShardClient<'static>, Address) {
         .with_address(router.clone(), BytesN::from_array(env, &[0u8; 32]))
         .deploy_contract(
             ContractExecutable::Wasm(wasm_hash),
-            (router.clone(), START_BATCH_ID, END_BATCH_ID),
+            (
+                router.clone(),
+                START_BATCH_ID,
+                END_BATCH_ID,
+                Address::generate(env),
+            ),
         );
     (ReceiptShardClient::new(env, &id), router)
 }
