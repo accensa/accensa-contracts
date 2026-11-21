@@ -9,6 +9,23 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`refund-policy-vdf` / `refund-policy-time` (issues #980, #981, #982, #983):
+  pin the gaps the suite left open.** `refund-policy-time` gains
+  `tests/statelessness_test.rs`, which reads all three storage maps as the policy
+  contract after each entry point and asserts they stay empty on both the `Time`
+  and the `Vdf` path, plus three control tests so the emptiness assertion cannot
+  pass vacuously, and `tests/state_transition_test.rs`, a 17-row boundary table
+  over `determine_refund_state` (window edge, `+/- 1`, disabled zero window,
+  report-cutoff, `i64::MAX` anchor) with a partition test. `refund-policy-vdf`
+  gains `tests/small_delay_test.rs` for the `delay <= 2` region where
+  `floor(2^T / l)` is 0 and the honest witness is `pi = 1`, including the case
+  that stops that from becoming a blanket pass: `pi = 1` at `delay = 300` is
+  still rejected. The one non-test edit is the module doc in `src/vdf.rs`, which
+  pointed at `vdf_test.rs`; the budget test it means lives in `src/test.rs`, and
+  `tests/modulus_shape_test.rs` now fails if a cited file name is absent, so the
+  pointer cannot go stale again. No entry point, storage key, event or constant
+  changed; WASM size for both contracts is unchanged and inside budget.
+
 - **`receipt-shard` (issue #994): keep the unpayable remainder of a prune bounty
   accrued.** `claim_prune_bounty` now reads the payout (`min(accrual, contract
   balance)`) before mutating storage and writes `accrued - payout` back instead
@@ -41,6 +58,30 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   assertion; the untampered pair is asserted to verify first. The prover
   helpers in `src/test.rs` are only widened to `pub(crate)`. Test-only; the
   test takes ~22 s locally.
+
+- **`receipt-anchor` (issue #953): an out-of-range anchor interval reports a bad
+  argument, not a bad batch.** `set_min_anchor_interval` rejected an interval
+  above `MAX_ANCHOR_INTERVAL` (86,400) with `Error::BatchTooLarge`, the code
+  `anchor_batch` returns when the receipt count exceeds `MAX_BATCH_SIZE`; a
+  mistyped interval read back as a batch problem and a client switching on the
+  code retried with a smaller batch. It now returns `Error::InvalidAmount`, and
+  the rustdoc states the accepted range as `0..=86_400`, ceiling inclusive.
+  The range itself is unchanged and no error code was added or renumbered.
+  `tests/anchor_interval_error.rs` pins both sides of the boundary.
+
+- **`receipt-anchor` (issues #951, #954, #956): three guards that had no test
+  reaching them.** Test-only. `tests/shard_root_isolation.rs` (#951) anchors
+  into two shards before querying the other, so `verify_receipt_by_root` walks
+  a *populated* foreign buffer and answers `Error::RootNotFound`; the existing
+  test queried a shard that had never anchored, which falls into the
+  empty-buffer case, so dropping `shard_id` from the storage key passed it.
+  `tests/shard_id_registry.rs` (#954) re-anchors into shards that are already
+  registered, which is the repeat the `any` dedupe guard in
+  `register_shard_id` exists for and which nothing exercised; an
+  unconditional append makes `get_shard_ids` return `[5, 9, 5, 9]`.
+  `tests/accept_admin_cold_path.rs` (#956) re-reads `get_admin` and
+  `get_pending_admin` after each rejected `accept_admin` instead of asserting
+  only the returned code.
 
 - **`refund-policy-time` (issue #979): pin `max_report_age = 0` to same-second
   reports.** Added `tests/max_age_zero_test.rs` with its own mock delivery
@@ -226,7 +267,6 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   ids stay unavailable (`StreamNotFound`), and surviving streams keep
   independent accounting.
 
-
 - **`treasury` (issue #1016): cover get_deployed_total and get_yield_earned on fresh treasury.**
   Added integration tests asserting `get_deployed_total` and `get_yield_earned` return
   zero on initialized treasury with empty allocations and remain zero after neutral recalls.
@@ -265,7 +305,6 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`upto-authorization` (issue #1032): pin authorization digest against domain separator edits.**
   Added integration test `authorization_digest` asserting equality of
   `get_authorization_digest` against a fixed golden reference digest.
-
 
 - **`soroban-sdk` 27.0.6 → 29.0.1.** SDK 29 removes
   `contracttype(export = false)` (the spec is now limited to types reachable
