@@ -9,6 +9,13 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`refund-policy-time` (issue #979): pin `max_report_age = 0` to same-second
+  reports.** Added `tests/max_age_zero_test.rs` with its own mock delivery
+  oracle: a `Lost` report stamped at the claim's second is honoured and
+  overrides an expired window, the same report one second older is ignored and
+  the claim is rejected `WindowExpired`. Records that zero is the strictest age,
+  not a disabled check, unlike `window` and `deadline`. Test-only.
+
 - **`refund-policy-time` (issue #978): foreign params shapes error, they do not
   trap.** Added `tests/params_schema_test.rs` asserting a real `VdfPolicyParams`
   blob, a map missing `window`, an empty map, an `oracle` key holding a
