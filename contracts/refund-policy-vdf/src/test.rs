@@ -40,7 +40,7 @@ fn payment_ref(env: &Env, slot: u8) -> BytesN<32> {
 
 /// The challenge the contract derives for a payment: `sha256(payment_ref)`
 /// zero-extended to the low 32 bytes of a 128-byte big-endian value.
-fn challenge_for(env: &Env, payment_ref: &BytesN<32>) -> [u8; 128] {
+pub(crate) fn challenge_for(env: &Env, payment_ref: &BytesN<32>) -> [u8; 128] {
     let hash = env
         .crypto()
         .sha256(&Bytes::from_slice(env, &payment_ref.to_array()));
@@ -53,7 +53,7 @@ fn challenge_for(env: &Env, payment_ref: &BytesN<32>) -> [u8; 128] {
 /// with `l = derive_challenge(x, y, t)`, by genuinely performing `t` sequential
 /// squarings. Shares `derive_challenge` with the contract, so the transcript
 /// binding is identical by construction.
-fn eval_vdf(env: &Env, challenge: &[u8; 128], t: u32) -> ([u8; 128], [u8; 128]) {
+pub(crate) fn eval_vdf(env: &Env, challenge: &[u8; 128], t: u32) -> ([u8; 128], [u8; 128]) {
     let n = U1024::from_be_slice(&vdf::MODULUS);
     let x = U1024::from_be_slice(challenge).rem(&NonZero::new(n).unwrap());
 
@@ -78,7 +78,7 @@ fn eval_vdf(env: &Env, challenge: &[u8; 128], t: u32) -> ([u8; 128], [u8; 128]) 
 
 /// Packs `(output, witness)` into the 256-byte `output || witness` blob the
 /// vault hands the policy as `vdf_proof`.
-fn pack(env: &Env, output: &[u8; 128], witness: &[u8; 128]) -> BytesN<256> {
+pub(crate) fn pack(env: &Env, output: &[u8; 128], witness: &[u8; 128]) -> BytesN<256> {
     let mut buf = [0u8; 256];
     buf[..128].copy_from_slice(output);
     buf[128..].copy_from_slice(witness);
