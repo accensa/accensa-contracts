@@ -9,6 +9,13 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`refund-policy-time` (issue #978): foreign params shapes error, they do not
+  trap.** Added `tests/params_schema_test.rs` asserting a real `VdfPolicyParams`
+  blob, a map missing `window`, an empty map, an `oracle` key holding a
+  non-address, an oracle shape missing `window`, and a non-numeric `window` each
+  return `Error::InvalidPolicyParams` through `try_evaluate`. Test-only; no row
+  traps, so the decode mapping in `src/lib.rs` is unchanged.
+
 - **`refund-policy-time` (issue #977): reject an oracle that is the policy itself.**
   `oracle::evaluate` now returns `Error::InvalidPolicyParams` when
   `TimeOraclePolicyParams::oracle` equals `env.current_contract_address()`,
