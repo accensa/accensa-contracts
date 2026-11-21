@@ -817,8 +817,11 @@ fn test_zero_reserve_full_deploy() {
 
 #[test]
 fn test_full_reserve_cannot_deploy() {
-    let (_env, vault_client, merchant, _token, _strategy, _tc) =
-        setup_with_strategy(10_000, 10_000);
+    // Issue #965 made `reserve + max > 10_000` an invalid pair, so the old
+    // `(10_000, 10_000)` fixture is now rejected by its own second setter. The
+    // reserve alone is what this test exercises, so the ceiling drops to 0 —
+    // the reserve check runs first and still reports `InsufficientReserve`.
+    let (_env, vault_client, merchant, _token, _strategy, _tc) = setup_with_strategy(10_000, 0);
 
     vault_client.deposit(&merchant, &5_000_000, &None);
 
