@@ -10,10 +10,20 @@
 //! Coverage before this file was partial: `src/test.rs` grew the counter by one
 //! after a withdrawal but started from the setup value and never looked at the
 //! event field, and its "no increment on failure" test exercised a failed
-//! `refund`, not a failed `withdraw`. Nothing pinned that `SelfTransfer` and
-//! `InsufficientFloat` return *before* the bump. Move the bump above either
-//! rejection and the counter assertions below fail, because a rejected
-//! withdrawal would then consume the nonce every caller had already read.
+//! `refund`, not a failed `withdraw`. Nothing pinned what a caller sees after a
+//! rejected `withdraw`.
+//!
+//! Which half of that can be proven by a test is worth writing down, because a
+//! mutation run settled it. Moving `increment_nonce` above the `SelfTransfer`
+//! check *is* caught — but from a different direction than expected: such a
+//! helper call also bumps on the successful paths, so `two_withdrawals_raise…`
+//! and the event field both go wrong. Moving the bump above the
+//! `InsufficientFloat` check survives, because a contract-level error makes the
+//! host revert the failed invocation's storage, so the counter reads the same
+//! whether the bump came before or after that rejection. The `before`/`after`
+//! assertions below therefore hold the *observable guarantee* — a rejected
+//! withdrawal consumes nothing, and its retry can reuse the nonce already read
+//! — not a claim about the order of lines in `withdraw`.
 
 use accensa_common::{Error, VaultInit};
 use refund_vault::{RefundVault, RefundVaultClient};
@@ -160,8 +170,8 @@ fn two_withdrawals_raise_the_counter_by_exactly_two() {
     );
 }
 
-/// `SelfTransfer` returns before the bump, and the corrected call then reports
-/// the same pre-read nonce the rejected one would have consumed.
+/// A `SelfTransfer` rejection leaves the counter alone, and the corrected call
+/// then reports the same pre-read nonce the rejected one would have consumed.
 #[test]
 fn self_transfer_leaves_the_counter_for_its_retry() {
     let v = setup();
@@ -175,7 +185,7 @@ fn self_transfer_leaves_the_counter_for_its_retry() {
     assert_eq!(
         v.client.get_nonce(),
         before,
-        "`SelfTransfer` must return above `increment_nonce`",
+        "`SelfTransfer` must leave the nonce a caller already read intact",
     );
 
     let buyer = Address::generate(&v.env);
@@ -184,7 +194,7 @@ fn self_transfer_leaves_the_counter_for_its_retry() {
     assert_eq!(v.client.get_nonce(), before + 1);
 }
 
-/// An over-float request returns before the bump too. The retry uses a smaller
+/// An over-float request leaves the counter alone too. The retry uses a smaller
 /// amount against the same float — the float is not topped up here, because a
 /// `deposit` would itself consume a nonce and blur which call bumped.
 #[test]
@@ -201,7 +211,7 @@ fn insufficient_float_leaves_the_counter_for_its_retry() {
     assert_eq!(
         v.client.get_nonce(),
         before,
-        "`InsufficientFloat` must return above `increment_nonce`",
+        "`InsufficientFloat` must leave the nonce a caller already read intact",
     );
 
     let buyer = Address::generate(&v.env);

@@ -3,14 +3,24 @@
 //!
 //! Both setters open with `if basis_points > 10_000 { InvalidRatio }` and then
 //! write the value under their own `DataKey`; `deploy_to_yield` later divides
-//! by `10_000` using whatever is stored. Nothing called either setter before
-//! this file, so two mutations were invisible to CI:
+//! by `10_000` using whatever is stored. What this file pins is the
+//! client-visible half of that contract: the exact boundary, what the getter
+//! reports on either side of it, and where the check sits relative to the
+//! caller's authority.
 //!
-//!   * `>` widened to `>=` — a legitimate 100 % reserve (or a 100 % deploy
-//!     ceiling) starts being refused, and
-//!   * the comparison moved below the admin check or the storage write — an
-//!     over-10_000 ratio would then be *stored* before being rejected, handing
-//!     `deploy_to_yield` a divisor the check exists to make impossible.
+//!   * a legitimate 100 % reserve (or a 100 % ceiling) starts being refused if
+//!     `>` widens to `>=`, and
+//!   * moved below the admin read, an unauthorised caller could probe which
+//!     ratios are legal and an over-limit one would look like an auth failure
+//!     instead of a range error.
+//!
+//! One limit of this approach is worth stating because a mutation run proved
+//! it: writing the value *before* the range check — the bug the check exists to
+//! prevent — cannot be caught here. A contract-level error makes the host
+//! revert the failed invocation, so the ratio is absent afterwards whether the
+//! write came before or after the comparison, and the mutation survives. The
+//! "still reads the sentinel" assertions below therefore pin the guarantee a
+//! caller can observe, not the order of lines inside the setter.
 //!
 //! Each row of the table therefore asserts both directions: what the getter
 //! reads after an accepted call, and what it still reads after a rejected one.
@@ -19,6 +29,15 @@
 //! is itself a table entry, and `max_deploy_ratio` defaults to 10_000, the
 //! boundary. Values are read back through `get_yield_info` rather than raw
 //! storage keys, so the read path `deploy_to_yield` uses stays covered.
+//!
+//! Scope note: #965 added a *second*, different rejection to both setters —
+//! `ratios_compatible` refuses a reserve/ceiling pair whose sum exceeds 10_000
+//! bp, and `tests/ratio_sum_invariant.rs` pins that. Both reasons answer
+//! `InvalidRatio`, so nothing here may leave the pair configured past the limit
+//! or a test would be asserting the wrong rule. The table rows do it by setting
+//! one side only, on a fresh vault whose counterpart key is never written; the
+//! two cross-setter tests cannot (they need both keys to be real), so they hold
+//! the counterpart at 0 bp and give each setter its own vault.
 
 use accensa_common::{Error, VaultInit};
 use refund_vault::{RefundVault, RefundVaultClient};
@@ -39,6 +58,13 @@ const SENTINEL_DEPLOY: u32 = 7_777;
 /// `true` for the values the contract is specified to store.
 fn in_range(basis_points: u32) -> bool {
     basis_points <= LIMIT
+}
+
+/// Which of the two setters a test is driving, so the other half of the #965
+/// pair can be pinned to a value that cannot conflict with it.
+enum Setter {
+    Reserve,
+    Ceiling,
 }
 
 /// A vault with no yield strategy and no ratio ever set. `mock_all_auths` keeps
@@ -109,7 +135,7 @@ fn reserve_row(bps: u32) {
         assert_eq!(
             client.get_yield_info().reserve_ratio,
             SENTINEL_RESERVE,
-            "a refused ratio must not reach storage",
+            "a refused ratio leaves the stored value where the sentinel put it",
         );
     }
 }
@@ -141,7 +167,7 @@ fn deploy_row(bps: u32) {
         assert_eq!(
             client.get_yield_info().max_deploy_ratio,
             SENTINEL_DEPLOY,
-            "a refused ceiling must not reach storage",
+            "a refused ceiling leaves the stored value where the sentinel put it",
         );
     }
 }
@@ -160,16 +186,35 @@ fn max_deploy_ratio_table_matches_the_same_limit() {
     }
 }
 
-/// The two setters share one boundary, so on a single vault they must give the
-/// same answer for the same value. Asserting them against each other — not only
-/// against `in_range` — is what catches the pair drifting apart in one edit.
+/// A vault whose *counterpart* key is configured but neutral: holding the other
+/// half of the #965 pair at 0 bp keeps `reserve + ceiling <= 10_000` true for
+/// every row, so the pair rule is satisfied and what is left on the table is the
+/// per-setter range cap this file is about. The counterpart has to be present
+/// for the comparison to mean anything: an unset key makes `ratios_compatible`
+/// skip the pair check entirely, so a one-sided vault proves nothing about a
+/// configured pair.
+fn setup_with_counterpart_zero(setter: Setter) -> RefundVaultClient<'static> {
+    let client = setup();
+    match setter {
+        Setter::Reserve => client.set_max_deploy_ratio(&0),
+        Setter::Ceiling => client.set_reserve_ratio(&0),
+    }
+    client
+}
+
+/// The two setters share one boundary, so for the same value they must give the
+/// same answer. Asserting them against each other — not only against `in_range`
+/// — is what catches the pair drifting apart in one edit. One vault per setter
+/// because both keys on a single vault would also engage #965's sum rule; the
+/// other half of the pair is pinned to 0 bp (see `setup_with_counterpart_zero`)
+/// so the only reason either setter can say `InvalidRatio` here is its own cap.
 #[test]
 fn the_two_limits_answer_identically_for_every_row() {
     for bps in TABLE {
-        let client = setup();
-        let reserve = client.try_set_reserve_ratio(&bps);
-        let deploy = client.try_set_max_deploy_ratio(&bps);
+        let reserve = setup_with_counterpart_zero(Setter::Reserve).try_set_reserve_ratio(&bps);
+        let deploy = setup_with_counterpart_zero(Setter::Ceiling).try_set_max_deploy_ratio(&bps);
 
+        assert_eq!(reserve, deploy, "{bps} bp: the two caps disagree");
         if in_range(bps) {
             assert_eq!(reserve, Ok(Ok(())), "{bps} bp: reserve setter refused");
             assert_eq!(deploy, Ok(Ok(())), "{bps} bp: deploy setter refused");
@@ -185,35 +230,41 @@ fn the_two_limits_answer_identically_for_every_row() {
                 "{bps} bp: deploy setter accepted an over-limit ratio"
             );
         }
-
-        let info = client.get_yield_info();
-        if in_range(bps) {
-            assert_eq!(info.reserve_ratio, bps);
-            assert_eq!(info.max_deploy_ratio, bps);
-        }
     }
 }
 
 /// The boundary itself, stated once outside the table so a change to `LIMIT`
-/// that the contract does not make is caught by name.
+/// that the contract does not make is caught by name, and that a rejection
+/// leaves the previously accepted value in place. Each setter gets its own
+/// vault for the same reason as the test above: the pair must stay legal
+/// (counterpart at 0 bp) so `InvalidRatio` here can only be the range cap.
 #[test]
 fn the_boundary_is_exactly_ten_thousand_basis_points() {
-    let client = setup();
-    assert_eq!(client.try_set_reserve_ratio(&10_000), Ok(Ok(())));
-    assert_eq!(client.get_yield_info().reserve_ratio, 10_000);
+    let reserve = setup_with_counterpart_zero(Setter::Reserve);
+    assert_eq!(reserve.try_set_reserve_ratio(&10_000), Ok(Ok(())));
+    assert_eq!(reserve.get_yield_info().reserve_ratio, 10_000);
     assert_eq!(
-        client.try_set_reserve_ratio(&10_001),
+        reserve.try_set_reserve_ratio(&10_001),
         Err(Ok(Error::InvalidRatio))
     );
-    assert_eq!(client.get_yield_info().reserve_ratio, 10_000);
+    assert_eq!(
+        reserve.get_yield_info().reserve_ratio,
+        10_000,
+        "the refused ratio leaves the accepted one in place",
+    );
 
-    assert_eq!(client.try_set_max_deploy_ratio(&10_000), Ok(Ok(())));
-    assert_eq!(client.get_yield_info().max_deploy_ratio, 10_000);
+    let ceiling = setup_with_counterpart_zero(Setter::Ceiling);
+    assert_eq!(ceiling.try_set_max_deploy_ratio(&10_000), Ok(Ok(())));
+    assert_eq!(ceiling.get_yield_info().max_deploy_ratio, 10_000);
     assert_eq!(
-        client.try_set_max_deploy_ratio(&10_001),
+        ceiling.try_set_max_deploy_ratio(&10_001),
         Err(Ok(Error::InvalidRatio))
     );
-    assert_eq!(client.get_yield_info().max_deploy_ratio, 10_000);
+    assert_eq!(
+        ceiling.get_yield_info().max_deploy_ratio,
+        10_000,
+        "the refused ceiling leaves the accepted one in place",
+    );
 }
 
 /// Where the comparison sits: an out-of-range value is answered by the
