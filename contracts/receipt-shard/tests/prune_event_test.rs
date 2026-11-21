@@ -22,7 +22,9 @@ fn setup() -> Fixture {
     env.mock_all_auths();
     let router = Address::generate(&env);
     let pruner = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64));
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_address = sac.address();
+    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64, token_address));
     let client = ReceiptShardClient::new(&env, &contract_id);
     env.ledger().with_mut(|li| li.sequence_number = BASE_LEDGER);
     Fixture {
