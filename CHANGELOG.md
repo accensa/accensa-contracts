@@ -9,6 +9,39 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`receipt-shard` (issue #994): keep the unpayable remainder of a prune bounty
+  accrued.** `claim_prune_bounty` now reads the payout (`min(accrual, contract
+  balance)`) before mutating storage and writes `accrued - payout` back instead
+  of zeroing the accrual. A shortfall — a normal state, since bounties accrue per
+  pruned batch while the contract pays from whatever token balance it holds — is
+  no longer burned: funding the shard later pays the remainder, and the payouts
+  sum to the original accrual. The accrual is still settled *before* the
+  transfer, so a repeated or re-entered claim cannot pay twice, and a
+  zero-accrual claim makes no token call and no storage write. Covered by
+  `tests/bounty_shortfall_test.rs`.
+
+- **`receipt-shard` (issue #992): cover `verify_receipt` proof-length bounds.**
+  Added `tests/verify_receipt_bounds_test.rs` pinning an empty proof against a
+  one-leaf batch (matches, and a different leaf reports `false` rather than an
+  error), a 10-sibling proof for an unanchored id (`BatchNotFound`) and an
+  11-sibling proof for the same id (`ProofTooLong`), which pins that the length
+  guard runs before the storage read. Test-only.
+
+- **`receipt-shard` (issue #991): assert `extend_batch_ttl` really extends.**
+  Added `tests/extend_ttl_test.rs`, which reads the persistent entry's TTL
+  before and after the call and asserts it is extended back to `TTL_EXTEND`
+  once fewer than `TTL_THRESHOLD` ledgers remain, from a caller with no mocked
+  authorization. Also pins `BatchNotFound` for a never-anchored id, with no
+  entry created. A no-op regression would now fail. Test-only.
+
+- **`refund-policy-vdf` (issue #989): property-test every single flipped proof
+  bit.** Added `src/bitflip_test.rs`, which generates one honest proof at delay
+  300 and asserts `Err(Ok(Error::InvalidVdfProof))` for all 1024 bits of
+  `output` and all 1024 bits of `witness`, restoring each byte after the
+  assertion; the untampered pair is asserted to verify first. The prover
+  helpers in `src/test.rs` are only widened to `pub(crate)`. Test-only; the
+  test takes ~22 s locally.
+
 - **`refund-policy-time` (issue #979): pin `max_report_age = 0` to same-second
   reports.** Added `tests/max_age_zero_test.rs` with its own mock delivery
   oracle: a `Lost` report stamped at the claim's second is honoured and
