@@ -596,6 +596,24 @@ fn increment_nonce(env: &Env) -> u64 {
     current
 }
 
+/// The emergency-stop guard (issue #446), read from the flag `pause` and
+/// `unpause` own. Every mutating entry point refuses while it is set, so the
+/// read lives here once instead of as a copy per call site (issue #969): a
+/// change to the stop semantics — or to the error it reports — now reaches all
+/// of them at once, and `tests/paused_guard_parity.rs` pins that each still
+/// fires before its own argument, auth and nonce checks.
+fn ensure_not_paused(env: &Env) -> Result<(), Error> {
+    if env
+        .storage()
+        .instance()
+        .get(&DataKey::IsPaused)
+        .unwrap_or(false)
+    {
+        return Err(Error::Paused);
+    }
+    Ok(())
+}
+
 /// The caller's current replay-protection nonce (issue #122), defaulting to
 /// `0` for a caller that has never submitted a claim. Read as the "expected
 /// next nonce" for the next `refund`/`claim_batch`/`process_batch` call.
@@ -1154,14 +1172,7 @@ impl RefundVault {
     ) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -1339,14 +1350,7 @@ impl RefundVault {
     ) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         let merchant: Address = env
             .storage()
@@ -1390,14 +1394,7 @@ impl RefundVault {
 
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         let merchant: Address = env
             .storage()
@@ -1440,14 +1437,7 @@ impl RefundVault {
             return Err(Error::BatchTooLarge);
         }
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         let merchant: Address = env
             .storage()
@@ -1509,14 +1499,7 @@ impl RefundVault {
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -2324,14 +2307,7 @@ impl RefundVault {
     /// only. Returns the amount distributed.
     pub fn distribute_yield(env: Env) -> Result<i128, Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
         let amount = strategy::distribute(&env)?;
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         accensa_common::reentrancy::ReentrancyGuard::release(&env);
@@ -2406,14 +2382,7 @@ impl RefundVault {
     pub fn deploy_to_yield(env: Env, amount: i128) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -2524,14 +2493,7 @@ impl RefundVault {
     pub fn withdraw_from_yield(env: Env, principal: i128) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         if principal <= 0 {
             return Err(Error::InvalidAmount);
@@ -2565,14 +2527,7 @@ impl RefundVault {
     pub fn harvest_yield(env: Env) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         let merchant: Address = env
             .storage()
