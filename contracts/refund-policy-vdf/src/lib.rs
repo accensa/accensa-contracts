@@ -43,6 +43,9 @@ pub struct VdfPolicy;
 mod test;
 
 #[cfg(test)]
+mod bitflip_test;
+
+#[cfg(test)]
 mod fuzz_test;
 
 #[contractimpl]
