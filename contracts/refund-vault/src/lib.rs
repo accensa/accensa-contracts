@@ -676,6 +676,34 @@ fn persist_yield_ttl(env: &Env, key: &DataKey) {
         .extend_ttl(key, TTL_EXTEND, TTL_EXTEND);
 }
 
+/// Whether a reserve floor and a deployment ceiling can both be honoured
+/// (issue #965).
+///
+/// `reserve_ratio` is the share of total value that must stay liquid and
+/// `max_deploy_ratio` the share that may leave. A pair summing past 10,000 bp
+/// therefore promises more deployment than the reserve permits: with 8,000 and
+/// 5,000 the deploy path's reserve floor caps output at 20 % and the 50 %
+/// ceiling can never bind, so the merchant's stated limit is silently
+/// unreachable. Rejecting the pair where it is configured turns that into a
+/// configuration error.
+///
+/// Each side is `Option`al because a key that has never been set has no stored
+/// value to conflict with — only the defaults `deploy_to_yield` applies when it
+/// reads them (a zero reserve and a full 10,000 bp ceiling), and treating those
+/// as configured would make the first `set_reserve_ratio` on a fresh vault
+/// impossible. So only the second of the two calls can be rejected, which is
+/// the same asymmetry the setters already have.
+fn ratios_compatible(reserve: Option<u32>, max_deploy: Option<u32>) -> Result<(), Error> {
+    if let (Some(reserve), Some(max_deploy)) = (reserve, max_deploy) {
+        // Both operands are already range-checked to `<= 10_000` by the caller,
+        // so the sum cannot overflow a `u32`.
+        if reserve + max_deploy > 10_000 {
+            return Err(Error::InvalidRatio);
+        }
+    }
+    Ok(())
+}
+
 /// Refund fee in raw token units: `ceil(amount * fee_bps / 10_000)`.
 ///
 /// Rounding **always rounds up**, so a remainder smaller than one smallest
@@ -2352,6 +2380,9 @@ impl RefundVault {
 
     /// Set the minimum reserve ratio in basis points (1 bp = 0.01%).
     /// E.g., 2000 = 20% of total vault value must remain as liquid token balance.
+    ///
+    /// Rejects `InvalidRatio` when the new reserve and the already-stored
+    /// deployment ceiling cannot both be honoured (issue #965).
     pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
         if basis_points > 10_000 {
             return Err(Error::InvalidRatio);
@@ -2364,6 +2395,9 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        let max_deploy: Option<u32> = env.storage().persistent().get(&DataKey::MaxDeployRatio);
+        ratios_compatible(Some(basis_points), max_deploy)?;
+
         env.storage()
             .persistent()
             .set(&DataKey::ReserveRatio, &basis_points);
@@ -2375,6 +2409,9 @@ impl RefundVault {
 
     /// Set the maximum deployment ratio in basis points.
     /// E.g., 8000 = at most 80% of total vault value can be deployed to yield.
+    ///
+    /// Rejects `InvalidRatio` when the new ceiling and the already-stored
+    /// reserve ratio cannot both be honoured (issue #965).
     pub fn set_max_deploy_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
         if basis_points > 10_000 {
             return Err(Error::InvalidRatio);
@@ -2386,6 +2423,9 @@ impl RefundVault {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
+
+        let reserve: Option<u32> = env.storage().persistent().get(&DataKey::ReserveRatio);
+        ratios_compatible(reserve, Some(basis_points))?;
 
         env.storage()
             .persistent()
