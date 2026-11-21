@@ -9,6 +9,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`receipt-anchor`, `receipt-shard` (issues #995, #998): reject re-anchor overwrites and configure bounty asset.**
+  Shards reject duplicate roots via `try_anchor_batch_checked`, and router requires configured `bounty_asset` before deploying shards. (#1085)
+
 - **`refund-policy-time` (issue #979): pin `max_report_age = 0` to same-second
   reports.** Added `tests/max_age_zero_test.rs` with its own mock delivery
   oracle: a `Lost` report stamped at the claim's second is honoured and
