@@ -133,7 +133,10 @@ fn zero_accrual_makes_no_token_call_and_no_storage_write() {
 
     // Calling with an unsupported token fails with UnsupportedAsset.
     let not_a_token = Address::generate(&fx.env);
-    assert!(fx.client.try_claim_prune_bounty(&not_a_token, &fx.pruner).is_err());
+    assert!(fx
+        .client
+        .try_claim_prune_bounty(&not_a_token, &fx.pruner)
+        .is_err());
 
     // Calling with the configured bounty asset when accrual is zero returns 0 without writing storage.
     assert_eq!(fx.client.claim_prune_bounty(&fx.token, &fx.pruner), 0);
