@@ -32,6 +32,27 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   an all-zero shard wasm hash, then anchors. Guarding after the writes would
   rewrite the pinned hash and fail the anchor, so the assertion discriminates
   the ordering instead of only the return value.
+- **`refund-policy-vdf` (issue #984): prove output/witness reduction to canonical form.**
+  Added `tests/reduction_test.rs` covering a non-canonical envelope `y + N`,
+  a witness `N + 1` and `N`, and a congruence-broken envelope, asserting the
+  Wesolowski verifier folds each back mod `N` and rejects the degenerate
+  cases with `Error::InvalidVdfProof`.
+- **`refund-policy-vdf` (issue #985): fuzz that `evaluate` rejects with typed errors, never traps.**
+  Added `src/fuzz_test.rs`, a deterministic xorshift64 driver running 2000
+  cases each over well-formed `VdfPolicyParams` crossed with random 256-byte
+  proofs and random `PolicyContext` shapes. Every outcome must be a typed
+  `Ok(Ok(()))` or `Err(Ok(Error::*))`; a `HostError` trap fails the run.
+- **`refund-policy-vdf` (issue #986): validate the slashing penalty instead of paying out.**
+  `calculate_slashing_penalty` now returns `Result<i128, Error>` and rejects
+  `amount < 0` and `penalty > 100` with `Error::InvalidAmount` instead of
+  silently clamping or producing a negative penalty (which the vault then
+  subtracted as a payout). `src/slashing_overflow_tests.rs` updated for the
+  new signature; `tests/slashing_bounds_test.rs` added.
+- **`refund-policy-vdf` (issue #987): pin slashing arithmetic across accepted bounds.**
+  Added `tests/slashing_table_test.rs`, a table of nine
+  `(amount, penalty, expected)` rows covering `0`, `1`, `50`, `100` percent
+  and the fractional-truncation boundary, using a signature-agnostic local
+  adapter so it stays valid whether the return is `i128` or `Result`.
 - **`refund-policy-vdf` (issue #988): expose modulus fingerprint getter.**
   Added read-only `get_modulus_fingerprint() -> BytesN<32>` returning
   `sha256(MODULUS)` to identify the fixed VDF group, with integration test
