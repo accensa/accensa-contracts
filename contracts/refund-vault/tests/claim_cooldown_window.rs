@@ -91,13 +91,17 @@ fn test_cooldown_boundary_blocks_1099_and_opens_at_1100() {
     let (env, client, merchant, _token, tc) = setup();
     let buyer_a = Address::generate(&env);
     let buyer_b = Address::generate(&env);
+    // `deposit` in `setup` has already bumped the vault's global counter, so it
+    // is measured from here rather than from zero. The per-merchant nonce is the
+    // one `refund` replays against and `deposit` leaves alone, so it starts at 0.
+    let vault_nonce = client.get_nonce();
 
     set_time(&env, 1_000);
     client.refund(&ref_at(&env, 1), &buyer_a, &100, &0, &100, &None, &0);
     assert_eq!(tc.balance(&buyer_a), 100);
-    // The first claim consumed the merchant's nonce 0 and bumped the vault
-    // nonce once, so `1` is what the next call must present.
-    assert_eq!(client.get_nonce(), 1);
+    // The first claim consumed the merchant's nonce 0 and bumped both counters
+    // once, so `1` is what the next call must present.
+    assert_eq!(client.get_nonce(), vault_nonce + 1);
     assert_eq!(client.get_user_nonce(&merchant), 1);
 
     // One second short of the window: rejected, and nothing moved.
@@ -109,7 +113,7 @@ fn test_cooldown_boundary_blocks_1099_and_opens_at_1100() {
     assert_eq!(tc.balance(&buyer_b), 0);
     // The rejected call rolled back, so the nonce the vault expects next is
     // still `1` — the retry reuses it rather than skipping a number.
-    assert_eq!(client.get_nonce(), 1);
+    assert_eq!(client.get_nonce(), vault_nonce + 1);
     assert_eq!(client.get_user_nonce(&merchant), 1);
 
     // Exactly `last + cooldown`: the gate is `now < last + cooldown`, so this
@@ -117,7 +121,7 @@ fn test_cooldown_boundary_blocks_1099_and_opens_at_1100() {
     set_time(&env, 1_100);
     client.refund(&ref_at(&env, 2), &buyer_b, &100, &0, &100, &None, &1);
     assert_eq!(tc.balance(&buyer_b), 100);
-    assert_eq!(client.get_nonce(), 2);
+    assert_eq!(client.get_nonce(), vault_nonce + 2);
     assert_eq!(client.get_user_nonce(&merchant), 2);
 }
 
@@ -170,6 +174,7 @@ fn test_zero_cooldown_allows_immediate_successive_claims() {
     let buyer_b = Address::generate(&env);
 
     set_time(&env, 1_000);
+    let vault_nonce = client.get_nonce();
     client.refund(&ref_at(&env, 21), &buyer_a, &100, &0, &100, &None, &0);
     assert_eq!(
         client.try_refund(&ref_at(&env, 22), &buyer_b, &100, &0, &100, &None, &1),
@@ -182,12 +187,14 @@ fn test_zero_cooldown_allows_immediate_successive_claims() {
     assert_eq!(client.get_claim_cooldown(), 0);
     client.refund(&ref_at(&env, 22), &buyer_b, &100, &0, &100, &None, &1);
     assert_eq!(tc.balance(&buyer_b), 100);
-    assert_eq!(client.get_nonce(), 2);
+    // Two refunds so far; `set_claim_cooldown` is admin configuration and does
+    // not take part in the merchant's replay counter.
+    assert_eq!(client.get_nonce(), vault_nonce + 2);
     assert_eq!(client.get_user_nonce(&merchant), 2);
 
     // A third claim in that same second still goes through.
     client.refund(&ref_at(&env, 23), &buyer_a, &100, &0, &200, &None, &2);
-    assert_eq!(tc.balance(&buyer_a), 300);
+    assert_eq!(tc.balance(&buyer_a), 200);
 }
 
 /// The gate is wall-clock, so a ledger jump without elapsed time does not open

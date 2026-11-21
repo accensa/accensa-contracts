@@ -1,6 +1,6 @@
 //! #967 — `withdraw` recalls deployed principal only for the shortfall.
 //!
-//! `withdraw` (`lib.rs:1543`) runs `strategy::ensure_liquidity` *before* its own
+//! `withdraw` (`lib.rs:1537`) runs `strategy::ensure_liquidity` (`:1575`) *before* its own
 //! float check, so a merchant withdrawal larger than the liquid reserve pulls
 //! exactly `needed - balance` (capped at what is deployed) back from the
 //! strategy in the same invocation, and only reports `InsufficientFloat` if the
