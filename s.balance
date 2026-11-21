@@ -1,0 +1,3 @@
+let finalized = s.client.get_channel(&channel_id);
+assert_eq!(finalized.phase, ChannelPhase::Finalized);
+assert_eq!(finalized.balance, DISPUTED_BALANCE);
