@@ -11,7 +11,7 @@
 //! merchant's refund agent) computes the delay off-chain and submits a
 //! [`VdfProof`]; the contract checks it in microseconds, so the whole scheme
 //! fits Soroban's WASM computational budget (pinned by
-//! `test_vdf_verify_resource_cost_budget` in `vdf_test.rs`).
+//! `test_verify_resource_cost_budget` in `test.rs`).
 //!
 //! # Scheme
 //!
@@ -234,4 +234,27 @@ fn u128_to_u1024(v: &U128) -> U1024 {
     let mut buf = [0u8; 128];
     buf[112..].copy_from_slice(&v.to_be_bytes());
     U1024::from_be_slice(&buf)
+}
+
+#[cfg(test)]
+mod width_tests {
+    //! The docs call `MODULUS` a 1024-bit group, so the type has to actually be
+    //! one. A silently truncated or zero-padded table would keep every honest
+    //! proof verifying while collapsing the security margin.
+    use super::MODULUS;
+
+    #[test]
+    fn modulus_is_a_full_width_1024_bit_group() {
+        assert_eq!(MODULUS.len(), 128);
+        assert_ne!(MODULUS[0], 0, "modulus is zero-padded, not 1024-bit");
+    }
+
+    #[test]
+    fn modulus_has_digits_in_its_high_half() {
+        assert_ne!(
+            MODULUS[..64].iter().filter(|b| **b != 0).count(),
+            0,
+            "the high half of the modulus is empty"
+        );
+    }
 }

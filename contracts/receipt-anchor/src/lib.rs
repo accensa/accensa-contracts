@@ -805,8 +805,14 @@ impl ReceiptAnchor {
     }
 
     /// Sets the minimum interval (in seconds) between consecutive anchors.
-    /// Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables
-    /// rate-limiting entirely.
+    ///
+    /// The accepted range is `0..=MAX_ANCHOR_INTERVAL` (86,400 / 24 h), ceiling
+    /// inclusive; `0` disables rate-limiting entirely. An interval above the
+    /// ceiling is rejected with [`Error::InvalidAmount`], the code for a
+    /// rejected scalar argument. `Error::BatchTooLarge` belongs to
+    /// `anchor_batch`'s receipt-count limit and is never returned here. A
+    /// rejected call writes nothing and publishes no
+    /// [`AnchorIntervalUpdatedEvent`].
     pub fn set_min_anchor_interval(env: Env, interval: u32) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
@@ -816,7 +822,7 @@ impl ReceiptAnchor {
         merchant.require_auth();
 
         if interval > MAX_ANCHOR_INTERVAL {
-            return Err(Error::BatchTooLarge);
+            return Err(Error::InvalidAmount);
         }
 
         let previous: u32 = env
