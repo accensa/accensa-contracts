@@ -608,7 +608,13 @@ fn test_negative_withdraw_with_nothing_deployed_emits_no_events() {
 #[test]
 fn test_negative_deployment_breaching_reserve_emits_no_events() {
     // 50% reserve ratio: must keep 50% liquid
-    let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup(5000, 10_000);
+    //
+    // Issue #965 rejected the old `(5000, 10_000)` fixture as an invalid pair
+    // (a 50% floor and a 100% ceiling cannot both be honoured). The ceiling
+    // drops to the 50% the reserve actually permits, so the 600_000 attempt
+    // still reaches — and is still stopped by — the reserve check, which is
+    // what this test asserts.
+    let (env, vault_client, merchant, _token, strategy_addr, _tc) = setup(5000, 5000);
 
     vault_client.approve_yield_strategy(&strategy_addr);
     vault_client.set_yield_strategy(&strategy_addr);

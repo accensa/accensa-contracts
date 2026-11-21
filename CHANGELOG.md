@@ -39,44 +39,50 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   instead of denied. `tests/window_overflow_test.rs` pins the denial and shows
   every representable verdict is unchanged.
 
-- **`refund-vault` (issue #971): the reserve/deploy ratio limits are pinned at
-  10_000 bp.** Added `tests/reserve_ratio_bounds.rs`, the first caller of
-  `set_reserve_ratio` and a table over `0, 1, 2_000, 10_000, 10_001,
-  u32::MAX` for `set_max_deploy_ratio`: every value at or below the limit is
-  stored and read back through `get_yield_info`, every value above it returns
-  `Error::InvalidRatio` and leaves the stored ratio where a sentinel put it, and
-  the two setters are compared against each other per row so the shared
-  boundary cannot drift in one edit. One row runs with authorisation unmocked to
-  show the range check sits above the admin read. Test-only.
-
-- **`refund-vault` (issue #970): a successful `withdraw` bumps the shared nonce
-  exactly once.** Added `tests/withdraw_nonce.rs`, which reads the counter
-  before each withdrawal and asserts the pair the convention promises - the
-  counter one higher afterwards, and `WithdrawEvent.nonce` equal to the value
-  read *before* the call - across two withdrawals from a nonzero baseline. It
-  then shows `SelfTransfer` and `InsufficientFloat` return above
-  `increment_nonce`, so a rejected withdrawal leaves the nonce a caller already
-  read intact and its retry succeeds with it. Test-only.
-
-- **`refund-vault` (issue #969): one emergency-stop guard, not nine copies.**
-  The five-line `DataKey::IsPaused` read repeated across `deposit`, `refund`,
-  `claim_batch`, `process_batch`, `withdraw`, `distribute_yield`,
-  `deploy_to_yield`, `withdraw_from_yield` and `harvest_yield`; `grep -c
-  Error::Paused contracts/refund-vault/src/lib.rs` went from 9 to 1. They now
-  call a private `ensure_not_paused(&Env)`, placed beside `increment_nonce` and
-  with no check reordered inside any caller. `tests/paused_guard_parity.rs`
-  drives all nine - including `claim_batch`, `process_batch` and
-  `distribute_yield`, which no paused test reached before - and asserts each
-  answers `Error::Paused` while stopped and its own first check after `unpause`.
-
-- **`refund-vault` (issue #968): a second `propose_policy` replaces the pending
-  one and its clock.** Added `tests/policy_proposal_replacement.rs`. Proposing
-  at ledger 10 and again at 10,010 is only half the contract: the stored
-  `proposed_at_ledger` is what `execute_policy` times against, so the file
-  asserts `get_pending_policy` returns the second proposal alone, that
-  execution is still refused at `10 + POLICY_TIMELOCK`, one ledger short of the
-  second proposal's expiry, and that it applies the second proposal and clears
-  the slot on that expiry. Test-only.
+- **`refund-vault` (issue #965): reject a reserve/ceiling pair that cannot both
+  be honoured.** `set_reserve_ratio` and `set_max_deploy_ratio` each capped their
+  own value at 10,000 bp and never read the other key, so `8000` plus `5000`
+  stored cleanly while `deploy_to_yield`'s reserve floor stopped deployment at
+  20 % - the configured 50 % ceiling could never bind. Both setters now read the
+  counterpart as an `Option` through one `ratios_compatible` helper and reject a
+  sum above 10,000 bp with the existing `Error::InvalidRatio`; an unset
+  counterpart is not validated, because the effective defaults (0 and 10,000) are
+  not a pair anyone configured. `tests/ratio_sum_invariant.rs` covers both write
+  orders, the exact-10,000 and one-over boundaries, and the recovery path. Two
+  pre-existing fixtures set `(10_000, 10_000)` and `(5000, 10_000)` and are now
+  invalid input, so their ratio arguments changed (`src/yield_tests.rs`,
+  `tests/yield_events.rs`); their assertions are untouched.
+- **`refund-vault` (issue #964): pin the claim-cooldown window's boundary and
+  scope.** `src/test.rs` set a 100-second cooldown and jumped 200 seconds ahead,
+  so neither the second at which the gate opens nor whose clock it is had ever
+  been asserted. `tests/claim_cooldown_window.rs` claims at 1,000, rejects at
+  1,099 and accepts at 1,100, then shows a *different* recipient against a
+  *different* payment ref is still rejected at 1,150 - the gate reads one
+  vault-global `DataKey::LastClaim`, which is what `set_claim_cooldown`'s
+  "same recipient" doc comment gets wrong. Also covers a zero cooldown claiming
+  twice in one second, and that a rejection leaves both `get_nonce()` and the
+  caller's user nonce alone so the retry reuses its number.
+- **`refund-vault` (issue #966): cover `deploy_to_yield`'s guards.**
+  `tests/deploy_to_yield_guards.rs` reaches the one state no public call can
+  produce - a registered strategy whose `DataKey::ApprovedStrategy` entry is
+  gone, which `revoke_yield_strategy` never leaves behind because it
+  unregisters in the same call - and asserts `StrategyNotApproved`, against the
+  `StrategyNotSet` the public path does report. It then fixes where a 20 %
+  reserve floor and a 50 % ceiling each take over: 500,000 of 1,000,000 is
+  admitted, 500,001 is `DeploymentExceedsMax`, 900,000 is `InsufficientReserve`
+  (the reserve is read first, so an amount breaking both names only one), and a
+  call above the liquid float is `InsufficientFloat` before either ratio is
+  consulted.
+- **`refund-vault` (issue #967): test that `withdraw` recalls only the
+  shortfall.** `withdraw` runs `strategy::ensure_liquidity` before its own float
+  check, and only the happy path was covered.
+  `tests/withdraw_strategy_recall.rs` deploys 800,000 of a 1,000,000 deposit and
+  asserts a 150,000 withdrawal leaves all 800,000 deployed, a 500,000 withdrawal
+  recalls exactly the 300,000 difference rather than the whole position, an exact
+  1,000,000 withdrawal empties it, and a 1,000,001 withdrawal reports
+  `InsufficientFloat` with the vault's `DeployedPrincipal`, the strategy's own
+  ledger, both balances and the nonce all unchanged - the recall that ran inside
+  the reverted call did not persist.
 
 - **`receipt-anchor` (issue #958): store the root ring buffer in persistent
   storage.** `push_shard_root` wrote `DataKey::ShardRootBuffer(shard_id)` into
