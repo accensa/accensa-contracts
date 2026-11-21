@@ -9,6 +9,14 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`refund-policy-time` (issue #977): reject an oracle that is the policy itself.**
+  `oracle::evaluate` now returns `Error::InvalidPolicyParams` when
+  `TimeOraclePolicyParams::oracle` equals `env.current_contract_address()`,
+  before any dispatch. The policy exports only `evaluate`, so the self-call
+  failed at dispatch and fell back to the clock gates: `window: 0` there
+  admits a claim with no usable report. Covered by
+  `tests/oracle_self_reference_test.rs`.
+
 - **`refund-policy-time` (issue #975): window gate fails closed on `u32` overflow.**
   `check_time_gates` now computes `paid_at_ledger + window` with `checked_add`
   and treats an unrepresentable sum as `Error::WindowExpired`. Previously the

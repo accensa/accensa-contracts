@@ -24,6 +24,14 @@
 //! window/deadline check, so an unreachable oracle can never block or force a
 //! refund on its own.
 //!
+//! `oracle` set to this policy's own address is the one configuration that is
+//! rejected outright, with `Error::InvalidPolicyParams` (`#977`). This policy
+//! exports only `evaluate`, so a self-addressed `get_delivery_status` failed at
+//! dispatch and fell back to the clock gates — a misconfigured claim was judged
+//! as though no oracle were attached, and with `window` and `deadline` both
+//! zero that meant an admission. The guard keeps the configuration error ahead
+//! of any dispatch.
+//!
 //! When the oracle decides the outcome, [`OracleResolutionApplied`] is
 //! emitted with the oracle's `proof`. For a `Delivered` rejection the event is
 //! rolled back with the rest of the failed invocation; the
@@ -176,6 +184,15 @@ pub(crate) fn evaluate(
     params: &TimeOraclePolicyParams,
     ctx: &PolicyContext,
 ) -> Result<(), Error> {
+    // A self-addressed `oracle` is a configuration error, not a missing
+    // report, and it used to look like one: this contract exports only
+    // `evaluate`, so the dispatch of `get_delivery_status` failed, `resolve`
+    // mapped that to a fallback, and the claim was judged by the clock gates
+    // alone — an admission outright when `window` and `deadline` are zero.
+    // Reject it before dispatching anything.
+    if params.oracle == env.current_contract_address() {
+        return Err(Error::InvalidPolicyParams);
+    }
     match resolve(env, params, ctx) {
         Resolution::Admit => Ok(()),
         Resolution::Deny => Err(Error::OraclePolicyDenied),
