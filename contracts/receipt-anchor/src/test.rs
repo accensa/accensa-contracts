@@ -32,6 +32,15 @@ fn setup() -> (Env, ReceiptAnchorClient<'static>, Address) {
 
 fn init(env: &Env, client: &ReceiptAnchorClient, merchant: &Address) {
     client.initialize(merchant, &shard_wasm_hash(env));
+    // Arm the router with a bounty asset so `get_or_create_shard` can deploy
+    // (issue #998). Written straight to instance storage so the exact-event
+    // assertions in this file see no extra configuration event.
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(env))
+        .address();
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&DataKey::BountyAsset, &token);
+    });
 }
 
 fn build_proof(env: &Env, siblings: &[[u8; 32]]) -> soroban_sdk::Vec<BytesN<32>> {

@@ -50,6 +50,12 @@ fn setup<'a>() -> TestEnv<'a> {
     let anchor = ReceiptAnchorClient::new(&env, &anchor_id);
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
     anchor.initialize(&merchant, &shard_wasm_hash);
+    // Shards deploy with the router's configured bounty asset (issue #998).
+    env.as_contract(&anchor_id, || {
+        env.storage()
+            .instance()
+            .set(&receipt_anchor::DataKey::BountyAsset, &token);
+    });
 
     let vault_id = env.register(RefundVault, (vault_init(&env, &merchant, &token),));
     let vault = RefundVaultClient::new(&env, &vault_id);

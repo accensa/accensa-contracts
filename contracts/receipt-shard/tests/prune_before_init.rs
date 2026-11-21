@@ -25,7 +25,10 @@ fn shard_with_key_removed(
     let env = Env::default();
     env.mock_all_auths();
     let router = Address::generate(&env);
-    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64));
+    let contract_id = env.register(
+        ReceiptShard,
+        (router, 1u64, 1001u64, Address::generate(&env)),
+    );
     let client = ReceiptShardClient::new(&env, &contract_id);
     env.as_contract(&contract_id, || remove(&env, &contract_id));
     (env, client)

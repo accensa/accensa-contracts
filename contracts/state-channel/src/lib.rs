@@ -272,6 +272,10 @@ impl StateChannel {
 
         sender.require_auth();
 
+        if receiver == env.current_contract_address() || sender == receiver {
+            return Err(Error::InvalidAmount);
+        }
+
         let token: Address = env
             .storage()
             .instance()
@@ -341,40 +345,7 @@ impl StateChannel {
 
         Self::verify_state_signature(&env, &channel, &state, &signature)?;
 
-        if state.balance < 0
-            || state
-                .balance
-                .checked_add(htlc::reserved(&env, channel_id))
-                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
-                .is_none_or(|committed| committed > channel.amount)
-        {
-            return Err(Error::ExceedsPayment);
-        }
-        // The receiver's entitlement may only grow: a signed state that
-        // regresses the balance is stale even when its nonce is fresh.
-        if state.balance < channel.balance {
-            return Err(Error::StaleState);
-        }
-        // Consume the nonce in the sliding window; a replay or a nonce that
-        // already slid out of range is rejected here (issue #374).
-        channel.nonce_window.consume(&env, state.nonce)?;
-
-        channel.nonce = channel.nonce.max(state.nonce);
-        channel.balance = state.balance;
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Channel(channel_id), &channel);
-        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-
-        StateUpdatedEvent {
-            channel_id,
-            nonce: state.nonce,
-            balance: state.balance,
-        }
-        .publish(&env);
-
-        Ok(())
+        Self::apply_state_update(&env, channel_id, &mut channel, &state)
     }
 
     /// Submit a state update signed by a delegated ephemeral key.
@@ -402,36 +373,7 @@ impl StateChannel {
             &cert_signature,
         )?;
 
-        if state.balance < 0
-            || state
-                .balance
-                .checked_add(htlc::reserved(&env, channel_id))
-                .and_then(|committed| committed.checked_add(hashlock::reserved(&env, channel_id)))
-                .is_none_or(|committed| committed > channel.amount)
-        {
-            return Err(Error::ExceedsPayment);
-        }
-        if state.balance < channel.balance {
-            return Err(Error::StaleState);
-        }
-        channel.nonce_window.consume(&env, state.nonce)?;
-
-        channel.nonce = channel.nonce.max(state.nonce);
-        channel.balance = state.balance;
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Channel(channel_id), &channel);
-        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
-
-        StateUpdatedEvent {
-            channel_id,
-            nonce: state.nonce,
-            balance: state.balance,
-        }
-        .publish(&env);
-
-        Ok(())
+        Self::apply_state_update(&env, channel_id, &mut channel, &state)
     }
 
     /// Cooperatively close the channel with the latest agreed state.
@@ -1253,6 +1195,54 @@ impl StateChannel {
             &payload,
             signature,
         )
+    }
+
+    /// Shared helper encapsulating channel phase validation, balance checks,
+    /// nonce window consumption, storage update, and event emission.
+    fn apply_state_update(
+        env: &Env,
+        channel_id: u64,
+        channel: &mut Channel,
+        state: &StateUpdate,
+    ) -> Result<(), Error> {
+        if channel.phase != ChannelPhase::Open {
+            return Err(Error::ChannelNotOpen);
+        }
+
+        if state.balance < 0
+            || state
+                .balance
+                .checked_add(htlc::reserved(env, channel_id))
+                .and_then(|committed| committed.checked_add(hashlock::reserved(env, channel_id)))
+                .is_none_or(|committed| committed > channel.amount)
+        {
+            return Err(Error::ExceedsPayment);
+        }
+        // The receiver's entitlement may only grow: a signed state that
+        // regresses the balance is stale even when its nonce is fresh.
+        if state.balance < channel.balance {
+            return Err(Error::StaleState);
+        }
+        // Consume the nonce in the sliding window; a replay or a nonce that
+        // already slid out of range is rejected here (issue #374).
+        channel.nonce_window.consume(env, state.nonce)?;
+
+        channel.nonce = channel.nonce.max(state.nonce);
+        channel.balance = state.balance;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Channel(channel_id), channel);
+        extend_instance_ttl(env, TTL_THRESHOLD, TTL_EXTEND);
+
+        StateUpdatedEvent {
+            channel_id,
+            nonce: state.nonce,
+            balance: state.balance,
+        }
+        .publish(env);
+
+        Ok(())
     }
 
     /// Build the canonical byte representation of a state update for signing.

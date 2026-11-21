@@ -66,6 +66,10 @@ pub enum DataKey {
     /// Append-only incremental Merkle tree state (issue #424): leaf count,
     /// current root and packed frontier. See [`incremental_merkle`].
     IncrementalTree,
+    /// Admin-configured token asset in which every `ReceiptShard` this router
+    /// deploys pays pruning bounties (issue #998). Absent means the router
+    /// refuses to deploy a shard until an admin calls `set_bounty_asset`.
+    BountyAsset,
 }
 
 /// Admin-configurable token-bucket rate limit applied to `anchor_batch`.
@@ -126,7 +130,18 @@ pub trait ShardInterface {
         count: u32,
         period_start: u64,
         period_end: u64,
-    );
+    ) -> Result<(), Error>;
+    /// Conflict-aware variant used by [`ReceiptAnchor::anchor_batch_internal`]
+    /// (issue #995). Unlike the legacy entry it reports a duplicate-root
+    /// conflict instead of overwriting the stored record.
+    fn anchor_batch_checked(
+        env: Env,
+        batch_id: u64,
+        root: BytesN<32>,
+        count: u32,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<(), Error>;
     fn get_batch(env: Env, batch_id: u64) -> Result<BatchRecord, Error>;
     fn verify_receipt(
         env: Env,
@@ -282,6 +297,21 @@ pub struct AnchorIntervalUpdatedEvent {
     #[topic]
     pub previous_interval: u32,
     pub new_interval: u32,
+    pub ledger: u32,
+}
+
+/// Emitted when the merchant reconfigures the token asset shards use to pay
+/// pruning bounties via [`ReceiptAnchor::set_bounty_asset`] (issue #998).
+///
+/// Topics: `("bounty_asset_updated_event", previous_asset)` — the asset in
+/// force *before* the change (`None` on the first configuration); the data map
+/// carries the new asset and the ledger that executed the change.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BountyAssetUpdatedEvent {
+    #[topic]
+    pub previous_asset: Option<Address>,
+    pub new_asset: Address,
     pub ledger: u32,
 }
 
@@ -490,13 +520,13 @@ impl ReceiptAnchor {
         let shard_addr = Self::get_or_create_shard(env, shard_id, shard_index)?;
 
         let anchored_ledger = env.ledger().sequence();
-        ShardClient::new(env, &shard_addr).anchor_batch(
+        Self::unwrap_shard_result(ShardClient::new(env, &shard_addr).try_anchor_batch_checked(
             &batch_id,
             &root,
             &count,
             &period_start,
             &period_end,
-        );
+        ))?;
 
         env.storage()
             .instance()
@@ -553,19 +583,29 @@ impl ReceiptAnchor {
     }
 
     /// Append `root` to this shard's ring buffer, evicting the oldest when full.
+    ///
+    /// The buffer is one persistent entry per `shard_id`, not part of the
+    /// router's instance entry: a full 100-root history is ~3.2 KB, so keeping
+    /// it in instance storage would grow the single ledger entry that every
+    /// call to this contract loads and archives, and would grow it again for
+    /// every logical shard. The write extends that entry's TTL with the same
+    /// constants the rate-limit bucket uses, so an actively-anchoring shard
+    /// never has its root history archived mid-stream.
     fn push_shard_root(env: &Env, shard_id: u64, root: &BytesN<32>) {
+        let key = DataKey::ShardRootBuffer(shard_id);
         let mut buffer: Vec<BytesN<32>> = env
             .storage()
-            .instance()
-            .get(&DataKey::ShardRootBuffer(shard_id))
+            .persistent()
+            .get(&key)
             .unwrap_or_else(|| Vec::new(env));
         if buffer.len() >= ROOT_BUFFER_SIZE {
             buffer.remove(0);
         }
         buffer.push_back(root.clone());
+        env.storage().persistent().set(&key, &buffer);
         env.storage()
-            .instance()
-            .set(&DataKey::ShardRootBuffer(shard_id), &buffer);
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND);
     }
 
     /// Verifies a Groth16 zero-knowledge proof against public inputs and a verifying key.
@@ -638,7 +678,7 @@ impl ReceiptAnchor {
         // root is unknown.
         let buffer: Vec<BytesN<32>> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ShardRootBuffer(shard_id))
             .unwrap_or_else(|| Vec::new(&env));
 
@@ -660,7 +700,7 @@ impl ReceiptAnchor {
     /// (read-only).
     pub fn get_root_buffer(env: Env, shard_id: u64) -> Vec<BytesN<32>> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ShardRootBuffer(shard_id))
             .unwrap_or_else(|| Vec::new(&env))
     }
@@ -765,8 +805,14 @@ impl ReceiptAnchor {
     }
 
     /// Sets the minimum interval (in seconds) between consecutive anchors.
-    /// Must be ≤ `MAX_ANCHOR_INTERVAL` (86,400 / 24 h). Setting to 0 disables
-    /// rate-limiting entirely.
+    ///
+    /// The accepted range is `0..=MAX_ANCHOR_INTERVAL` (86,400 / 24 h), ceiling
+    /// inclusive; `0` disables rate-limiting entirely. An interval above the
+    /// ceiling is rejected with [`Error::InvalidAmount`], the code for a
+    /// rejected scalar argument. `Error::BatchTooLarge` belongs to
+    /// `anchor_batch`'s receipt-count limit and is never returned here. A
+    /// rejected call writes nothing and publishes no
+    /// [`AnchorIntervalUpdatedEvent`].
     pub fn set_min_anchor_interval(env: Env, interval: u32) -> Result<(), Error> {
         let merchant: Address = env
             .storage()
@@ -776,7 +822,7 @@ impl ReceiptAnchor {
         merchant.require_auth();
 
         if interval > MAX_ANCHOR_INTERVAL {
-            return Err(Error::BatchTooLarge);
+            return Err(Error::InvalidAmount);
         }
 
         let previous: u32 = env
@@ -805,6 +851,44 @@ impl ReceiptAnchor {
             .instance()
             .get(&DataKey::MinAnchorInterval)
             .unwrap_or(0)
+    }
+
+    /// Sets the token asset in which every shard this router deploys pays
+    /// pruning bounties (issue #998). Admin auth required.
+    ///
+    /// Calling it again overwrites the previous asset and emits
+    /// [`BountyAssetUpdatedEvent`]; shards already deployed keep the asset
+    /// they were constructed with, so a change only applies to shards this
+    /// router creates afterwards.
+    pub fn set_bounty_asset(env: Env, asset: Address) -> Result<(), Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let previous: Option<Address> = env.storage().instance().get(&DataKey::BountyAsset);
+
+        env.storage().instance().set(&DataKey::BountyAsset, &asset);
+
+        BountyAssetUpdatedEvent {
+            previous_asset: previous,
+            new_asset: asset,
+            ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Returns the configured pruning-bounty asset (read-only), or
+    /// `NotInitialized` when no admin has set one yet.
+    pub fn get_bounty_asset(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::BountyAsset)
+            .ok_or(Error::NotInitialized)
     }
 
     /// Append `leaf_hash` to the continuous-anchoring incremental Merkle tree
@@ -1165,6 +1249,15 @@ impl ReceiptAnchor {
             .get(&DataKey::ShardWasmHash)
             .ok_or(Error::NotInitialized)?;
 
+        // Every shard pays pruning bounties only in this asset (issue #998).
+        // Refuse to deploy one the router cannot arm with an asset, rather
+        // than creating a shard whose bounty claims would all fail closed.
+        let bounty_asset: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::BountyAsset)
+            .ok_or(Error::NotInitialized)?;
+
         let start_batch_id = shard_index * SHARD_CAPACITY + 1;
         let end_batch_id = start_batch_id + SHARD_CAPACITY;
 
@@ -1174,7 +1267,12 @@ impl ReceiptAnchor {
         let salt = Self::shard_salt(env, shard_id, shard_index);
         let shard_addr = env.deployer().with_current_contract(salt).deploy_contract(
             ContractExecutable::Wasm(wasm_hash),
-            (env.current_contract_address(), start_batch_id, end_batch_id),
+            (
+                env.current_contract_address(),
+                start_batch_id,
+                end_batch_id,
+                bounty_asset,
+            ),
         );
 
         env.storage().instance().set(&key, &shard_addr);

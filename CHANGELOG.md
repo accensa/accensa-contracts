@@ -9,6 +9,334 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`receipt-shard` (issue #993): skip no-op prune event.**
+  Receipt pruning no longer emits a `ReceiptsPruned` event when 0 batches are
+  removed. Successful pruning continues to emit a single event with the pruning results.
+
+- **`state-channel` (issue #1006): reject self-paying channels at opening.**
+  `open_channel` now returns `Error::InvalidAmount` when the receiver is the
+  contract itself or equals the sender, before any token transfer or channel
+  record is written. `tests/open_channel_validation_test.rs` covers both
+  rejections and a legitimate distinct-party opening.
+
+- **`stream-vault` (issue #1004): add permissionless `extend_stream_ttl`.**
+  The new entry point reloads an existing stream and re-applies the persistent
+  `store()` TTL extension without changing its fields or requiring auth, so a
+  keeper can keep a long-running escrow from archiving. Unknown and cancelled
+  ids return `StreamNotFound`; `tests/extend_stream_ttl_test.rs` pins the TTL
+  bump, unchanged record, no auth, and both error paths.
+
+- **`stream-vault` (issue #1003): cover cancellation after a pre-start pause.**
+  Added `tests/cancel_paused_before_start_test.rs`, which pauses before
+  `start_ledger`, advances into the scheduled interval, and asserts the
+  merchant receives zero and the buyer the full deposit. Test-only.
+
+- **`stream-vault` (issue #1000): refresh instance TTL on pause and resume.**
+  `pause_stream` and `resume_stream` now call `extend_instance_ttl` after their
+  persistent writes, matching `claim_stream` and `cancel_stream`, so a stream
+  left paused cannot let the instance configuration archive. Covered by
+  `tests/pause_resume_ttl_test.rs`.
+
+- **`receipt-anchor`, `receipt-shard` (issues #995, #998): reject re-anchor overwrites and configure bounty asset.**
+  Shards reject duplicate roots via `try_anchor_batch_checked`, and router requires configured `bounty_asset` before deploying shards. (#1085)
+
+- **`refund-policy-vdf` / `refund-policy-time` (issues #980, #981, #982, #983):
+  pin the gaps the suite left open.** `refund-policy-time` gains
+  `tests/statelessness_test.rs`, which reads all three storage maps as the policy
+  contract after each entry point and asserts they stay empty on both the `Time`
+  and the `Vdf` path, plus three control tests so the emptiness assertion cannot
+  pass vacuously, and `tests/state_transition_test.rs`, a 17-row boundary table
+  over `determine_refund_state` (window edge, `+/- 1`, disabled zero window,
+  report-cutoff, `i64::MAX` anchor) with a partition test. `refund-policy-vdf`
+  gains `tests/small_delay_test.rs` for the `delay <= 2` region where
+  `floor(2^T / l)` is 0 and the honest witness is `pi = 1`, including the case
+  that stops that from becoming a blanket pass: `pi = 1` at `delay = 300` is
+  still rejected. The one non-test edit is the module doc in `src/vdf.rs`, which
+  pointed at `vdf_test.rs`; the budget test it means lives in `src/test.rs`, and
+  `tests/modulus_shape_test.rs` now fails if a cited file name is absent, so the
+  pointer cannot go stale again. No entry point, storage key, event or constant
+  changed; WASM size for both contracts is unchanged and inside budget.
+
+- **`receipt-shard` (issue #994): keep the unpayable remainder of a prune bounty
+  accrued.** `claim_prune_bounty` now reads the payout (`min(accrual, contract
+  balance)`) before mutating storage and writes `accrued - payout` back instead
+  of zeroing the accrual. A shortfall — a normal state, since bounties accrue per
+  pruned batch while the contract pays from whatever token balance it holds — is
+  no longer burned: funding the shard later pays the remainder, and the payouts
+  sum to the original accrual. The accrual is still settled *before* the
+  transfer, so a repeated or re-entered claim cannot pay twice, and a
+  zero-accrual claim makes no token call and no storage write. Covered by
+  `tests/bounty_shortfall_test.rs`.
+
+- **`receipt-shard` (issue #992): cover `verify_receipt` proof-length bounds.**
+  Added `tests/verify_receipt_bounds_test.rs` pinning an empty proof against a
+  one-leaf batch (matches, and a different leaf reports `false` rather than an
+  error), a 10-sibling proof for an unanchored id (`BatchNotFound`) and an
+  11-sibling proof for the same id (`ProofTooLong`), which pins that the length
+  guard runs before the storage read. Test-only.
+
+- **`receipt-shard` (issue #991): assert `extend_batch_ttl` really extends.**
+  Added `tests/extend_ttl_test.rs`, which reads the persistent entry's TTL
+  before and after the call and asserts it is extended back to `TTL_EXTEND`
+  once fewer than `TTL_THRESHOLD` ledgers remain, from a caller with no mocked
+  authorization. Also pins `BatchNotFound` for a never-anchored id, with no
+  entry created. A no-op regression would now fail. Test-only.
+
+- **`refund-policy-vdf` (issue #989): property-test every single flipped proof
+  bit.** Added `src/bitflip_test.rs`, which generates one honest proof at delay
+  300 and asserts `Err(Ok(Error::InvalidVdfProof))` for all 1024 bits of
+  `output` and all 1024 bits of `witness`, restoring each byte after the
+  assertion; the untampered pair is asserted to verify first. The prover
+  helpers in `src/test.rs` are only widened to `pub(crate)`. Test-only; the
+  test takes ~22 s locally.
+
+- **`receipt-anchor` (issue #953): an out-of-range anchor interval reports a bad
+  argument, not a bad batch.** `set_min_anchor_interval` rejected an interval
+  above `MAX_ANCHOR_INTERVAL` (86,400) with `Error::BatchTooLarge`, the code
+  `anchor_batch` returns when the receipt count exceeds `MAX_BATCH_SIZE`; a
+  mistyped interval read back as a batch problem and a client switching on the
+  code retried with a smaller batch. It now returns `Error::InvalidAmount`, and
+  the rustdoc states the accepted range as `0..=86_400`, ceiling inclusive.
+  The range itself is unchanged and no error code was added or renumbered.
+  `tests/anchor_interval_error.rs` pins both sides of the boundary.
+
+- **`receipt-anchor` (issues #951, #954, #956): three guards that had no test
+  reaching them.** Test-only. `tests/shard_root_isolation.rs` (#951) anchors
+  into two shards before querying the other, so `verify_receipt_by_root` walks
+  a *populated* foreign buffer and answers `Error::RootNotFound`; the existing
+  test queried a shard that had never anchored, which falls into the
+  empty-buffer case, so dropping `shard_id` from the storage key passed it.
+  `tests/shard_id_registry.rs` (#954) re-anchors into shards that are already
+  registered, which is the repeat the `any` dedupe guard in
+  `register_shard_id` exists for and which nothing exercised; an
+  unconditional append makes `get_shard_ids` return `[5, 9, 5, 9]`.
+  `tests/accept_admin_cold_path.rs` (#956) re-reads `get_admin` and
+  `get_pending_admin` after each rejected `accept_admin` instead of asserting
+  only the returned code.
+
+- **`refund-policy-time` (issue #979): pin `max_report_age = 0` to same-second
+  reports.** Added `tests/max_age_zero_test.rs` with its own mock delivery
+  oracle: a `Lost` report stamped at the claim's second is honoured and
+  overrides an expired window, the same report one second older is ignored and
+  the claim is rejected `WindowExpired`. Records that zero is the strictest age,
+  not a disabled check, unlike `window` and `deadline`. Test-only.
+
+- **`refund-policy-time` (issue #978): foreign params shapes error, they do not
+  trap.** Added `tests/params_schema_test.rs` asserting a real `VdfPolicyParams`
+  blob, a map missing `window`, an empty map, an `oracle` key holding a
+  non-address, an oracle shape missing `window`, and a non-numeric `window` each
+  return `Error::InvalidPolicyParams` through `try_evaluate`. Test-only; no row
+  traps, so the decode mapping in `src/lib.rs` is unchanged.
+
+- **`refund-policy-time` (issue #977): reject an oracle that is the policy itself.**
+  `oracle::evaluate` now returns `Error::InvalidPolicyParams` when
+  `TimeOraclePolicyParams::oracle` equals `env.current_contract_address()`,
+  before any dispatch. The policy exports only `evaluate`, so the self-call
+  failed at dispatch and fell back to the clock gates: `window: 0` there
+  admits a claim with no usable report. Covered by
+  `tests/oracle_self_reference_test.rs`.
+
+- **`refund-policy-time` (issue #975): window gate fails closed on `u32` overflow.**
+  `check_time_gates` now computes `paid_at_ledger + window` with `checked_add`
+  and treats an unrepresentable sum as `Error::WindowExpired`. Previously the
+  addition overflowed into a host abort for an anchor within `window` of
+  `u32::MAX`, so one malformed payment anchor made a class of claims uncallable
+  instead of denied. `tests/window_overflow_test.rs` pins the denial and shows
+  every representable verdict is unchanged.
+
+- **`refund-vault` (issue #971): the reserve/deploy ratio limits are pinned at
+  10_000 bp.** Added `tests/reserve_ratio_bounds.rs`, a table of `0, 1, 2_000,
+  10_000, 10_001, u32::MAX` over both setters: every value at or below the limit
+  is stored and read back through `get_yield_info`, every value above it returns
+  `Error::InvalidRatio` *and leaves the previously accepted ratio in place* -
+  asserted against a sentinel written first, because the unwritten
+  `max_deploy_ratio` reads back as 10_000 and so cannot tell "not stored" from
+  "reset to the default". Storing the value before the check is not itself
+  observable for the same host-revert reason, and that mutation was confirmed
+  to survive. One row runs with authorisation unmocked to show the
+  range check sits above the admin read, and the two setters are compared per
+  row so the shared boundary cannot drift in one edit. #965's pair rule answers
+  the same `InvalidRatio` for a different reason, so every row here holds the
+  counterpart either unset or at 0 bp and cannot be asserting that rule by
+  accident. Test-only.
+
+- **`refund-vault` (issue #970): a successful `withdraw` bumps the shared nonce
+  exactly once.** Added `tests/withdraw_nonce.rs`, which reads the counter
+  before each withdrawal and asserts the pair the convention promises - the
+  counter one higher afterwards, and `WithdrawEvent.nonce` equal to the value
+  read *before* the call - across two withdrawals from a nonzero baseline. It
+  then shows a `SelfTransfer` or `InsufficientFloat` rejection leaves the nonce
+  a caller already read intact and its retry succeeds with it. Where the bump
+  sits inside `withdraw` is not test-observable - a contract-level error makes
+  the host revert the failed invocation, and a mutation that moves the bump
+  above the float check survives - so this pins the guarantee, not the line
+  order. Test-only.
+
+- **`refund-vault` (issue #969): one emergency-stop guard, not nine copies.**
+  The five-line `DataKey::IsPaused` read repeated across `deposit`, `refund`,
+  `claim_batch`, `process_batch`, `withdraw`, `distribute_yield`,
+  `deploy_to_yield`, `withdraw_from_yield` and `harvest_yield`; `grep -c
+  Error::Paused contracts/refund-vault/src/lib.rs` went from 9 to 1. They now
+  call a private `ensure_not_paused(&Env)`, placed beside `increment_nonce` and
+  with no check reordered inside any caller. `tests/paused_guard_parity.rs`
+  drives all nine - including `claim_batch`, `process_batch` and
+  `distribute_yield`, which no paused test reached before - and asserts each
+  answers `Error::Paused` while stopped and its own first check after `unpause`.
+
+- **`refund-vault` (issue #968): a second `propose_policy` replaces the pending
+  one and its clock.** Added `tests/policy_proposal_replacement.rs`. Proposing
+  at ledger 10 and again at 10,010 is only half the contract: the stored
+  `proposed_at_ledger` is what `execute_policy` times against, so the file
+  asserts `get_pending_policy` returns the second proposal alone, that
+  execution is still refused at `10 + POLICY_TIMELOCK`, one ledger short of the
+  second proposal's expiry, and that it applies the second proposal and clears
+  the slot on that expiry. Test-only.
+
+- **`refund-vault` (issue #965): reject a reserve/ceiling pair that cannot both
+  be honoured.** `set_reserve_ratio` and `set_max_deploy_ratio` each capped their
+  own value at 10,000 bp and never read the other key, so `8000` plus `5000`
+  stored cleanly while `deploy_to_yield`'s reserve floor stopped deployment at
+  20 % - the configured 50 % ceiling could never bind. Both setters now read the
+  counterpart as an `Option` through one `ratios_compatible` helper and reject a
+  sum above 10,000 bp with the existing `Error::InvalidRatio`; an unset
+  counterpart is not validated, because the effective defaults (0 and 10,000) are
+  not a pair anyone configured. `tests/ratio_sum_invariant.rs` covers both write
+  orders, the exact-10,000 and one-over boundaries, and the recovery path. Two
+  pre-existing fixtures set `(10_000, 10_000)` and `(5000, 10_000)` and are now
+  invalid input, so their ratio arguments changed (`src/yield_tests.rs`,
+  `tests/yield_events.rs`); their assertions are untouched.
+- **`refund-vault` (issue #964): pin the claim-cooldown window's boundary and
+  scope.** `src/test.rs` set a 100-second cooldown and jumped 200 seconds ahead,
+  so neither the second at which the gate opens nor whose clock it is had ever
+  been asserted. `tests/claim_cooldown_window.rs` claims at 1,000, rejects at
+  1,099 and accepts at 1,100, then shows a *different* recipient against a
+  *different* payment ref is still rejected at 1,150 - the gate reads one
+  vault-global `DataKey::LastClaim`, which is what `set_claim_cooldown`'s
+  "same recipient" doc comment gets wrong. Also covers a zero cooldown claiming
+  twice in one second, and that a rejection leaves both `get_nonce()` and the
+  caller's user nonce alone so the retry reuses its number.
+- **`refund-vault` (issue #966): cover `deploy_to_yield`'s guards.**
+  `tests/deploy_to_yield_guards.rs` reaches the one state no public call can
+  produce - a registered strategy whose `DataKey::ApprovedStrategy` entry is
+  gone, which `revoke_yield_strategy` never leaves behind because it
+  unregisters in the same call - and asserts `StrategyNotApproved`, against the
+  `StrategyNotSet` the public path does report. It then fixes where a 20 %
+  reserve floor and a 50 % ceiling each take over: 500,000 of 1,000,000 is
+  admitted, 500,001 is `DeploymentExceedsMax`, 900,000 is `InsufficientReserve`
+  (the reserve is read first, so an amount breaking both names only one), and a
+  call above the liquid float is `InsufficientFloat` before either ratio is
+  consulted.
+- **`refund-vault` (issue #967): test that `withdraw` recalls only the
+  shortfall.** `withdraw` runs `strategy::ensure_liquidity` before its own float
+  check, and only the happy path was covered.
+  `tests/withdraw_strategy_recall.rs` deploys 800,000 of a 1,000,000 deposit and
+  asserts a 150,000 withdrawal leaves all 800,000 deployed, a 500,000 withdrawal
+  recalls exactly the 300,000 difference rather than the whole position, an exact
+  1,000,000 withdrawal empties it, and a 1,000,001 withdrawal reports
+  `InsufficientFloat` with the vault's `DeployedPrincipal`, the strategy's own
+  ledger, both balances and the nonce all unchanged - the recall that ran inside
+  the reverted call did not persist.
+
+- **`receipt-anchor` (issue #958): store the root ring buffer in persistent
+  storage.** `push_shard_root` wrote `DataKey::ShardRootBuffer(shard_id)` into
+  the router's *instance* entry, so a full 100-root history (~3.2 KB) grew the
+  single entry every call to the contract loads and archives - once per logical
+  shard. The buffer is now its own persistent entry per `shard_id`, extended
+  with the same `TTL_THRESHOLD` / `TTL_EXTEND` pair the rate-limit bucket uses;
+  `verify_receipt_by_root` and `get_root_buffer` read from persistent storage.
+  `tests/root_buffer_storage.rs` pins the tenancy, the 100-entry cap, and that
+  anchoring pays rent.
+- **`receipt-anchor` (issue #957): cover the rate-limit refill schedule.**
+  `tests/rate_limit_refill.rs` exercises the burst-2 window, the reject at the
+  interval boundary, and a call arriving more than one interval late - where the
+  interval clock restarts from the *late* call, not from the previous one.
+- **`receipt-anchor` (issue #955): prove a pending admin transfer grants
+  nothing.** `tests/admin_transfer_pending.rs` asserts the proposed admin cannot
+  act while the transfer is pending, that the swap happens only on
+  `accept_admin`, and that the refusal is a host-level authorization failure
+  rather than a contract error.
+- **`receipt-anchor` (issue #960): give the re-initialization guard teeth.**
+  `tests/reinitialize_guard.rs` replays `initialize` with a *different* admin and
+  an all-zero shard wasm hash, then anchors. Guarding after the writes would
+  rewrite the pinned hash and fail the anchor, so the assertion discriminates
+  the ordering instead of only the return value.
+- **`refund-policy-vdf` (issue #984): prove output/witness reduction to canonical form.**
+  Added `tests/reduction_test.rs` covering a non-canonical envelope `y + N`,
+  a witness `N + 1` and `N`, and a congruence-broken envelope, asserting the
+  Wesolowski verifier folds each back mod `N` and rejects the degenerate
+  cases with `Error::InvalidVdfProof`.
+- **`refund-policy-vdf` (issue #985): fuzz that `evaluate` rejects with typed errors, never traps.**
+  Added `src/fuzz_test.rs`, a deterministic xorshift64 driver running 2000
+  cases each over well-formed `VdfPolicyParams` crossed with random 256-byte
+  proofs and random `PolicyContext` shapes. Every outcome must be a typed
+  `Ok(Ok(()))` or `Err(Ok(Error::*))`; a `HostError` trap fails the run.
+- **`refund-policy-vdf` (issue #986): validate the slashing penalty instead of paying out.**
+  `calculate_slashing_penalty` now returns `Result<i128, Error>` and rejects
+  `amount < 0` and `penalty > 100` with `Error::InvalidAmount` instead of
+  silently clamping or producing a negative penalty (which the vault then
+  subtracted as a payout). `src/slashing_overflow_tests.rs` updated for the
+  new signature; `tests/slashing_bounds_test.rs` added.
+- **`refund-policy-vdf` (issue #987): pin slashing arithmetic across accepted bounds.**
+  Added `tests/slashing_table_test.rs`, a table of nine
+  `(amount, penalty, expected)` rows covering `0`, `1`, `50`, `100` percent
+  and the fractional-truncation boundary, using a signature-agnostic local
+  adapter so it stays valid whether the return is `i128` or `Result`.
+- **`refund-policy-vdf` (issue #988): expose modulus fingerprint getter.**
+  Added read-only `get_modulus_fingerprint() -> BytesN<32>` returning
+  `sha256(MODULUS)` to identify the fixed VDF group, with integration test
+  pinning the digest and rejecting the all-zero modulus hash.
+- **`receipt-shard` (issue #990): pin Merkle-depth bounds in diagnostics.**
+  Added integration coverage anchoring batch counts `0, 1, 2, 1000, 2049,
+  u32::MAX` and asserting `max_merkle_depth`/`consistent` diagnostics,
+  including degradation (not trap) at `u32::MAX`.
+- **`stream-vault` (issue #999): expose stream creation count getter.**
+  Added read-only `get_stream_count() -> u64` backed by the monotonic
+  `StreamCount` counter, with integration test covering initial zero,
+  increments on creation, and no decrement on cancellation.
+- **`stream-vault` (issue #1001): pin stream id monotonicity after cancel.**
+  Added integration test proving cancelled stream ids are never reused, removed
+  ids stay unavailable (`StreamNotFound`), and surviving streams keep
+  independent accounting.
+
+- **`treasury` (issue #1016): cover get_deployed_total and get_yield_earned on fresh treasury.**
+  Added integration tests asserting `get_deployed_total` and `get_yield_earned` return
+  zero on initialized treasury with empty allocations and remain zero after neutral recalls.
+- **`treasury` (issue #1017): ensure_liquidity reports shortfall with InsufficientBalance.**
+  `ensure_liquidity` now validates that recalled liquidity meets the required
+  balance, returning `Error::InsufficientBalance` on shortfalls.
+- **`treasury` (issue #1018): property-test split_by_weights sums and dust allocation.**
+  Added property-based tests verifying partition sum conservation and deterministic
+  dust assignment to earliest index among tied maximum weights.
+- **`treasury` (issue #1019): reject treasury as its own vesting schedule beneficiary.**
+  `add_schedule` now validates that `beneficiary != env.current_contract_address()`,
+  returning `Error::InvalidSchedule` to prevent self-transfer lockups.
+- **`treasury` (issue #1020): cover execute_buyback threshold and slippage guards.**
+  Added integration tests asserting buybacks below minimum order threshold and those
+  violating slippage floors are rejected with balances intact.
+- **`treasury` (issue #1021): reject under-delivering strategy recalls.**
+  Added integration test asserting that strategies transferring less than reported
+  are rejected with `StrategyUnderpaid` without corrupting allocations.
+- **`treasury` (issue #1022): track and expose schedule count.**
+  Maintained monotonic schedule counter in instance storage incremented on each
+  `add_schedule` call, exposed via public `get_schedule_count` getter.
+- **`governance` (issue #1025): pin 32-member governance capacity limit.**
+  Added integration tests proving governance initializes with 32 members and rejects
+  a 33rd member with `InvalidMembers`.
+
+- **`state-channel` (issue #1007): share state validation between update_state paths.**
+  Extracted common channel phase validation, balance checks, nonce window
+  consumption, storage update, and event emission into private helper
+  `apply_state_update`, called by both direct and delegated state updates.
+- **`multisig-account` (issue #1028): deduplicate delegate addresses in `tally_weight`.**
+  `tally_weight` now deduplicates approvers to ensure a delegate listed multiple
+  times is counted only once toward the multisig threshold.
+- **`multisig-account` (issue #1030): expose `remaining_today` allowance view.**
+  Added public read-only getter `remaining_today` on `MultisigAccount` to query
+  unspent daily spending allowance for a given signer and token.
+- **`upto-authorization` (issue #1032): pin authorization digest against domain separator edits.**
+  Added integration test `authorization_digest` asserting equality of
+  `get_authorization_digest` against a fixed golden reference digest.
+
 - **`soroban-sdk` 27.0.6 → 29.0.1.** SDK 29 removes
   `contracttype(export = false)` (the spec is now limited to types reachable
   from the contract boundary), so the attribute is dropped from the storage-key

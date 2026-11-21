@@ -108,6 +108,7 @@ pub fn total_weight(env: &Env) -> u32 {
 /// [`Error::UnknownSigner`], so a tally never credits an unregistered address.
 pub fn tally_weight(env: &Env, delegates: &Vec<Address>) -> Result<u32, Error> {
     let mut total: u32 = 0;
+    let mut seen: Vec<Address> = Vec::new(env);
     for signer in delegates.iter() {
         if !env
             .storage()
@@ -116,6 +117,10 @@ pub fn tally_weight(env: &Env, delegates: &Vec<Address>) -> Result<u32, Error> {
         {
             return Err(Error::UnknownSigner);
         }
+        if seen.contains(&signer) {
+            continue;
+        }
+        seen.push_back(signer.clone());
         total = total.saturating_add(signer_weight(env, &signer));
     }
     Ok(total)

@@ -596,6 +596,24 @@ fn increment_nonce(env: &Env) -> u64 {
     current
 }
 
+/// The emergency-stop guard (issue #446), read from the flag `pause` and
+/// `unpause` own. Every mutating entry point refuses while it is set, so the
+/// read lives here once instead of as a copy per call site (issue #969): a
+/// change to the stop semantics — or to the error it reports — now reaches all
+/// of them at once, and `tests/paused_guard_parity.rs` pins that each still
+/// fires before its own argument, auth and nonce checks.
+fn ensure_not_paused(env: &Env) -> Result<(), Error> {
+    if env
+        .storage()
+        .instance()
+        .get(&DataKey::IsPaused)
+        .unwrap_or(false)
+    {
+        return Err(Error::Paused);
+    }
+    Ok(())
+}
+
 /// The caller's current replay-protection nonce (issue #122), defaulting to
 /// `0` for a caller that has never submitted a claim. Read as the "expected
 /// next nonce" for the next `refund`/`claim_batch`/`process_batch` call.
@@ -674,6 +692,34 @@ fn persist_yield_ttl(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, TTL_EXTEND, TTL_EXTEND);
+}
+
+/// Whether a reserve floor and a deployment ceiling can both be honoured
+/// (issue #965).
+///
+/// `reserve_ratio` is the share of total value that must stay liquid and
+/// `max_deploy_ratio` the share that may leave. A pair summing past 10,000 bp
+/// therefore promises more deployment than the reserve permits: with 8,000 and
+/// 5,000 the deploy path's reserve floor caps output at 20 % and the 50 %
+/// ceiling can never bind, so the merchant's stated limit is silently
+/// unreachable. Rejecting the pair where it is configured turns that into a
+/// configuration error.
+///
+/// Each side is `Option`al because a key that has never been set has no stored
+/// value to conflict with — only the defaults `deploy_to_yield` applies when it
+/// reads them (a zero reserve and a full 10,000 bp ceiling), and treating those
+/// as configured would make the first `set_reserve_ratio` on a fresh vault
+/// impossible. So only the second of the two calls can be rejected, which is
+/// the same asymmetry the setters already have.
+fn ratios_compatible(reserve: Option<u32>, max_deploy: Option<u32>) -> Result<(), Error> {
+    if let (Some(reserve), Some(max_deploy)) = (reserve, max_deploy) {
+        // Both operands are already range-checked to `<= 10_000` by the caller,
+        // so the sum cannot overflow a `u32`.
+        if reserve + max_deploy > 10_000 {
+            return Err(Error::InvalidRatio);
+        }
+    }
+    Ok(())
 }
 
 /// Refund fee in raw token units: `ceil(amount * fee_bps / 10_000)`.
@@ -1154,14 +1200,7 @@ impl RefundVault {
     ) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -1339,14 +1378,7 @@ impl RefundVault {
     ) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         let merchant: Address = env
             .storage()
@@ -1390,14 +1422,7 @@ impl RefundVault {
 
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         let merchant: Address = env
             .storage()
@@ -1440,14 +1465,7 @@ impl RefundVault {
             return Err(Error::BatchTooLarge);
         }
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         let merchant: Address = env
             .storage()
@@ -1509,14 +1527,7 @@ impl RefundVault {
     pub fn withdraw(env: Env, amount: i128, to: Address) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -2324,14 +2335,7 @@ impl RefundVault {
     /// only. Returns the amount distributed.
     pub fn distribute_yield(env: Env) -> Result<i128, Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
         let amount = strategy::distribute(&env)?;
         extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         accensa_common::reentrancy::ReentrancyGuard::release(&env);
@@ -2352,6 +2356,9 @@ impl RefundVault {
 
     /// Set the minimum reserve ratio in basis points (1 bp = 0.01%).
     /// E.g., 2000 = 20% of total vault value must remain as liquid token balance.
+    ///
+    /// Rejects `InvalidRatio` when the new reserve and the already-stored
+    /// deployment ceiling cannot both be honoured (issue #965).
     pub fn set_reserve_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
         if basis_points > 10_000 {
             return Err(Error::InvalidRatio);
@@ -2364,6 +2371,9 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
+        let max_deploy: Option<u32> = env.storage().persistent().get(&DataKey::MaxDeployRatio);
+        ratios_compatible(Some(basis_points), max_deploy)?;
+
         env.storage()
             .persistent()
             .set(&DataKey::ReserveRatio, &basis_points);
@@ -2375,6 +2385,9 @@ impl RefundVault {
 
     /// Set the maximum deployment ratio in basis points.
     /// E.g., 8000 = at most 80% of total vault value can be deployed to yield.
+    ///
+    /// Rejects `InvalidRatio` when the new ceiling and the already-stored
+    /// reserve ratio cannot both be honoured (issue #965).
     pub fn set_max_deploy_ratio(env: Env, basis_points: u32) -> Result<(), Error> {
         if basis_points > 10_000 {
             return Err(Error::InvalidRatio);
@@ -2386,6 +2399,9 @@ impl RefundVault {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
+
+        let reserve: Option<u32> = env.storage().persistent().get(&DataKey::ReserveRatio);
+        ratios_compatible(reserve, Some(basis_points))?;
 
         env.storage()
             .persistent()
@@ -2406,14 +2422,7 @@ impl RefundVault {
     pub fn deploy_to_yield(env: Env, amount: i128) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -2524,14 +2533,7 @@ impl RefundVault {
     pub fn withdraw_from_yield(env: Env, principal: i128) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         if principal <= 0 {
             return Err(Error::InvalidAmount);
@@ -2565,14 +2567,7 @@ impl RefundVault {
     pub fn harvest_yield(env: Env) -> Result<(), Error> {
         accensa_common::reentrancy::ReentrancyGuard::acquire(&env)?;
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
-        {
-            return Err(Error::Paused);
-        }
+        ensure_not_paused(&env)?;
 
         let merchant: Address = env
             .storage()

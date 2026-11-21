@@ -40,6 +40,18 @@ fn setup() -> (Env, Address, Address, Address, Address) {
     // `initialize` is not auth-gated, so it needs no auth entries.
     let shard_wasm_hash = env.deployer().upload_contract_wasm(shard_wasm::WASM);
     anchor.initialize(&multisig_id, &shard_wasm_hash);
+    // Shards deploy with the router's configured bounty asset (issue #998).
+    // Written directly to storage: these tests run without `mock_all_auths`,
+    // so the admin-gated setter is not available, and no event should be
+    // emitted that could perturb the auth-focused assertions.
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    env.as_contract(&anchor_id, || {
+        env.storage()
+            .instance()
+            .set(&receipt_anchor::DataKey::BountyAsset, &token);
+    });
 
     (env, anchor_id, multisig_id, s1, s2)
 }

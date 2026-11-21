@@ -32,4 +32,8 @@ accensa-common = { workspace = true }
 budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git", branch = "main", package = "budget-macros", optional = true }
 
 [dev-dependencies]
+# The version already used by `refund-vault`, `receipt-anchor`, `stream-vault`
+# and `upto-authorization`, for the gate-sweep properties in
+# `tests/gate_monotonicity_test.rs` (issue #976).
+proptest = "1.4"
 soroban-sdk = { workspace = true, features = ["testutils"] }

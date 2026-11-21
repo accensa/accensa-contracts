@@ -32,7 +32,7 @@ use accensa_common::{Error, PolicyContext, RefundPolicy, VdfPolicyParams};
 use soroban_sdk::{contract, contractimpl, xdr::FromXdr, Address, Bytes, BytesN, Env};
 
 mod vdf;
-use vdf::verify_vdf;
+use vdf::{verify_vdf, MODULUS};
 
 pub mod vrf;
 
@@ -41,6 +41,12 @@ pub struct VdfPolicy;
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod bitflip_test;
+
+#[cfg(test)]
+mod fuzz_test;
 
 #[contractimpl]
 impl RefundPolicy for VdfPolicy {
@@ -122,6 +128,18 @@ impl VdfPolicy {
 
 mod fallback;
 pub use fallback::*;
+
+#[contractimpl]
+impl VdfPolicy {
+    /// Returns `sha256(MODULUS)`, a stable fingerprint of the fixed 1024-bit
+    /// group modulus. Read-only and deterministic: the digest identifies the
+    /// group without exposing the modulus or its factorization, and must be
+    /// recomputed only if [`vdf::MODULUS`] is rotated.
+    pub fn get_modulus_fingerprint(env: Env) -> BytesN<32> {
+        let digest = env.crypto().sha256(&Bytes::from_slice(&env, &MODULUS));
+        BytesN::from_array(&env, &digest.to_array())
+    }
+}
 
 // Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
 // feature is enabled (the budget CI job), so the normal test/clippy runs stay

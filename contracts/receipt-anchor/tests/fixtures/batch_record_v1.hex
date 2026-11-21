@@ -1,0 +1,20 @@
+# XDR wire-shape fixture for BatchRecord (issue #996).
+#
+# This is the Soroban `ScVal` XDR encoding (as produced by
+# `soroban_sdk::xdr::ToXdr::to_xdr`) of one `receipt_shard::BatchRecord`:
+#
+#   root            = 0x1111...11   (32 bytes)
+#   count           = 7
+#   period_start    = 1000
+#   period_end      = 2000
+#   anchored_ledger = 12345
+#
+# It is committed as immutable text: `receipt_anchor::BatchRecord` must decode
+# these exact bytes and re-encode them unchanged, so renaming, reordering,
+# retyping or resizing any field in either copy of the struct turns the
+# round-trip test red.
+#
+# fixture-version: 1
+# struct-version: BatchRecord v1 (5 fields: root, count, period_start, period_end, anchored_ledger)
+# source-commit: 8caf88e
+0000001100000001000000050000000f0000000f616e63686f7265645f6c65646765720000000003000030390000000f00000005636f756e7400000000000003000000070000000f0000000a706572696f645f656e6400000000000500000000000007d00000000f0000000c706572696f645f73746172740000000500000000000003e80000000f00000004726f6f740000000d000000201111111111111111111111111111111111111111111111111111111111111111

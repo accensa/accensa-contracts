@@ -24,6 +24,14 @@
 //! window/deadline check, so an unreachable oracle can never block or force a
 //! refund on its own.
 //!
+//! `oracle` set to this policy's own address is the one configuration that is
+//! rejected outright, with `Error::InvalidPolicyParams` (`#977`). This policy
+//! exports only `evaluate`, so a self-addressed `get_delivery_status` failed at
+//! dispatch and fell back to the clock gates — a misconfigured claim was judged
+//! as though no oracle were attached, and with `window` and `deadline` both
+//! zero that meant an admission. The guard keeps the configuration error ahead
+//! of any dispatch.
+//!
 //! When the oracle decides the outcome, [`OracleResolutionApplied`] is
 //! emitted with the oracle's `proof`. For a `Delivered` rejection the event is
 //! rolled back with the rest of the failed invocation; the
@@ -149,8 +157,19 @@ pub(crate) fn check_time_gates(
     deadline: u64,
     ctx: &PolicyContext,
 ) -> Result<(), Error> {
-    if window > 0 && ctx.current_ledger > ctx.paid_at_ledger + window {
-        return Err(Error::WindowExpired);
+    // `paid_at_ledger + window` is a `u32` addition and the release profile
+    // turns an overflow into a host trap, which every caller handles
+    // differently. A payment anchor within `window` of `u32::MAX` therefore has
+    // no representable deadline: treat that as expired rather than panicking,
+    // so one malformed anchor cannot make a class of claims uncallable.
+    if window > 0 {
+        let outside_window = match ctx.paid_at_ledger.checked_add(window) {
+            Some(last_allowed) => ctx.current_ledger > last_allowed,
+            None => true,
+        };
+        if outside_window {
+            return Err(Error::WindowExpired);
+        }
     }
     if deadline > 0 && ctx.timestamp > deadline {
         return Err(Error::RefundExpired);
@@ -165,6 +184,15 @@ pub(crate) fn evaluate(
     params: &TimeOraclePolicyParams,
     ctx: &PolicyContext,
 ) -> Result<(), Error> {
+    // A self-addressed `oracle` is a configuration error, not a missing
+    // report, and it used to look like one: this contract exports only
+    // `evaluate`, so the dispatch of `get_delivery_status` failed, `resolve`
+    // mapped that to a fallback, and the claim was judged by the clock gates
+    // alone — an admission outright when `window` and `deadline` are zero.
+    // Reject it before dispatching anything.
+    if params.oracle == env.current_contract_address() {
+        return Err(Error::InvalidPolicyParams);
+    }
     match resolve(env, params, ctx) {
         Resolution::Admit => Ok(()),
         Resolution::Deny => Err(Error::OraclePolicyDenied),
