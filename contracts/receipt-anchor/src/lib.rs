@@ -583,19 +583,29 @@ impl ReceiptAnchor {
     }
 
     /// Append `root` to this shard's ring buffer, evicting the oldest when full.
+    ///
+    /// The buffer is one persistent entry per `shard_id`, not part of the
+    /// router's instance entry: a full 100-root history is ~3.2 KB, so keeping
+    /// it in instance storage would grow the single ledger entry that every
+    /// call to this contract loads and archives, and would grow it again for
+    /// every logical shard. The write extends that entry's TTL with the same
+    /// constants the rate-limit bucket uses, so an actively-anchoring shard
+    /// never has its root history archived mid-stream.
     fn push_shard_root(env: &Env, shard_id: u64, root: &BytesN<32>) {
+        let key = DataKey::ShardRootBuffer(shard_id);
         let mut buffer: Vec<BytesN<32>> = env
             .storage()
-            .instance()
-            .get(&DataKey::ShardRootBuffer(shard_id))
+            .persistent()
+            .get(&key)
             .unwrap_or_else(|| Vec::new(env));
         if buffer.len() >= ROOT_BUFFER_SIZE {
             buffer.remove(0);
         }
         buffer.push_back(root.clone());
+        env.storage().persistent().set(&key, &buffer);
         env.storage()
-            .instance()
-            .set(&DataKey::ShardRootBuffer(shard_id), &buffer);
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND);
     }
 
     /// Verifies a Groth16 zero-knowledge proof against public inputs and a verifying key.
@@ -668,7 +678,7 @@ impl ReceiptAnchor {
         // root is unknown.
         let buffer: Vec<BytesN<32>> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ShardRootBuffer(shard_id))
             .unwrap_or_else(|| Vec::new(&env));
 
@@ -690,7 +700,7 @@ impl ReceiptAnchor {
     /// (read-only).
     pub fn get_root_buffer(env: Env, shard_id: u64) -> Vec<BytesN<32>> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ShardRootBuffer(shard_id))
             .unwrap_or_else(|| Vec::new(&env))
     }

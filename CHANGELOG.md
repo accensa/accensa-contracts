@@ -9,31 +9,80 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
-- **`receipt-shard` / `receipt-anchor` (issue #995): reject re-anchoring a
-  different root at an occupied batch id.** Added `anchor_batch_checked`, which
-  returns `Error::DuplicateRoot` instead of overwriting a stored record whose
-  root differs; re-submitting the identical anchoring request is an idempotent
-  no-op that leaves the record (including its first `anchored_ledger`),
-  diagnostics counters and TTLs untouched. The
-  legacy `anchor_batch` delegates to it (so the non-try client traps), the
-  router calls the checked entry through `unwrap_shard_result`, and the
-  `DuplicateRoot` doc now covers the batch-id conflict.
-- **`receipt-anchor` (issue #996): pin `BatchRecord`'s wire shape.**
-  Added a committed XDR fixture and integration test that decode it into both
-  the shard and router copies of `BatchRecord`, compare all five fields and
-  re-encode it byte-for-byte, so any one-sided rename, reorder or retype turns
-  the suite red.
-- **`receipt-shard` (issue #997): pin prune cursor semantics for absent ids.**
-  Added integration coverage showing an unanchored id between two anchored
-  ones consumes one unit of `max_batches`, advances the cursor without touching
-  diagnostics counters, and is never reported as a removal.
-- **`receipt-shard` / `receipt-anchor` (issue #998): confine prune-bounty
-  payouts to a configured asset.** The shard constructor now takes a
-  `bounty_asset`; `claim_prune_bounty` rejects every other token with
-  `Error::UnsupportedAsset` (checked before the accrual or balance is read) and
-  fails closed when no asset is recorded. The router gained an admin-gated,
-  event-emitting `set_bounty_asset` plus `get_bounty_asset`, refuses to deploy
-  a shard until one is configured, and passes it to every shard it creates.
+- **`refund-policy-time` (issue #979): pin `max_report_age = 0` to same-second
+  reports.** Added `tests/max_age_zero_test.rs` with its own mock delivery
+  oracle: a `Lost` report stamped at the claim's second is honoured and
+  overrides an expired window, the same report one second older is ignored and
+  the claim is rejected `WindowExpired`. Records that zero is the strictest age,
+  not a disabled check, unlike `window` and `deadline`. Test-only.
+
+- **`refund-policy-time` (issue #978): foreign params shapes error, they do not
+  trap.** Added `tests/params_schema_test.rs` asserting a real `VdfPolicyParams`
+  blob, a map missing `window`, an empty map, an `oracle` key holding a
+  non-address, an oracle shape missing `window`, and a non-numeric `window` each
+  return `Error::InvalidPolicyParams` through `try_evaluate`. Test-only; no row
+  traps, so the decode mapping in `src/lib.rs` is unchanged.
+
+- **`refund-policy-time` (issue #977): reject an oracle that is the policy itself.**
+  `oracle::evaluate` now returns `Error::InvalidPolicyParams` when
+  `TimeOraclePolicyParams::oracle` equals `env.current_contract_address()`,
+  before any dispatch. The policy exports only `evaluate`, so the self-call
+  failed at dispatch and fell back to the clock gates: `window: 0` there
+  admits a claim with no usable report. Covered by
+  `tests/oracle_self_reference_test.rs`.
+
+- **`refund-policy-time` (issue #975): window gate fails closed on `u32` overflow.**
+  `check_time_gates` now computes `paid_at_ledger + window` with `checked_add`
+  and treats an unrepresentable sum as `Error::WindowExpired`. Previously the
+  addition overflowed into a host abort for an anchor within `window` of
+  `u32::MAX`, so one malformed payment anchor made a class of claims uncallable
+  instead of denied. `tests/window_overflow_test.rs` pins the denial and shows
+  every representable verdict is unchanged.
+
+- **`receipt-anchor` (issue #958): store the root ring buffer in persistent
+  storage.** `push_shard_root` wrote `DataKey::ShardRootBuffer(shard_id)` into
+  the router's *instance* entry, so a full 100-root history (~3.2 KB) grew the
+  single entry every call to the contract loads and archives - once per logical
+  shard. The buffer is now its own persistent entry per `shard_id`, extended
+  with the same `TTL_THRESHOLD` / `TTL_EXTEND` pair the rate-limit bucket uses;
+  `verify_receipt_by_root` and `get_root_buffer` read from persistent storage.
+  `tests/root_buffer_storage.rs` pins the tenancy, the 100-entry cap, and that
+  anchoring pays rent.
+- **`receipt-anchor` (issue #957): cover the rate-limit refill schedule.**
+  `tests/rate_limit_refill.rs` exercises the burst-2 window, the reject at the
+  interval boundary, and a call arriving more than one interval late - where the
+  interval clock restarts from the *late* call, not from the previous one.
+- **`receipt-anchor` (issue #955): prove a pending admin transfer grants
+  nothing.** `tests/admin_transfer_pending.rs` asserts the proposed admin cannot
+  act while the transfer is pending, that the swap happens only on
+  `accept_admin`, and that the refusal is a host-level authorization failure
+  rather than a contract error.
+- **`receipt-anchor` (issue #960): give the re-initialization guard teeth.**
+  `tests/reinitialize_guard.rs` replays `initialize` with a *different* admin and
+  an all-zero shard wasm hash, then anchors. Guarding after the writes would
+  rewrite the pinned hash and fail the anchor, so the assertion discriminates
+  the ordering instead of only the return value.
+- **`refund-policy-vdf` (issue #984): prove output/witness reduction to canonical form.**
+  Added `tests/reduction_test.rs` covering a non-canonical envelope `y + N`,
+  a witness `N + 1` and `N`, and a congruence-broken envelope, asserting the
+  Wesolowski verifier folds each back mod `N` and rejects the degenerate
+  cases with `Error::InvalidVdfProof`.
+- **`refund-policy-vdf` (issue #985): fuzz that `evaluate` rejects with typed errors, never traps.**
+  Added `src/fuzz_test.rs`, a deterministic xorshift64 driver running 2000
+  cases each over well-formed `VdfPolicyParams` crossed with random 256-byte
+  proofs and random `PolicyContext` shapes. Every outcome must be a typed
+  `Ok(Ok(()))` or `Err(Ok(Error::*))`; a `HostError` trap fails the run.
+- **`refund-policy-vdf` (issue #986): validate the slashing penalty instead of paying out.**
+  `calculate_slashing_penalty` now returns `Result<i128, Error>` and rejects
+  `amount < 0` and `penalty > 100` with `Error::InvalidAmount` instead of
+  silently clamping or producing a negative penalty (which the vault then
+  subtracted as a payout). `src/slashing_overflow_tests.rs` updated for the
+  new signature; `tests/slashing_bounds_test.rs` added.
+- **`refund-policy-vdf` (issue #987): pin slashing arithmetic across accepted bounds.**
+  Added `tests/slashing_table_test.rs`, a table of nine
+  `(amount, penalty, expected)` rows covering `0`, `1`, `50`, `100` percent
+  and the fractional-truncation boundary, using a signature-agnostic local
+  adapter so it stays valid whether the return is `i128` or `Result`.
 - **`refund-policy-vdf` (issue #988): expose modulus fingerprint getter.**
   Added read-only `get_modulus_fingerprint() -> BytesN<32>` returning
   `sha256(MODULUS)` to identify the fixed VDF group, with integration test
