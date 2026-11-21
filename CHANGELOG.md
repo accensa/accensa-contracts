@@ -9,29 +9,38 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
-- **`receipt-anchor` (issue #953): an out-of-range anchor interval reports a bad
-  argument, not a bad batch.** `set_min_anchor_interval` rejected an interval
-  above `MAX_ANCHOR_INTERVAL` (86,400) with `Error::BatchTooLarge`, the code
-  `anchor_batch` returns when the receipt count exceeds `MAX_BATCH_SIZE`; a
-  mistyped interval read back as a batch problem and a client switching on the
-  code retried with a smaller batch. It now returns `Error::InvalidAmount`, and
-  the rustdoc states the accepted range as `0..=86_400`, ceiling inclusive.
-  The range itself is unchanged and no error code was added or renumbered.
-  `tests/anchor_interval_error.rs` pins both sides of the boundary.
+- **`receipt-shard` (issue #994): keep the unpayable remainder of a prune bounty
+  accrued.** `claim_prune_bounty` now reads the payout (`min(accrual, contract
+  balance)`) before mutating storage and writes `accrued - payout` back instead
+  of zeroing the accrual. A shortfall — a normal state, since bounties accrue per
+  pruned batch while the contract pays from whatever token balance it holds — is
+  no longer burned: funding the shard later pays the remainder, and the payouts
+  sum to the original accrual. The accrual is still settled *before* the
+  transfer, so a repeated or re-entered claim cannot pay twice, and a
+  zero-accrual claim makes no token call and no storage write. Covered by
+  `tests/bounty_shortfall_test.rs`.
 
-- **`receipt-anchor` (issues #951, #954, #956): three guards that had no test
-  reaching them.** Test-only. `tests/shard_root_isolation.rs` (#951) anchors
-  into two shards before querying the other, so `verify_receipt_by_root` walks
-  a *populated* foreign buffer and answers `Error::RootNotFound`; the existing
-  test queried a shard that had never anchored, which falls into the
-  empty-buffer case, so dropping `shard_id` from the storage key passed it.
-  `tests/shard_id_registry.rs` (#954) re-anchors into shards that are already
-  registered, which is the repeat the `any` dedupe guard in
-  `register_shard_id` exists for and which nothing exercised; an
-  unconditional append makes `get_shard_ids` return `[5, 9, 5, 9]`.
-  `tests/accept_admin_cold_path.rs` (#956) re-reads `get_admin` and
-  `get_pending_admin` after each rejected `accept_admin` instead of asserting
-  only the returned code.
+- **`receipt-shard` (issue #992): cover `verify_receipt` proof-length bounds.**
+  Added `tests/verify_receipt_bounds_test.rs` pinning an empty proof against a
+  one-leaf batch (matches, and a different leaf reports `false` rather than an
+  error), a 10-sibling proof for an unanchored id (`BatchNotFound`) and an
+  11-sibling proof for the same id (`ProofTooLong`), which pins that the length
+  guard runs before the storage read. Test-only.
+
+- **`receipt-shard` (issue #991): assert `extend_batch_ttl` really extends.**
+  Added `tests/extend_ttl_test.rs`, which reads the persistent entry's TTL
+  before and after the call and asserts it is extended back to `TTL_EXTEND`
+  once fewer than `TTL_THRESHOLD` ledgers remain, from a caller with no mocked
+  authorization. Also pins `BatchNotFound` for a never-anchored id, with no
+  entry created. A no-op regression would now fail. Test-only.
+
+- **`refund-policy-vdf` (issue #989): property-test every single flipped proof
+  bit.** Added `src/bitflip_test.rs`, which generates one honest proof at delay
+  300 and asserts `Err(Ok(Error::InvalidVdfProof))` for all 1024 bits of
+  `output` and all 1024 bits of `witness`, restoring each byte after the
+  assertion; the untampered pair is asserted to verify first. The prover
+  helpers in `src/test.rs` are only widened to `pub(crate)`. Test-only; the
+  test takes ~22 s locally.
 
 - **`refund-policy-time` (issue #979): pin `max_report_age = 0` to same-second
   reports.** Added `tests/max_age_zero_test.rs` with its own mock delivery
@@ -62,6 +71,51 @@ exception: while the project is below `1.0.0`, breaking changes bump the
   `u32::MAX`, so one malformed payment anchor made a class of claims uncallable
   instead of denied. `tests/window_overflow_test.rs` pins the denial and shows
   every representable verdict is unchanged.
+
+- **`refund-vault` (issue #965): reject a reserve/ceiling pair that cannot both
+  be honoured.** `set_reserve_ratio` and `set_max_deploy_ratio` each capped their
+  own value at 10,000 bp and never read the other key, so `8000` plus `5000`
+  stored cleanly while `deploy_to_yield`'s reserve floor stopped deployment at
+  20 % - the configured 50 % ceiling could never bind. Both setters now read the
+  counterpart as an `Option` through one `ratios_compatible` helper and reject a
+  sum above 10,000 bp with the existing `Error::InvalidRatio`; an unset
+  counterpart is not validated, because the effective defaults (0 and 10,000) are
+  not a pair anyone configured. `tests/ratio_sum_invariant.rs` covers both write
+  orders, the exact-10,000 and one-over boundaries, and the recovery path. Two
+  pre-existing fixtures set `(10_000, 10_000)` and `(5000, 10_000)` and are now
+  invalid input, so their ratio arguments changed (`src/yield_tests.rs`,
+  `tests/yield_events.rs`); their assertions are untouched.
+- **`refund-vault` (issue #964): pin the claim-cooldown window's boundary and
+  scope.** `src/test.rs` set a 100-second cooldown and jumped 200 seconds ahead,
+  so neither the second at which the gate opens nor whose clock it is had ever
+  been asserted. `tests/claim_cooldown_window.rs` claims at 1,000, rejects at
+  1,099 and accepts at 1,100, then shows a *different* recipient against a
+  *different* payment ref is still rejected at 1,150 - the gate reads one
+  vault-global `DataKey::LastClaim`, which is what `set_claim_cooldown`'s
+  "same recipient" doc comment gets wrong. Also covers a zero cooldown claiming
+  twice in one second, and that a rejection leaves both `get_nonce()` and the
+  caller's user nonce alone so the retry reuses its number.
+- **`refund-vault` (issue #966): cover `deploy_to_yield`'s guards.**
+  `tests/deploy_to_yield_guards.rs` reaches the one state no public call can
+  produce - a registered strategy whose `DataKey::ApprovedStrategy` entry is
+  gone, which `revoke_yield_strategy` never leaves behind because it
+  unregisters in the same call - and asserts `StrategyNotApproved`, against the
+  `StrategyNotSet` the public path does report. It then fixes where a 20 %
+  reserve floor and a 50 % ceiling each take over: 500,000 of 1,000,000 is
+  admitted, 500,001 is `DeploymentExceedsMax`, 900,000 is `InsufficientReserve`
+  (the reserve is read first, so an amount breaking both names only one), and a
+  call above the liquid float is `InsufficientFloat` before either ratio is
+  consulted.
+- **`refund-vault` (issue #967): test that `withdraw` recalls only the
+  shortfall.** `withdraw` runs `strategy::ensure_liquidity` before its own float
+  check, and only the happy path was covered.
+  `tests/withdraw_strategy_recall.rs` deploys 800,000 of a 1,000,000 deposit and
+  asserts a 150,000 withdrawal leaves all 800,000 deployed, a 500,000 withdrawal
+  recalls exactly the 300,000 difference rather than the whole position, an exact
+  1,000,000 withdrawal empties it, and a 1,000,001 withdrawal reports
+  `InsufficientFloat` with the vault's `DeployedPrincipal`, the strategy's own
+  ledger, both balances and the nonce all unchanged - the recall that ran inside
+  the reverted call did not persist.
 
 - **`receipt-anchor` (issue #958): store the root ring buffer in persistent
   storage.** `push_shard_root` wrote `DataKey::ShardRootBuffer(shard_id)` into
