@@ -9,6 +9,36 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`refund-policy-time` (issue #979): pin `max_report_age = 0` to same-second
+  reports.** Added `tests/max_age_zero_test.rs` with its own mock delivery
+  oracle: a `Lost` report stamped at the claim's second is honoured and
+  overrides an expired window, the same report one second older is ignored and
+  the claim is rejected `WindowExpired`. Records that zero is the strictest age,
+  not a disabled check, unlike `window` and `deadline`. Test-only.
+
+- **`refund-policy-time` (issue #978): foreign params shapes error, they do not
+  trap.** Added `tests/params_schema_test.rs` asserting a real `VdfPolicyParams`
+  blob, a map missing `window`, an empty map, an `oracle` key holding a
+  non-address, an oracle shape missing `window`, and a non-numeric `window` each
+  return `Error::InvalidPolicyParams` through `try_evaluate`. Test-only; no row
+  traps, so the decode mapping in `src/lib.rs` is unchanged.
+
+- **`refund-policy-time` (issue #977): reject an oracle that is the policy itself.**
+  `oracle::evaluate` now returns `Error::InvalidPolicyParams` when
+  `TimeOraclePolicyParams::oracle` equals `env.current_contract_address()`,
+  before any dispatch. The policy exports only `evaluate`, so the self-call
+  failed at dispatch and fell back to the clock gates: `window: 0` there
+  admits a claim with no usable report. Covered by
+  `tests/oracle_self_reference_test.rs`.
+
+- **`refund-policy-time` (issue #975): window gate fails closed on `u32` overflow.**
+  `check_time_gates` now computes `paid_at_ledger + window` with `checked_add`
+  and treats an unrepresentable sum as `Error::WindowExpired`. Previously the
+  addition overflowed into a host abort for an anchor within `window` of
+  `u32::MAX`, so one malformed payment anchor made a class of claims uncallable
+  instead of denied. `tests/window_overflow_test.rs` pins the denial and shows
+  every representable verdict is unchanged.
+
 - **`receipt-anchor` (issue #958): store the root ring buffer in persistent
   storage.** `push_shard_root` wrote `DataKey::ShardRootBuffer(shard_id)` into
   the router's *instance* entry, so a full 100-root history (~3.2 KB) grew the
