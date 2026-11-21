@@ -231,29 +231,15 @@ fn receipts_pruned_event_emitted_with_count() {
 }
 
 #[test]
-fn receipts_pruned_event_emitted_on_noop_with_zero() {
+fn receipts_pruned_event_skipped_on_noop_with_zero() {
     let fx = setup();
     anchor_now(&fx, 1, 1);
 
     fx.client.prune_expired_receipts(&fx.pruner, &5);
 
-    let mut data = Map::<Symbol, Val>::new(&fx.env);
-    data.set(Symbol::new(&fx.env, "new_cursor"), 1u64.into_val(&fx.env));
-    data.set(Symbol::new(&fx.env, "pruned_count"), 0u32.into_val(&fx.env));
     assert_eq!(
         fx.env.events().all().filter_by_contract(&fx.client.address),
-        vec![
-            &fx.env,
-            (
-                fx.client.address.clone(),
-                (
-                    Symbol::new(&fx.env, "receipts_pruned_event"),
-                    fx.pruner.clone()
-                )
-                    .into_val(&fx.env),
-                data.into_val(&fx.env)
-            )
-        ]
+        vec![&fx.env]
     );
 }
 

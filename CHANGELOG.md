@@ -9,6 +9,10 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`receipt-shard` (issue #993): skip no-op prune event.**
+  Receipt pruning no longer emits a `ReceiptsPruned` event when 0 batches are
+  removed. Successful pruning continues to emit a single event with the pruning results.
+
 - **`state-channel` (issue #1006): reject self-paying channels at opening.**
   `open_channel` now returns `Error::InvalidAmount` when the receiver is the
   contract itself or equals the sender, before any token transfer or channel

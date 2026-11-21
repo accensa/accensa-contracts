@@ -17,8 +17,8 @@
 //!   unexpired receipt.
 //! - `max_count` bounds the deletions per call (and therefore the bounty
 //!   payout), keeping the loop's cost predictable.
-//! - Every call emits [`ReceiptsPrunedEvent`] with the reclaimed storage
-//!   count, even when it deletes nothing (count `0`).
+//! - Emits [`ReceiptsPrunedEvent`] with the reclaimed storage count only when
+//!   at least one record is removed (`pruned > 0`).
 //!
 //! # Bounty economics
 //!
@@ -48,9 +48,10 @@ pub const RETENTION_LEDGERS: u32 = 3_110_400;
 /// claimable from the contract's own token balance.
 pub const PRUNE_BOUNTY_PER_BATCH: i128 = 100;
 
-/// Emitted when expired receipts are evicted from this shard (issue #395).
+/// Emitted when expired receipts are evicted from this shard (issue #395, #993).
 ///
-/// Topics: `("receipts_pruned", pruner)`. The data map carries the number
+/// Topics: `("receipts_pruned", pruner)`. Emitted only when at least one expired
+/// batch is pruned (`pruned_count > 0`). The data map carries the number
 /// of reclaimed storage entries so indexers can track storage pressure.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,14 +144,14 @@ impl ReceiptShard {
                 &DataKey::PruneBounty(pruner.clone()),
                 &(accrued + PRUNE_BOUNTY_PER_BATCH * pruned as i128),
             );
-        }
 
-        ReceiptsPrunedEvent {
-            pruner,
-            pruned_count: pruned,
-            new_cursor: cursor,
+            ReceiptsPrunedEvent {
+                pruner,
+                pruned_count: pruned,
+                new_cursor: cursor,
+            }
+            .publish(&env);
         }
-        .publish(&env);
 
         pruned
     }
