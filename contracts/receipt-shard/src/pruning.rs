@@ -29,8 +29,9 @@
 //! authorize-by-argument pattern every other contract in this workspace
 //! uses — so bounty attribution is sound and a third party cannot divert
 //! someone else's accrual to itself. The accrued balance is settled
-//! through `claim_prune_bounty`, which zeroes the accrual *before* the
-//! transfer so a claim cannot pay out twice.
+//! through `claim_prune_bounty`, which consumes the accrual *before* the
+//! transfer so a claim cannot pay out twice, and leaves whatever the
+//! contract could not pay accrued for a later claim.
 
 use crate::{
     BatchRecord, DataKey, ReceiptShard, ReceiptShardArgs, ReceiptShardClient, TTL_EXTEND,
@@ -156,10 +157,11 @@ impl ReceiptShard {
 
     /// Settle a caller's accrued pruning bounty.
     ///
-    /// Transfers `claimer`'s full accrued balance from the contract's own
-    /// balance of `token` (capped at what the contract actually holds) and
-    /// zeroes the accrual *before* the transfer, so a re-entered or
-    /// repeated claim cannot pay out twice. Returns the amount paid.
+    /// Transfers `min(accrual, contract balance)` of `token` to `claimer` and
+    /// writes the unpayable remainder back to the accrual *before* the
+    /// transfer, so a shortfall stays claimable once the shard is funded
+    /// again and a re-entered or repeated claim cannot pay out twice.
+    /// Returns the amount paid.
     pub fn claim_prune_bounty(env: Env, token: Address, claimer: Address) -> i128 {
         claimer.require_auth();
 
@@ -169,20 +171,28 @@ impl ReceiptShard {
             .get(&DataKey::PruneBounty(claimer.clone()))
             .unwrap_or(0);
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PruneBounty(claimer.clone()), &0i128);
-
-        if accrued > 0 {
-            let contract_addr = env.current_contract_address();
-            let balance = TokenClient::new(&env, &token).balance(&contract_addr);
-            let payout = accrued.min(balance);
-            if payout > 0 {
-                TokenClient::new(&env, &token).transfer(&contract_addr, &claimer, &payout);
-            }
-            return payout;
+        // Nothing owed: no token call and no storage write.
+        if accrued == 0 {
+            return 0;
         }
-        0
+
+        // Compute the payout before mutating storage: the accrual must only
+        // shrink by what this call can actually pay.
+        let contract_addr = env.current_contract_address();
+        let balance = TokenClient::new(&env, &token).balance(&contract_addr);
+        let payout = accrued.min(balance);
+
+        if payout > 0 {
+            // Settle the accrual *before* the transfer, leaving the shortfall
+            // accrued. The stored value is `accrued - payout`, so it only ever
+            // shrinks, and a re-entered or repeated claim cannot pay twice.
+            env.storage()
+                .instance()
+                .set(&DataKey::PruneBounty(claimer.clone()), &(accrued - payout));
+            TokenClient::new(&env, &token).transfer(&contract_addr, &claimer, &payout);
+        }
+
+        payout
     }
 
     /// The bounty `caller` has accrued but not yet claimed, in stroops.
