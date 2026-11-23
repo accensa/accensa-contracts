@@ -426,7 +426,10 @@ fn test_prune_active_authorization_fails() {
 
     client.authorize(&p, &buyer, &recipient, &1000, &1000);
     env.ledger().with_mut(|li| li.sequence_number = 50);
-    assert_eq!(client.try_prune_authorization(&p), Err(Ok(Error::Expired)));
+    assert_eq!(
+        client.try_prune_authorization(&p),
+        Err(Ok(Error::NotExpired))
+    );
 }
 
 #[test]
@@ -436,6 +439,65 @@ fn test_prune_nonexistent_fails() {
         client.try_prune_authorization(&pid(&env, 1)),
         Err(Ok(Error::AuthorizationNotFound))
     );
+}
+
+#[test]
+fn test_prune_authorization_requires_admin_auth() {
+    let (env, client, admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    client.authorize(&p, &buyer, &recipient, &1000, &100);
+    env.ledger().with_mut(|li| li.sequence_number = 200);
+
+    client.prune_authorization(&p);
+    let auths = env.auths();
+    assert_eq!(auths[0].0, admin);
+}
+
+#[test]
+fn test_prune_authorizations_requires_admin_auth() {
+    let (env, client, admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    client.authorize(&p, &buyer, &recipient, &1000, &100);
+    env.ledger().with_mut(|li| li.sequence_number = 200);
+
+    let list = vec![&env, p];
+    let count = client.prune_authorizations(&list);
+    assert_eq!(count, 1);
+
+    let auths = env.auths();
+    assert_eq!(auths[0].0, admin);
+}
+
+#[test]
+fn test_prune_authorizations_bulk_success() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let p1 = pid(&env, 1);
+    let p2 = pid(&env, 2);
+    let p3 = pid(&env, 3);
+    let recipient = Address::generate(&env);
+
+    // p1 and p2 expire at ledger 100
+    client.authorize(&p1, &buyer, &recipient, &1000, &100);
+    client.authorize(&p2, &buyer, &recipient, &1000, &100);
+    // p3 expires at ledger 500 (active)
+    client.authorize(&p3, &buyer, &recipient, &1000, &500);
+
+    // Current ledger is 200: p1 and p2 are expired, p3 is not
+    env.ledger().with_mut(|li| li.sequence_number = 200);
+
+    let list = vec![&env, p1.clone(), p2.clone(), p3.clone()];
+    let pruned = client.prune_authorizations(&list);
+    assert_eq!(pruned, 2);
+
+    // p1 and p2 are removed
+    assert!(client.get_authorization(&p1).is_none());
+    assert!(client.get_authorization(&p2).is_none());
+    // p3 still exists
+    assert!(client.get_authorization(&p3).is_some());
 }
 
 // ── TTL extension ──────────────────────────────────────────────────────────

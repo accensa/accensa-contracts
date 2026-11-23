@@ -155,6 +155,9 @@ pub fn cancel_queued_transaction(env: &Env, queue_id: u64, caller: &Address) -> 
 
 /// Approve a queued transaction. Each authorized signer can approve once.
 ///
+/// Only registered signers can approve. Approvals from unknown addresses
+/// return [`Error::UnknownSigner`].
+///
 /// The approval is recorded with `created_at = now` and only counts toward
 /// the quorum while younger than [`ttl::APPROVAL_TTL_SECONDS`]
 /// (issue #449); approvals that expired in the meantime are pruned first,
@@ -162,9 +165,18 @@ pub fn cancel_queued_transaction(env: &Env, queue_id: u64, caller: &Address) -> 
 /// again.
 ///
 /// Returns `Ok(())` if the approval was recorded.
+/// Returns `Err(Error::UnknownSigner)` if `signer` is not a registered signer.
 /// Returns `Err(Error::AlreadyVoted)` if the signer still holds a fresh
 /// approval.
 pub fn approve_queued_transaction(env: &Env, queue_id: u64, signer: &Address) -> Result<(), Error> {
+    let is_signer = env
+        .storage()
+        .persistent()
+        .has(&DataKey::Signer(signer.clone()));
+    if !is_signer {
+        return Err(Error::UnknownSigner);
+    }
+
     let mut queued = get_queued_transaction(env, queue_id)?;
 
     // Expired approvals never count, so they must not block a fresh vote.
@@ -296,10 +308,23 @@ mod tests {
     fn test_approve_and_execute() {
         let (env, id, signer) = setup();
         let guardian = Address::generate(&env);
+        let stranger = Address::generate(&env);
 
         let queue_id = env.as_contract(&id, || {
             let queue_id = queue_transaction(&env, hash(&env), 10, 1, guardian);
+            assert_eq!(
+                approve_queued_transaction(&env, queue_id, &stranger),
+                Err(Error::UnknownSigner)
+            );
+            assert!(ttl::approval_record(&env, queue_id, &stranger).is_none());
+            let queued_before = get_queued_transaction(&env, queue_id).unwrap();
+            assert_eq!(queued_before.approval_count, 0);
+            assert_eq!(queued_before.approvers.len(), 0);
+
             approve_queued_transaction(&env, queue_id, &signer).unwrap();
+            assert!(ttl::approval_record(&env, queue_id, &signer).is_some());
+            let queued_after = get_queued_transaction(&env, queue_id).unwrap();
+            assert_eq!(queued_after.approval_count, 1);
             assert_eq!(
                 approve_queued_transaction(&env, queue_id, &signer),
                 Err(Error::AlreadyVoted)

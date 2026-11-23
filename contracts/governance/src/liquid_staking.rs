@@ -91,11 +91,10 @@ pub struct LiquidStaking;
 /// A missing storage key is an explicit [`LiquidStakingError::NotInitialized`]
 /// instead of a silent 1:1 fallback, so callers cannot bypass `initialize`.
 fn load_exchange_rate(env: &Env) -> Result<ExchangeRate, LiquidStakingError> {
-    Ok(env
-        .storage()
+    env.storage()
         .instance()
         .get(&LiquidStakingDataKey::ExchangeRate)
-        .unwrap_or(ExchangeRate { rate: 1_000_000 }))
+        .ok_or(LiquidStakingError::NotInitialized)
 }
 
 #[contractimpl]
@@ -203,9 +202,13 @@ impl LiquidStaking {
     /// Burn stACC to redeem underlying tokens after the lock epoch
     /// expires.
     ///
-    /// `sender` burns `stacc_amount` stACC and receives
-    /// `stacc_amount * exchange_rate` underlying tokens, computed at the
-    /// current exchange rate. The lock epoch must have elapsed:
+    /// `sender` burns `stacc_amount` stACC and receives `underlying_redeemed`
+    /// tokens computed as `stacc_amount * exchange_rate / 1_000_000`.
+    /// The user's `locked_underlying` and the global `total_locked` are both
+    /// decremented by the same unit: `underlying_redeemed` capped by the user's
+    /// `locked_underlying`, preserving the invariant that the sum of per-user
+    /// `locked_underlying` equals `total_locked`.
+    /// The lock epoch must have elapsed:
     /// `current_ledger >= lock_start_ledger + LOCK_EPOCH_LEDGERS`.
     ///
     /// Emits [`Burn`] event.
@@ -246,15 +249,19 @@ impl LiquidStaking {
             return Err(LiquidStakingError::InsufficientBalance);
         }
 
-        // Update user state: remove stACC and underlying
+        // Update user state: remove stACC and decrement locked_underlying.
+        // Both user's locked_underlying and global total_locked are decremented
+        // in the same unit: underlying_redeemed capped by the user's locked_underlying.
+        let underlying_deducted = core::cmp::min(underlying_redeemed, user_data.locked_underlying);
+
         user_data.stacc_balance = user_data
             .stacc_balance
             .checked_sub(stacc_amount)
             .ok_or(LiquidStakingError::MathOverflow)?;
         user_data.locked_underlying = user_data
             .locked_underlying
-            .checked_sub(stacc_amount)
-            .ok_or(LiquidStakingError::MathOverflow)?; // 1:1 burn of underlying that was locked
+            .checked_sub(underlying_deducted)
+            .ok_or(LiquidStakingError::MathOverflow)?;
 
         env.storage().persistent().set(&user_key, &user_data);
 
@@ -273,10 +280,8 @@ impl LiquidStaking {
         total_supply = total_supply
             .checked_sub(stacc_amount)
             .ok_or(LiquidStakingError::MathOverflow)?;
-        // Only reduce locked by the underlying actually redeemed; the burn
-        // redeems from the locked amount.
         total_locked = total_locked
-            .checked_sub(underlying_redeemed)
+            .checked_sub(underlying_deducted)
             .ok_or(LiquidStakingError::MathOverflow)?;
 
         env.storage()
@@ -303,13 +308,8 @@ impl LiquidStaking {
     /// Returns [`LiquidStakingError::NotInitialized`] if `initialize` has not
     /// been called yet, rather than a silent default rate.
     pub fn get_exchange_rate(env: Env) -> Result<u64, LiquidStakingError> {
-        let rate = env
-            .storage()
-            .instance()
-            .get(&LiquidStakingDataKey::ExchangeRate)
-            .map(|er: ExchangeRate| er.rate)
-            .unwrap_or(1_000_000);
-        Ok(rate)
+        let er = load_exchange_rate(&env)?;
+        Ok(er.rate)
     }
     /// Read-only: fetch total underlying tokens locked.
     pub fn get_total_locked(env: Env) -> u64 {

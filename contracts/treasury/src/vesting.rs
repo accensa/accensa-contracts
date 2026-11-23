@@ -107,6 +107,106 @@ impl VestingSchedule {
     ///
     /// Propagates [`Error::MathOverflow`] from [`Self::vested`].
     pub fn claimable(&self, now: u64) -> Result<i128, Error> {
-        Ok(self.vested(now)?.saturating_sub(self.claimed))
+        Ok((self.vested(now)? - self.claimed).max(0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env};
+
+    fn schedule(
+        total: i128,
+        claimed: i128,
+        start: u64,
+        cliff: u64,
+        duration: u64,
+    ) -> VestingSchedule {
+        let env = Env::default();
+        VestingSchedule {
+            beneficiary: Address::generate(&env),
+            total,
+            claimed,
+            start,
+            cliff,
+            duration,
+        }
+    }
+
+    #[test]
+    fn is_valid_checks_all_three_rules() {
+        // Valid baseline
+        assert!(schedule(100, 0, 10, 5, 20).is_valid());
+
+        // Rule 1: total must be > 0
+        assert!(!schedule(0, 0, 10, 5, 20).is_valid());
+        assert!(!schedule(-1, 0, 10, 5, 20).is_valid());
+
+        // Rule 2: duration must be > 0
+        assert!(!schedule(100, 0, 10, 0, 0).is_valid());
+
+        // Rule 3: cliff must be <= duration
+        assert!(schedule(100, 0, 10, 20, 20).is_valid());
+        assert!(!schedule(100, 0, 10, 21, 20).is_valid());
+    }
+
+    #[test]
+    fn vested_timeline_and_rounding() {
+        let s = schedule(1_000, 0, 1_000, 200, 1_000);
+
+        // Before cliff: 0 unlocked
+        assert_eq!(s.vested(999).unwrap(), 0);
+        assert_eq!(s.vested(1_000).unwrap(), 0);
+        assert_eq!(s.vested(1_199).unwrap(), 0);
+
+        // Exactly at cliff (now = start + cliff = 1200): 1000 * 200 / 1000 = 200
+        assert_eq!(s.vested(1_200).unwrap(), 200);
+
+        // Mid-window
+        assert_eq!(s.vested(1_500).unwrap(), 500);
+
+        // Exactly at end (now = start + duration = 2000) and past end: total unlocked
+        assert_eq!(s.vested(2_000).unwrap(), 1_000);
+        assert_eq!(s.vested(2_500).unwrap(), 1_000);
+
+        // Mid-window rounding down: floor(total * elapsed / duration)
+        let round_schedule = schedule(10, 0, 0, 0, 3);
+        assert_eq!(round_schedule.vested(1).unwrap(), 3);
+        assert_eq!(round_schedule.vested(2).unwrap(), 6);
+        assert_eq!(round_schedule.vested(3).unwrap(), 10);
+    }
+
+    #[test]
+    fn claimable_with_partial_claims_and_saturation() {
+        let s = schedule(1_000, 150, 1_000, 200, 1_000);
+
+        // At now = 1500, vested is 500. Claimable = 500 - 150 = 350
+        assert_eq!(s.claimable(1_500).unwrap(), 350);
+
+        // Saturates at zero when claimed > vested
+        let overclaimed = schedule(1_000, 600, 1_000, 200, 1_000);
+        assert_eq!(overclaimed.claimable(1_500).unwrap(), 0);
+
+        // Before cliff, vested is 0, so any claimed > 0 saturates to 0
+        let pre_cliff_claimed = schedule(1_000, 50, 1_000, 200, 1_000);
+        assert_eq!(pre_cliff_claimed.claimable(1_100).unwrap(), 0);
+    }
+
+    #[test]
+    fn vested_overflow_checks() {
+        // start + cliff overflows u64
+        let overflow_cliff = schedule(1_000, 0, u64::MAX - 5, 10, 20);
+        assert_eq!(overflow_cliff.vested(u64::MAX), Err(Error::MathOverflow));
+
+        // start + duration overflows u64 (cliff does not)
+        let overflow_duration = schedule(1_000, 0, u64::MAX - 5, 2, 10);
+        // now is past cliff (u64::MAX - 3) so it checks start + duration
+        assert_eq!(
+            overflow_duration.vested(u64::MAX - 2),
+            Err(Error::MathOverflow)
+        );
     }
 }

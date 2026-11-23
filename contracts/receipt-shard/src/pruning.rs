@@ -151,7 +151,11 @@ impl ReceiptShard {
                 .unwrap_or(0);
             env.storage().instance().set(
                 &DataKey::PruneBounty(pruner.clone()),
-                &(accrued + PRUNE_BOUNTY_PER_BATCH * pruned as i128),
+                &accensa_common::math::add_amounts(
+                    accrued,
+                    PRUNE_BOUNTY_PER_BATCH * pruned as i128,
+                )
+                .expect("bounty accrual within i128 bounds"),
             );
 
             ReceiptsPrunedEvent {
