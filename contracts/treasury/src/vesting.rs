@@ -107,7 +107,7 @@ impl VestingSchedule {
     ///
     /// Propagates [`Error::MathOverflow`] from [`Self::vested`].
     pub fn claimable(&self, now: u64) -> Result<i128, Error> {
-        Ok(self.vested(now)?.saturating_sub(self.claimed))
+        Ok((self.vested(now)? - self.claimed).max(0))
     }
 }
 

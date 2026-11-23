@@ -408,6 +408,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "ScheduleCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Token"
                           }
                         ]
