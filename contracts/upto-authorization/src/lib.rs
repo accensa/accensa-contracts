@@ -212,7 +212,11 @@ impl UptoAuthorization {
         }
 
         // Get the token and approve the allowance.
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let client = token::Client::new(&env, &token_addr);
         client.approve(&from, &env.current_contract_address(), &max_amount, &expiry);
 
