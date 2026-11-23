@@ -997,3 +997,21 @@ fn optimistic_proposal_id_does_not_collide_with_standard_proposal() {
     let opt_prop = h.gov.get_optimistic_proposal(&opt_id);
     assert_eq!(opt_prop.proposer, h.m2);
 }
+
+#[test]
+fn stacc_rate_reads_uninitialized_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stacc_id = env.register(LiquidStaking, ());
+    let stacc = LiquidStakingClient::new(&env, &stacc_id);
+
+    // Rate read on uninitialized instance returns NotInitialized
+    let res = stacc.try_get_exchange_rate();
+    assert_eq!(res, Err(Ok(LiquidStakingError::NotInitialized)));
+
+    // Burn on uninitialized instance surfaces NotInitialized
+    let user = Address::generate(&env);
+    let burn_res = stacc.try_burn(&user, &100);
+    assert_eq!(burn_res, Err(Ok(LiquidStakingError::NotInitialized)));
+}
