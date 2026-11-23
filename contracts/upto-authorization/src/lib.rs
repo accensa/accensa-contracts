@@ -205,14 +205,18 @@ impl UptoAuthorization {
                 .storage()
                 .persistent()
                 .get(&DataKey::Authorization(payment_id.clone()))
-                .unwrap();
+                .ok_or(Error::AuthorizationNotFound)?;
             if existing.expiry > env.ledger().sequence() && !existing.consumed {
                 return Err(Error::AlreadySettled);
             }
         }
 
         // Get the token and approve the allowance.
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let client = token::Client::new(&env, &token_addr);
         client.approve(&from, &env.current_contract_address(), &max_amount, &expiry);
 
@@ -410,7 +414,11 @@ impl UptoAuthorization {
         }
 
         // Transfer tokens directly from buyer to seller.
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer_from(
             &env.current_contract_address(), // spender = this contract
@@ -576,3 +584,83 @@ mod budget_test;
 mod fuzz_test;
 mod inactivity_test;
 mod test;
+
+#[cfg(test)]
+mod token_storage_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{token::StellarAssetClient, Address, BytesN, Env};
+
+    #[test]
+    fn authorize_and_settle_without_stored_token_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let sac = env.register_stellar_asset_contract_v2(token_admin);
+        let token = sac.address();
+
+        StellarAssetClient::new(&env, &token).mint(&buyer, &10_000_000);
+
+        let contract_id = env.register(UptoAuthorization, ());
+        let client = UptoAuthorizationClient::new(&env, &contract_id);
+        client.initialize(&admin, &token);
+
+        let payment_id = BytesN::from_array(&env, &[1u8; 32]);
+        let cap = 1_000i128;
+        let expiry = 100u32;
+
+        // Lapsed / missing token in instance storage
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::Token);
+        });
+
+        // authorize() returns typed Error::NotInitialized
+        assert_eq!(
+            client.try_authorize(&payment_id, &buyer, &seller, &cap, &expiry),
+            Err(Ok(Error::NotInitialized))
+        );
+
+        // Restore token to authorize, so settle can reach the token read
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&DataKey::Token, &token);
+        });
+        client.authorize(&payment_id, &buyer, &seller, &cap, &expiry);
+
+        // Remove token again before settlement
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::Token);
+        });
+
+        // settle() returns typed Error::NotInitialized
+        assert_eq!(
+            client.try_settle(&payment_id, &500i128),
+            Err(Ok(Error::NotInitialized))
+        );
+    }
+
+    #[test]
+    fn uninitialized_contract_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(UptoAuthorization, ());
+        let client = UptoAuthorizationClient::new(&env, &contract_id);
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let payment_id = BytesN::from_array(&env, &[2u8; 32]);
+
+        assert_eq!(
+            client.try_authorize(&payment_id, &buyer, &seller, &1_000i128, &100u32),
+            Err(Ok(Error::NotInitialized))
+        );
+        assert_eq!(
+            client.try_settle(&payment_id, &500i128),
+            Err(Ok(Error::NotInitialized))
+        );
+    }
+}
