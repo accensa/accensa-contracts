@@ -801,7 +801,7 @@ struct PolicyCache {
 /// The policy-contract addresses are cached as `Option`s and unwrapped at
 /// their use sites, so `PolicyContractsNotConfigured` is still raised only
 /// when the corresponding gate is actually active.
-fn read_policy_cache(env: &Env) -> PolicyCache {
+fn read_policy_cache(env: &Env) -> Result<PolicyCache, Error> {
     // Resolve the merchant fee ladder once. The effective fee and the
     // "is a ladder installed?" flag come from the same tier-state read, so a
     // vault without tiers pays one instance load per entry point — and nothing
@@ -817,7 +817,13 @@ fn read_policy_cache(env: &Env) -> PolicyCache {
     };
     let tiers_active = tier_state.is_some();
 
-    PolicyCache {
+    let token_addr: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Token)
+        .ok_or(Error::NotInitialized)?;
+
+    Ok(PolicyCache {
         refund_window: env
             .storage()
             .instance()
@@ -836,10 +842,10 @@ fn read_policy_cache(env: &Env) -> PolicyCache {
             .get(&DataKey::VdfDelay)
             .unwrap_or(0),
         vdf_policy_contract: env.storage().instance().get(&DataKey::VdfPolicyContract),
-        token_addr: env.storage().instance().get(&DataKey::Token).unwrap(),
+        token_addr,
         fee_bps,
         tiers_active,
-    }
+    })
 }
 
 /// Shared single-claim logic used by [`RefundVault::refund`],
@@ -1397,7 +1403,7 @@ impl RefundVault {
             payment_amount,
             vdf_proof,
         };
-        let cache = read_policy_cache(&env);
+        let cache = read_policy_cache(&env)?;
         claim_single(&env, &cache, &claim)?;
 
         accensa_common::reentrancy::ReentrancyGuard::release(&env);
@@ -1434,7 +1440,7 @@ impl RefundVault {
         check_and_bump_user_nonce(&env, &merchant, nonce)?;
 
         // Policy context is read once before the loop, not per item.
-        let cache = read_policy_cache(&env);
+        let cache = read_policy_cache(&env)?;
         for claim in claims.iter() {
             claim_single(&env, &cache, &claim)?;
         }
@@ -1486,7 +1492,7 @@ impl RefundVault {
         // The loop below only touches per-payment storage and performs the
         // transfers; each item runs the identical per-claim logic as `refund`.
         // Policy context is read once before the loop, not per item.
-        let cache = read_policy_cache(&env);
+        let cache = read_policy_cache(&env)?;
         let mut payment_refs: Vec<BytesN<32>> = Vec::new(&env);
         let mut results = Vec::new(&env);
         for item in refunds.into_iter() {
