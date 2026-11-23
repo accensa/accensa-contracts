@@ -760,16 +760,15 @@ fn refund_fee(amount: i128, fee_bps: u32) -> i128 {
 /// recipient when one has been set, otherwise the merchant (admin). Fees thus
 /// always have a deterministic destination and can never silently vanish into
 /// an unconfigured "dead" address.
-fn active_fee_recipient(env: &Env) -> Address {
-    env.storage()
-        .instance()
-        .get(&DataKey::FeeRecipient)
-        .unwrap_or_else(|| {
-            env.storage()
-                .instance()
-                .get(&DataKey::Admin)
-                .expect("refund requires an initialized admin")
-        })
+fn active_fee_recipient(env: &Env) -> Result<Address, Error> {
+    if let Some(r) = env.storage().instance().get(&DataKey::FeeRecipient) {
+        Ok(r)
+    } else {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
 }
 
 /// Cached policy-level state that is constant for the duration of a
@@ -801,7 +800,7 @@ struct PolicyCache {
 /// The policy-contract addresses are cached as `Option`s and unwrapped at
 /// their use sites, so `PolicyContractsNotConfigured` is still raised only
 /// when the corresponding gate is actually active.
-fn read_policy_cache(env: &Env) -> PolicyCache {
+fn read_policy_cache(env: &Env) -> Result<PolicyCache, Error> {
     // Resolve the merchant fee ladder once. The effective fee and the
     // "is a ladder installed?" flag come from the same tier-state read, so a
     // vault without tiers pays one instance load per entry point — and nothing
@@ -817,12 +816,20 @@ fn read_policy_cache(env: &Env) -> PolicyCache {
     };
     let tiers_active = tier_state.is_some();
 
-    PolicyCache {
-        refund_window: env
-            .storage()
-            .instance()
-            .get(&DataKey::RefundWindow)
-            .unwrap(),
+    let refund_window = env
+        .storage()
+        .instance()
+        .get(&DataKey::RefundWindow)
+        .ok_or(Error::NotInitialized)?;
+
+    let token_addr = env
+        .storage()
+        .instance()
+        .get(&DataKey::Token)
+        .ok_or(Error::NotInitialized)?;
+
+    Ok(PolicyCache {
+        refund_window,
         refund_deadline: env
             .storage()
             .instance()
@@ -836,10 +843,10 @@ fn read_policy_cache(env: &Env) -> PolicyCache {
             .get(&DataKey::VdfDelay)
             .unwrap_or(0),
         vdf_policy_contract: env.storage().instance().get(&DataKey::VdfPolicyContract),
-        token_addr: env.storage().instance().get(&DataKey::Token).unwrap(),
+        token_addr,
         fee_bps,
         tiers_active,
-    }
+    })
 }
 
 /// Shared single-claim logic used by [`RefundVault::refund`],
@@ -1002,7 +1009,7 @@ fn claim_single(env: &Env, cache: &PolicyCache, claim: &RefundClaim) -> Result<(
     let (fee, payout) = settlement::split_amount(claim.amount, cache.fee_bps);
 
     let fee_recipient = if fee > 0 {
-        let r = active_fee_recipient(env);
+        let r = active_fee_recipient(env)?;
         if r == env.current_contract_address() {
             return Err(Error::SelfTransfer);
         }
@@ -1401,7 +1408,7 @@ impl RefundVault {
             payment_amount,
             vdf_proof,
         };
-        let cache = read_policy_cache(&env);
+        let cache = read_policy_cache(&env)?;
         claim_single(&env, &cache, &claim)?;
 
         accensa_common::reentrancy::ReentrancyGuard::release(&env);
@@ -1438,7 +1445,7 @@ impl RefundVault {
         check_and_bump_user_nonce(&env, &merchant, nonce)?;
 
         // Policy context is read once before the loop, not per item.
-        let cache = read_policy_cache(&env);
+        let cache = read_policy_cache(&env)?;
         for claim in claims.iter() {
             claim_single(&env, &cache, &claim)?;
         }
@@ -1490,7 +1497,7 @@ impl RefundVault {
         // The loop below only touches per-payment storage and performs the
         // transfers; each item runs the identical per-claim logic as `refund`.
         // Policy context is read once before the loop, not per item.
-        let cache = read_policy_cache(&env);
+        let cache = read_policy_cache(&env)?;
         let mut payment_refs: Vec<BytesN<32>> = Vec::new(&env);
         let mut results = Vec::new(&env);
         for item in refunds.into_iter() {
@@ -2169,7 +2176,7 @@ impl RefundVault {
         FeeConfigUpdatedEvent {
             field: Symbol::new(&env, "fee_bps"),
             fee_bps: bps,
-            fee_recipient: active_fee_recipient(&env),
+            fee_recipient: active_fee_recipient(&env)?,
         }
         .publish(&env);
 
@@ -2908,3 +2915,124 @@ mod commit_reveal_tests;
 // free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
 #[cfg(all(test, feature = "budget-assert"))]
 mod budget_test;
+
+#[cfg(test)]
+mod pre_init_errors {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Vec};
+
+    #[test]
+    fn test_uninitialized_refund_fails_with_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(RefundVault, ());
+        let vault = RefundVaultClient::new(&env, &vault_id);
+
+        let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
+        let recipient = Address::generate(&env);
+        let res = vault.try_refund(&payment_ref, &recipient, &100, &10, &100, &None, &0);
+        assert_eq!(res, Err(Ok(Error::NotInitialized)));
+    }
+
+    #[test]
+    fn test_uninitialized_claim_batch_fails_with_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(RefundVault, ());
+        let vault = RefundVaultClient::new(&env, &vault_id);
+
+        let mut claims = Vec::new(&env);
+        claims.push_back(RefundClaim {
+            payment_ref: BytesN::from_array(&env, &[1u8; 32]),
+            recipient: Address::generate(&env),
+            amount: 100,
+            paid_at_ledger: 10,
+            payment_amount: 100,
+            vdf_proof: None,
+        });
+        let res = vault.try_claim_batch(&claims, &0);
+        assert_eq!(res, Err(Ok(Error::NotInitialized)));
+    }
+
+    #[test]
+    fn test_uninitialized_process_batch_fails_with_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(RefundVault, ());
+        let vault = RefundVaultClient::new(&env, &vault_id);
+
+        let mut refunds = Vec::new(&env);
+        refunds.push_back(RefundParam {
+            payment_ref: BytesN::from_array(&env, &[1u8; 32]),
+            recipient: Address::generate(&env),
+            amount: 100,
+            paid_at_ledger: 10,
+            payment_amount: 100,
+            vdf_proof: None,
+        });
+        let res = vault.try_process_batch(&refunds, &0);
+        assert_eq!(res, Err(Ok(Error::NotInitialized)));
+    }
+
+    #[test]
+    fn test_uninitialized_get_domain_separator_fails_with_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(RefundVault, ());
+        let vault = RefundVaultClient::new(&env, &vault_id);
+
+        let res = vault.try_get_domain_separator();
+        assert_eq!(res, Err(Ok(Error::NotInitialized)));
+    }
+
+    #[test]
+    fn test_uninitialized_set_token_fails_with_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(RefundVault, ());
+        let vault = RefundVaultClient::new(&env, &vault_id);
+
+        let token = Address::generate(&env);
+        let res = vault.try_set_token(&token);
+        assert_eq!(res, Err(Ok(Error::NotInitialized)));
+    }
+
+    #[test]
+    fn test_uninitialized_deploy_to_yield_fails_with_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(RefundVault, ());
+        let vault = RefundVaultClient::new(&env, &vault_id);
+
+        let res = vault.try_deploy_to_yield(&100);
+        assert_eq!(res, Err(Ok(Error::NotInitialized)));
+    }
+
+    #[test]
+    fn test_uninitialized_extend_refund_ttl_fails_with_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let vault_id = env.register(RefundVault, ());
+        let vault = RefundVaultClient::new(&env, &vault_id);
+
+        let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
+        let buyer = Address::generate(&env);
+
+        env.as_contract(&vault_id, || {
+            let ledger = env.ledger().sequence();
+            env.storage().persistent().set(
+                &DataKey::RefundV2(payment_ref.clone()),
+                &RefundRecord {
+                    amount_refunded: 100,
+                    payment_amount: 100,
+                    paid_at_ledger: ledger,
+                    recipient: buyer,
+                    ledger,
+                },
+            );
+        });
+
+        let res = vault.try_extend_refund_ttl(&payment_ref);
+        assert_eq!(res, Err(Ok(Error::NotInitialized)));
+    }
+}
