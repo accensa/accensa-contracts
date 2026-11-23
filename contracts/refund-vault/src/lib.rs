@@ -2868,6 +2868,8 @@ mod fuzz_test;
 #[cfg(test)]
 mod harvest_yield_overflow_tests;
 #[cfg(test)]
+mod migration_tests;
+#[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
 mod preview_settlement_overflow_tests;
