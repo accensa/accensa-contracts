@@ -219,11 +219,11 @@ pub fn streamed_amount(stream: &DisbursementStream, now: u32) -> i128 {
         .map_or(stream.deposit, |v| v.min(stream.deposit))
 }
 
-fn merchant(env: &Env) -> Address {
+fn merchant(env: &Env) -> Result<Address, Error> {
     env.storage()
         .instance()
         .get(&DataKey::Merchant)
-        .expect("initialized in the constructor")
+        .ok_or(Error::NotInitialized)
 }
 
 /// The token contract this vault streams, or [`Error::NotInitialized`] when
@@ -373,7 +373,7 @@ impl StreamVault {
             store(&env, stream_id, &stream);
         }
 
-        token_client(&env)?.transfer(&env.current_contract_address(), merchant(&env), &amount);
+        token_client(&env)?.transfer(&env.current_contract_address(), &merchant(&env)?, &amount);
 
         StreamClaimedEvent {
             stream_id,
@@ -469,7 +469,7 @@ impl StreamVault {
         let token = token_client(&env)?;
         let this = env.current_contract_address();
         if merchant_amount > 0 {
-            token.transfer(&this, merchant(&env), &merchant_amount);
+            token.transfer(&this, &merchant(&env)?, &merchant_amount);
         }
         if buyer_amount > 0 {
             token.transfer(&this, &stream.buyer, &buyer_amount);
@@ -520,15 +520,15 @@ impl StreamVault {
     /// The merchant bound at construction: the only address that ever
     /// receives this contract's payouts. Requires the contract to have been
     /// initialized, as the address is read from instance storage.
-    pub fn get_merchant(env: Env) -> Address {
+    pub fn get_merchant(env: Env) -> Result<Address, Error> {
         merchant(&env)
     }
 
     /// The token every stream on this instance is denominated in, bound at
     /// construction. Requires the contract to have been initialized, as the
     /// address is read from instance storage.
-    pub fn get_token(env: Env) -> Address {
-        token_client(&env).expect("initialized").address
+    pub fn get_token(env: Env) -> Result<Address, Error> {
+        Ok(token_client(&env)?.address)
     }
 }
 
@@ -538,6 +538,73 @@ mod test;
 #[cfg(test)]
 #[path = "token_client_missing_test.rs"]
 mod token_client_missing_test;
+
+#[cfg(test)]
+mod uninitialized_storage_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{token::StellarAssetClient, Address, Env};
+
+    #[test]
+    fn get_merchant_and_get_token_before_initialization_return_not_initialized() {
+        let env = Env::default();
+        let merchant = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contract_id = env.register(StreamVault, (merchant, token));
+        let client = StreamVaultClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::Merchant);
+            env.storage().instance().remove(&DataKey::Token);
+        });
+
+        assert_eq!(client.try_get_merchant(), Err(Ok(Error::NotInitialized)));
+        assert_eq!(client.try_get_token(), Err(Ok(Error::NotInitialized)));
+    }
+
+    #[test]
+    fn claim_and_cancel_without_merchant_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let merchant_addr = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_contract = env.register_stellar_asset_contract_v2(token_admin);
+        let token = token_contract.address();
+        let buyer = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &token).mint(&buyer, &1_000_000);
+
+        let contract_id = env.register(StreamVault, (merchant_addr, token));
+        let client = StreamVaultClient::new(&env, &contract_id);
+
+        let start = env.ledger().sequence();
+        let stop = start + 100;
+        let rate = 10i128;
+        let deposit = 1_000i128;
+
+        let stream_id = client.create_stream(&buyer, &start, &stop, &rate, &deposit);
+
+        // Advance ledger so some amount has streamed
+        env.ledger().set_sequence_number(start + 10);
+
+        // Remove merchant from instance storage
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::Merchant);
+        });
+
+        // try_claim_stream must return typed Error::NotInitialized rather than host panic
+        assert_eq!(
+            client.try_claim_stream(&stream_id),
+            Err(Ok(Error::NotInitialized))
+        );
+
+        // try_cancel_stream must return typed Error::NotInitialized rather than host panic
+        assert_eq!(
+            client.try_cancel_stream(&stream_id),
+            Err(Ok(Error::NotInitialized))
+        );
+    }
+}
 
 // Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
 // feature is enabled (the budget CI job), so the normal test/clippy runs stay
