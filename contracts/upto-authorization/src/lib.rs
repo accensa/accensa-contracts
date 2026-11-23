@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, Bytes, BytesN, Env,
+    Address, Bytes, BytesN, Env, Vec,
 };
 
 mod domain;
@@ -42,6 +42,8 @@ pub enum Error {
     /// A dormancy cancellation was attempted before the authorization's
     /// `expiry + inactivity_timeout` had passed (issue #435).
     NotInactive = 13,
+    /// An authorization has not expired yet and cannot be pruned.
+    NotExpired = 14,
 }
 
 #[contracttype]
@@ -455,10 +457,11 @@ impl UptoAuthorization {
         Ok(())
     }
 
-    /// Prune expired authorizations. Anyone can call this to reclaim storage rent.
-    /// Only removes authorizations that have expired and been consumed (or never
-    /// consumed but expired).
-    pub fn prune_authorizations(env: Env) -> Result<u32, Error> {
+    /// Prune expired authorizations provided by caller in bulk.
+    /// Admin authorization required.
+    /// Only removes authorizations that have expired (`current_ledger > record.expiry`).
+    /// Returns the number of authorizations pruned.
+    pub fn prune_authorizations(env: Env, payment_ids: Vec<BytesN<32>>) -> Result<u32, Error> {
         let admin: Address = env
             .storage()
             .instance()
@@ -466,15 +469,30 @@ impl UptoAuthorization {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
-        let _current_ledger = env.ledger().sequence();
-        let pruned_count: u32 = 0;
+        let current_ledger = env.ledger().sequence();
+        let mut pruned_count: u32 = 0;
 
-        // We can't iterate over storage keys in Soroban, so we rely on
-        // the caller to know which payment_ids to prune. For now, we provide
-        // a method that prunes a specific authorization if it's expired.
-        // This is a limitation of Soroban's storage model.
-        // In practice, the facilitator would maintain an index of payment_ids
-        // and call this for each expired one.
+        for payment_id in payment_ids.iter() {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<_, AuthorizationRecord>(&DataKey::Authorization(payment_id.clone()))
+            {
+                if current_ledger > record.expiry {
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::Authorization(payment_id));
+                    pruned_count += 1;
+                }
+            }
+        }
+
+        if pruned_count > 0 {
+            PruneEvent {
+                count: pruned_count,
+            }
+            .publish(&env);
+        }
 
         env.storage()
             .instance()
@@ -500,7 +518,7 @@ impl UptoAuthorization {
 
         let current_ledger = env.ledger().sequence();
         if current_ledger <= record.expiry {
-            return Err(Error::Expired); // Not expired yet, can't prune
+            return Err(Error::NotExpired); // Not expired yet, can't prune
         }
 
         env.storage()
