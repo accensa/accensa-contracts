@@ -77,15 +77,24 @@ impl ReceiptShard {
     /// the bounty to the address that actually submitted the transaction.
     ///
     /// Returns the number of records deleted (the reclaimed storage
-    /// slots). A call that finds nothing expired is a successful no-op
+    /// slots), or [`Error::NotInitialized`] if the instance storage keys
+    /// are not set. A call that finds nothing expired is a successful no-op
     /// returning `0`.
-    pub fn prune_expired_receipts(env: Env, pruner: Address, max_count: u32) -> u32 {
+    pub fn prune_expired_receipts(env: Env, pruner: Address, max_count: u32) -> Result<u32, Error> {
         assert!(ReceiptShard::is_active(env.clone()), "shard is inactive");
         pruner.require_auth();
 
         let current_ledger = env.ledger().sequence();
-        let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
-        let mut cursor: u64 = env.storage().instance().get(&DataKey::PrunedUpTo).unwrap();
+        let end: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
+        let mut cursor: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PrunedUpTo)
+            .ok_or(Error::NotInitialized)?;
 
         let mut pruned: u32 = 0;
         // Counters are settled once after the loop rather than per deletion:
@@ -153,7 +162,7 @@ impl ReceiptShard {
             .publish(&env);
         }
 
-        pruned
+        Ok(pruned)
     }
 
     /// Settle a caller's accrued pruning bounty.
