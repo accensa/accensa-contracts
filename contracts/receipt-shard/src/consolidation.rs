@@ -59,7 +59,7 @@ impl ReceiptShard {
         destination_shard_id: u64,
         batch_ids: Vec<u64>,
     ) -> Result<u32, Error> {
-        Self::require_active_and_router(&env);
+        Self::require_active_and_router(&env)?;
         if destination == env.current_contract_address() {
             return Err(Error::DestinationMismatch);
         }
@@ -148,7 +148,7 @@ impl ReceiptShard {
 
     /// Marks a drained shard inactive. No batch records may remain.
     pub fn decommission(env: Env) {
-        Self::require_active_and_router(&env);
+        Self::require_active_and_router(&env).unwrap();
         assert!(
             Self::has_live_records(&env) == Ok(false),
             "shard is not drained"
@@ -163,10 +163,15 @@ impl ReceiptShard {
             .unwrap_or(true)
     }
 
-    fn require_active_and_router(env: &Env) {
+    pub fn require_active_and_router(env: &Env) -> Result<(), Error> {
         assert!(Self::is_active(env.clone()), "shard is inactive");
-        let router: Address = env.storage().instance().get(&DataKey::Router).unwrap();
+        let router: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Router)
+            .ok_or(Error::NotInitialized)?;
         router.require_auth();
+        Ok(())
     }
 
     pub(crate) fn has_live_records(env: &Env) -> Result<bool, Error> {
