@@ -74,13 +74,6 @@ fn stacc_exchange_rate_progression() {
 
     // Burn after lock expiry - should succeed with new exchange rate
     // 100 stACC * 1_500_000 / 1_000_000 = 150 underlying tokens
-    // The yield accrued with the rate bump is part of the locked total, so
-    // back the redemption with 150 locked underlying before burning.
-    env.as_contract(&stacc_id, || {
-        env.storage()
-            .instance()
-            .set(&LiquidStakingDataKey::TotalLocked, &150u64);
-    });
     let res = stacc.try_burn(&bob, &100);
     assert!(res.is_ok(), "burn after lock expiry should succeed");
     // The underlying redeemed should be 150 (100 * 1.5)
@@ -1014,4 +1007,50 @@ fn stacc_rate_reads_uninitialized_returns_error() {
     let user = Address::generate(&env);
     let burn_res = stacc.try_burn(&user, &100);
     assert_eq!(burn_res, Err(Ok(LiquidStakingError::NotInitialized)));
+}
+
+#[test]
+fn stacc_burn_rate_above_1e6_regression() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stacc_id = env.register(LiquidStaking, ());
+    let stacc = LiquidStakingClient::new(&env, &stacc_id);
+    stacc.initialize(&1_000_000);
+
+    let alice = Address::generate(&env);
+    stacc.mint(&alice, &100);
+
+    assert_eq!(stacc.get_total_supply(), 100);
+    assert_eq!(stacc.get_total_locked(), 100);
+    assert_eq!(stacc.get_user_stacc_balance(&alice), 100);
+
+    // Rate increases to 2.0x (2_000_000)
+    stacc.set_exchange_rate(&2_000_000);
+    assert_eq!(stacc.get_exchange_rate(), 2_000_000);
+
+    // Advance past lock epoch (86400 ledgers)
+    env.ledger().with_mut(|l| l.sequence_number += 86400 + 1);
+
+    // Burn 100 stACC - underlying_redeemed would be 200, which exceeds 100 locked_underlying.
+    // Call must succeed without MathOverflow.
+    let res = stacc.try_burn(&alice, &100);
+    assert!(
+        res.is_ok(),
+        "burn after rate bump must succeed without MathOverflow"
+    );
+
+    // Invariant: sum of per-user locked_underlying == total_locked == 0
+    assert_eq!(stacc.get_total_supply(), 0);
+    assert_eq!(stacc.get_total_locked(), 0);
+    assert_eq!(stacc.get_user_stacc_balance(&alice), 0);
+
+    let user_data = env.as_contract(&stacc_id, || {
+        env.storage()
+            .persistent()
+            .get::<_, UserData>(&LiquidStakingDataKey::User(alice.clone()))
+            .unwrap()
+    });
+    assert_eq!(user_data.locked_underlying, 0);
+    assert_eq!(user_data.stacc_balance, 0);
 }
