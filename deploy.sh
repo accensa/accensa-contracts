@@ -23,6 +23,10 @@ OUT_DIR="deployments"
 # Compute SHA-256 of a file in a portable way (Linux sha256sum / macOS shasum).
 sha256_of() {
   local file="$1"
+  if [ ! -f "$file" ]; then
+    echo "unknown"
+    return 0
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$file" | awk '{print $1}'
   elif command -v shasum >/dev/null 2>&1; then
@@ -30,6 +34,126 @@ sha256_of() {
   else
     echo "unknown"
   fi
+}
+
+is_checksum_valid_contract_id() {
+  python3 - "$1" <<'PY'
+import sys
+
+text = sys.argv[1]
+alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+if len(text) != 56 or text[0] != "C":
+    raise SystemExit(1)
+
+try:
+    values = [alphabet.index(char) for char in text]
+except ValueError:
+    raise SystemExit(1)
+
+bits = 0
+width = 0
+raw = bytearray()
+for value in values:
+    bits = (bits << 5) | value
+    width += 5
+    while width >= 8:
+        width -= 8
+        raw.append((bits >> width) & 0xff)
+
+if len(raw) != 35:
+    raise SystemExit(1)
+
+body = bytes(raw[:33])
+checksum = bytes(raw[33:35])
+crc = 0
+for byte in body:
+    crc ^= byte << 8
+    for _ in range(8):
+        if crc & 0x8000:
+            crc = ((crc << 1) ^ 0x1021) & 0xffff
+        else:
+            crc = (crc << 1) & 0xffff
+
+if body[0] != 16:
+    raise SystemExit(1)
+if int.from_bytes(checksum, "little") != crc:
+    raise SystemExit(1)
+PY
+}
+
+validate_pubnet_config() {
+  local config_file="$OUT_DIR/pubnet.env"
+  local errors=0
+
+  if [ -f "$config_file" ]; then
+    while IFS='=' read -r key value; do
+      if [[ "$value" == *"<pending-deployment>"* ]]; then
+        echo "❌ FAIL: $key is still <pending-deployment> in $config_file." >&2
+        errors=$((errors + 1))
+      fi
+    done < "$config_file"
+  fi
+
+  if ! is_checksum_valid_contract_id "$TOKEN"; then
+    echo "❌ FAIL: TOKEN is not a checksum-valid 56-character contract address (C...)." >&2
+    errors=$((errors + 1))
+  else
+    local testnet_env="deployments/testnet.env"
+    local testnet_token=""
+    if [ -f "$testnet_env" ]; then
+      testnet_token=$(sed -n 's/^TOKEN_ADDRESS=//p' "$testnet_env" | head -n 1)
+    fi
+    if [ "$TOKEN" = "$testnet_token" ] || \
+       [ "$TOKEN" = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC" ]; then
+      echo "❌ FAIL: TOKEN is the testnet token contract; pubnet requires a pubnet asset contract address." >&2
+      errors=$((errors + 1))
+    fi
+  fi
+
+  if [[ ! "$REFUND_WINDOW_LEDGERS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "❌ FAIL: REFUND_WINDOW_LEDGERS must be a positive integer for pubnet; 0 disables the window in the guide but is not accepted here." >&2
+    errors=$((errors + 1))
+  fi
+
+  [ "$errors" -gt 0 ] && return 1
+  return 0
+}
+
+probe_pubnet_network() {
+  curl -fsS --max-time 10 -o /dev/null https://horizon.stellar.org/ >/dev/null 2>&1
+}
+
+validate_pubnet_network() {
+  if ! probe_pubnet_network; then
+    echo "❌ FAIL: Pubnet network is unreachable at https://horizon.stellar.org/." >&2
+    return 1
+  fi
+  return 0
+}
+
+validate_pubnet_artifacts() {
+  local errors=0
+
+  if [ ! -f "$ANCHOR_WASM" ]; then
+    echo "❌ FAIL: Missing WASM artifact: $ANCHOR_WASM." >&2
+    errors=$((errors + 1))
+  fi
+  if [ ! -f "$VAULT_WASM" ]; then
+    echo "❌ FAIL: Missing WASM artifact: $VAULT_WASM." >&2
+    errors=$((errors + 1))
+  fi
+
+  if [[ ! "$ANCHOR_HASH" =~ ^[0-9a-f]{64}$ ]] || [ "$ANCHOR_HASH" = "unknown" ]; then
+    echo "❌ FAIL: ReceiptAnchor artifact hash is unknown or invalid." >&2
+    errors=$((errors + 1))
+  fi
+  if [[ ! "$VAULT_HASH" =~ ^[0-9a-f]{64}$ ]] || [ "$VAULT_HASH" = "unknown" ]; then
+    echo "❌ FAIL: RefundVault artifact hash is unknown or invalid." >&2
+    errors=$((errors + 1))
+  fi
+
+  [ "$errors" -gt 0 ] && return 1
+  return 0
 }
 
 # Parse command-line arguments.  Safe to call from tests.
@@ -91,6 +215,16 @@ validate_pubnet() {
     errors=$((errors + 1))
   fi
 
+  # 4. Recorded and effective pubnet configuration
+  if ! validate_pubnet_config; then
+    errors=$((errors + 1))
+  fi
+
+  # 5. Pubnet reachability
+  if ! validate_pubnet_network; then
+    errors=$((errors + 1))
+  fi
+
   if [ "$errors" -gt 0 ]; then
     echo "" >&2
     echo "❌ $errors pre-flight check(s) failed. Aborting." >&2
@@ -100,6 +234,8 @@ validate_pubnet() {
   echo "✅ Working tree is clean"
   echo "✅ Branch is main"
   echo "✅ Commit SHA: $commit_sha"
+  echo "✅ Pubnet configuration is valid"
+  echo "✅ Pubnet network is reachable"
   echo ""
 }
 
@@ -139,6 +275,11 @@ COMMIT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 # Pubnet: display artifacts and require explicit WASM hash confirmation
 # ---------------------------------------------------------------------------
 if [ "$NETWORK" = "pubnet" ]; then
+  if ! validate_pubnet_artifacts; then
+    echo "❌ Pubnet artifact verification failed. Aborting." >&2
+    exit 1
+  fi
+
   echo ""
   echo "==========================================================="
   echo "⚠️  PUBNET DEPLOYMENT — ARTIFACT VERIFICATION"
