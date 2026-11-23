@@ -124,8 +124,12 @@ impl ReceiptShard {
             .storage()
             .instance()
             .get(&DataKey::StartBatchId)
-            .unwrap();
-        let end: u64 = env.storage().instance().get(&DataKey::EndBatchId).unwrap();
+            .ok_or(Error::NotInitialized)?;
+        let end: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EndBatchId)
+            .ok_or(Error::NotInitialized)?;
         assert!(
             batch_id >= start && batch_id < end,
             "batch_id out of shard range"

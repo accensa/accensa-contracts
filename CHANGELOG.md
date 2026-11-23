@@ -9,6 +9,17 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`treasury` (issues #645, #647): clamp `claimable` at zero and pin the vesting curve.**
+  `VestingSchedule::claimable` now floors at zero when the recorded `claimed`
+  exceeds what has vested, as its documentation already promised; the new
+  `vesting::tests` module covers the cliff boundary, mid-window rounding,
+  saturation, and both `checked_add` overflow paths.
+
+- **`multisig-account` (issue #675) and `receipt-shard` (issue #676): report uninitialized state instead of aborting.**
+  Timelock approvals from an address that is not a signer are rejected with a typed
+  error, and `insert_migrated_batch` reports missing state rather than trapping; each
+  path has its own test in the contract's `tests/` directory.
+
 - **`receipt-shard` (issue #993): skip no-op prune event.**
   Receipt pruning no longer emits a `ReceiptsPruned` event when 0 batches are
   removed. Successful pruning continues to emit a single event with the pruning results.
