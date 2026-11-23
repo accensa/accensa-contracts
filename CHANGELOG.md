@@ -9,6 +9,13 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`upto-authorization`, `receipt-shard`, `merchant-registry` and `refund-vault` (issues #680, #681, #682, #693): report uninitialized state instead of trapping.**
+  Entry points that read a missing instance key now return `Error::NotInitialized`
+  rather than aborting on `unwrap`, `expect` or `panic!`. New suites
+  `authorize_missing_state_test`, `prune_expired_before_init` and
+  `read_policy_cache_before_init` pin the typed error on each path, including the
+  case where pruning runs before the contract has been initialized.
+
 - **`receipt-shard` (issue #993): skip no-op prune event.**
   Receipt pruning no longer emits a `ReceiptsPruned` event when 0 batches are
   removed. Successful pruning continues to emit a single event with the pruning results.

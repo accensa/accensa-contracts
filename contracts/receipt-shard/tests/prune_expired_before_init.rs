@@ -21,10 +21,7 @@ fn shard_with_key_removed(
     env.mock_all_auths();
     let router = Address::generate(&env);
     let bounty_asset = Address::generate(&env);
-    let contract_id = env.register(
-        ReceiptShard,
-        (router, 1u64, 1001u64, bounty_asset),
-    );
+    let contract_id = env.register(ReceiptShard, (router, 1u64, 1001u64, bounty_asset));
     let client = ReceiptShardClient::new(&env, &contract_id);
     let pruner = Address::generate(&env);
     env.as_contract(&contract_id, || remove(&env, &contract_id));

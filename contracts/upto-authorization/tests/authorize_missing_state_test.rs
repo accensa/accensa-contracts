@@ -30,13 +30,7 @@ fn test_authorize_with_slippage_missing_token_returns_not_initialized() {
     });
 
     let payment_id = BytesN::from_array(&env, &[1u8; 32]);
-    let res = client.try_authorize_with_slippage(
-        &payment_id,
-        &buyer,
-        &seller,
-        &1000,
-        &100_000,
-        &500,
-    );
+    let res =
+        client.try_authorize_with_slippage(&payment_id, &buyer, &seller, &1000, &100_000, &500);
     assert_eq!(res, Err(Ok(Error::NotInitialized)));
 }
