@@ -1295,7 +1295,11 @@ impl RefundVault {
             .ok_or(Error::NotInitialized)?;
         merchant.require_auth();
 
-        let current_token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let current_token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &current_token);
         let balance = token_client.balance(&env.current_contract_address());
         if balance > 0 {
