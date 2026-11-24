@@ -298,3 +298,9 @@
 - [x] Guard bounty accrual addition in `prune_expired_receipts` using `add_amounts` (#715)
   - `contracts/receipt-shard/src/pruning.rs` — replaces bare `+` with `add_amounts` and explicit expectation
   - `contracts/receipt-shard/tests/prune_bounty_overflow_test.rs` — boundary and overflow tests for bounty accrual
+
+## Issue #942: pin both event-topic shapes per deployed version
+
+- [x] Pin the 0.1.0 legacy and current-source topic tuples for receipt and refund events behind a version-keyed vector file (#942)
+  - `contracts/receipt-anchor/event-topic-vectors.json` — canonical shapes with provenance per entry plus the named doc/code/snapshot discrepancy
+  - `contracts/receipt-anchor/scripts/build-event-topic-vectors.mjs` — generator emitting the committed `tests/fixtures/event_topic_vectors.rs` fixture both contracts' `event_topic_versions` tests consume

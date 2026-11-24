@@ -1,0 +1,64 @@
+{
+  "description": "Version-keyed event topic shapes for receipt and refund events (issue #942). The single source of truth both contracts' topic-version tests consume through the generated fixture (see scripts/build-event-topic-vectors.mjs). Topic elements are tags: a bare word is a Symbol of that name, 'u64' is a u64 scalar position, 'bytes32' is a BytesN<32> position.",
+  "discrepancies": [
+    {
+      "id": "anchor-receipt-topics-three-way-split",
+      "status": "recorded, not settled: no side was edited by this issue",
+      "code": "anchor_batch and prune_batches publish (receipt, action, anchor_id) via the single publisher contracts/receipt-anchor/src/events.rs:95-99 (call sites src/lib.rs:549 and src/lib.rs:1220)",
+      "docs": "docs/EVENTS.md:20-28 documents (\"anchor_event\", shard_id, batch_id); the AnchorEvent/PruneEvent #[contractevent] structs at contracts/receipt-anchor/src/lib.rs:166-204 match the docs but are never constructed or published",
+      "snapshots": "five committed snapshots still record the two-element (\"anchor_event\", batch_id), e.g. contracts/receipt-anchor/test_snapshots/test/test_first_anchor_always_succeeds.1.json:492"
+    }
+  ],
+  "events": [
+    {
+      "contract": "receipt-anchor",
+      "event": "anchor",
+      "current": {
+        "topics": ["receipt", "anchor", "u64"],
+        "topic_names": ["namespace", "action", "batch_id"],
+        "provenance": "contracts/receipt-anchor/src/events.rs:95-99 publishes (Symbol(\"receipt\"), action.topic(env), anchor_id); ReceiptAnchor::anchor_batch calls it with ReceiptAction::Anchor and batch_id (src/lib.rs:549)"
+      },
+      "legacy_0_1_0": {
+        "topics": ["anchored", "u64"],
+        "topic_names": ["legacy_symbol", "batch_id"],
+        "provenance": "DEPLOYMENTS.md:29 and CHANGELOG.md:1906 record 0.1.0 publishing (\"anchored\", batch_id) by hand; docs/AUDIT.md:86 repeats the old topics"
+      }
+    },
+    {
+      "contract": "receipt-anchor",
+      "event": "prune",
+      "current": {
+        "topics": ["receipt", "prune", "u64"],
+        "topic_names": ["namespace", "action", "start_batch_id"],
+        "provenance": "contracts/receipt-anchor/src/events.rs:95-99 publishes (Symbol(\"receipt\"), action.topic(env), anchor_id); ReceiptAnchor::prune_batches calls it with ReceiptAction::Prune and start_batch_id (src/lib.rs:1220)"
+      },
+      "legacy_0_1_0": null,
+      "legacy_absent_reason": "prune_batches did not exist in 0.1.0 (DEPLOYMENTS.md:25-28), so no legacy prune shape was ever published"
+    },
+    {
+      "contract": "refund-vault",
+      "event": "refund",
+      "current": {
+        "topics": ["refund_event", "bytes32"],
+        "topic_names": ["event_symbol", "payment_ref"],
+        "provenance": "contracts/refund-vault/src/lib.rs:298-302 derives #[contractevent] with #[topic] payment_ref, documented as (\"refund_event\", payment_ref) at src/lib.rs:290; agrees with docs/EVENTS.md:150"
+      },
+      "legacy_0_1_0": {
+        "topics": ["refunded", "bytes32"],
+        "topic_names": ["legacy_symbol", "payment_ref"],
+        "provenance": "DEPLOYMENTS.md:29 and CHANGELOG.md:1906 record 0.1.0 publishing (\"refunded\", payment_ref) by hand; docs/AUDIT.md:86 repeats the old topics"
+      }
+    },
+    {
+      "contract": "refund-vault",
+      "event": "batch_refund",
+      "current": {
+        "topics": ["batch_refund_event"],
+        "topic_names": ["event_symbol"],
+        "provenance": "contracts/refund-vault/src/lib.rs:321-329 derives #[contractevent] with no #[topic] field, documented as (\"batch_refund_event\",) at src/lib.rs:320; emitted once per process_batch call"
+      },
+      "legacy_0_1_0": null,
+      "legacy_absent_reason": "the surviving 0.1.0 sources name only the (\"anchored\", ...) and (\"refunded\", ...) shapes (DEPLOYMENTS.md:29), so no legacy batch shape is pinned"
+    }
+  ]
+}
