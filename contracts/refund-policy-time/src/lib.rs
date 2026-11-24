@@ -67,6 +67,7 @@ impl RefundPolicy for TimePolicy {
 }
 mod state_transition;
 pub use state_transition::*;
+pub mod multisig_arb;
 
 // Tier A soroban-budget-assert gates. Compiled only when the `budget-assert`
 // feature is enabled (the budget CI job), so the normal test/clippy runs stay

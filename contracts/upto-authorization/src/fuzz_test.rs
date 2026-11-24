@@ -94,3 +94,67 @@ proptest! {
         }
     }
 }
+
+// ── Inactivity timeout, domain digest, and allowance error coverage ─────────
+
+#[test]
+fn test_inactivity_timeout_coverage() {
+    use crate::inactivity::{inactivity_timeout, DEFAULT_INACTIVITY_LEDGERS};
+
+    let (env, client, _admin, _buyer, _seller, _token) = setup();
+
+    // Verify default inactivity_timeout
+    env.as_contract(&client.address, || {
+        assert_eq!(inactivity_timeout(&env), DEFAULT_INACTIVITY_LEDGERS);
+    });
+
+    // Update via client
+    client.set_inactivity_timeout(&12_345);
+
+    // Verify inactivity_timeout returns updated value
+    env.as_contract(&client.address, || {
+        assert_eq!(inactivity_timeout(&env), 12_345);
+    });
+}
+
+#[test]
+fn test_authorization_digest_coverage() {
+    use crate::domain::{authorization_digest, compute_domain_separator};
+    use crate::UptoAuthorization;
+
+    let env = Env::default();
+    let contract_id = env.register(UptoAuthorization, ());
+
+    env.as_contract(&contract_id, || {
+        let domain_sep = compute_domain_separator(&env);
+        let payment_id = BytesN::from_array(&env, &[7u8; 32]);
+        let from = Address::generate(&env);
+        let to = Address::generate(&env);
+        let cap = 50_000i128;
+        let expiry = 200u32;
+
+        let digest1 = authorization_digest(&env, &domain_sep, &payment_id, &from, &to, cap, expiry);
+        let digest2 = authorization_digest(&env, &domain_sep, &payment_id, &from, &to, cap, expiry);
+        // Deterministic
+        assert_eq!(digest1, digest2);
+
+        // Changing cap changes digest
+        let digest_diff_cap =
+            authorization_digest(&env, &domain_sep, &payment_id, &from, &to, cap + 1, expiry);
+        assert_ne!(digest1, digest_diff_cap);
+
+        // Changing expiry changes digest
+        let digest_diff_expiry =
+            authorization_digest(&env, &domain_sep, &payment_id, &from, &to, cap, expiry + 1);
+        assert_ne!(digest1, digest_diff_expiry);
+    });
+}
+
+#[test]
+fn test_allowance_failed_error_coverage() {
+    assert_eq!(Error::AllowanceFailed as u32, 9);
+    let err: Result<(), Error> = Err(Error::AllowanceFailed);
+    assert_eq!(err, Err(Error::AllowanceFailed));
+    assert_ne!(Error::AllowanceFailed, Error::NotInitialized);
+    assert_ne!(Error::AllowanceFailed, Error::AmountExceedsCap);
+}

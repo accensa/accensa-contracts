@@ -304,3 +304,10 @@
 - [x] Resolve and pin the USDC mainnet SAC contract ID from Horizon and Circle-published sources (#939)
   - `docs/MAINNET_DEPLOYMENT.md` — fixed the issuer link to the valid pubnet key and recorded the verified ID with both source URLs and the check date
   - `deployments/pubnet-usdc-sac.md` — new sourced provenance note carrying the TOKEN value to pass (not a deployment outcome)
+
+## Upto-Authorization Improvements
+
+- [x] fix: Report Error for DataKey::Token in settle
+  - `contracts/upto-authorization/src/lib.rs` — returns typed `Error::NotInitialized` instead of unwrapping
+  - `contracts/upto-authorization/tests/settle_token_missing.rs` — tests verify `NotInitialized` when Token key is absent
+
