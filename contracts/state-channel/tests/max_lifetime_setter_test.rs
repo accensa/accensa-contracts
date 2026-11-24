@@ -18,9 +18,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, BytesN, Env, Event,
 };
-use state_channel::{
-    MaxLifetimeUpdatedEvent, StateChannel, StateChannelClient, StateUpdate,
-};
+use state_channel::{MaxLifetimeUpdatedEvent, StateChannel, StateChannelClient, StateUpdate};
 
 const DEFAULT_CHALLENGE_PERIOD: u32 = 720;
 const DEFAULT_MAX_CHANNEL_LIFETIME: u32 = 1_209_600;
@@ -142,7 +140,8 @@ fn test_set_max_channel_lifetime_boundary_validation() {
 
     // Exact boundary value: 720 == DEFAULT_CHALLENGE_PERIOD -> accepted
     assert_eq!(
-        fx.client.try_set_max_channel_lifetime(&DEFAULT_CHALLENGE_PERIOD),
+        fx.client
+            .try_set_max_channel_lifetime(&DEFAULT_CHALLENGE_PERIOD),
         Ok(Ok(()))
     );
     assert_eq!(
@@ -210,7 +209,9 @@ fn test_subsequent_channel_creation_and_expiration() {
     );
 
     // Beyond tuned lifetime (100 + 1001 > 100 + 1000):
-    fx.env.ledger().set_sequence_number(100 + tuned_lifetime + 1);
+    fx.env
+        .ledger()
+        .set_sequence_number(100 + tuned_lifetime + 1);
 
     // Attempting to close an expired channel must fail with ChannelExpired
     let state = StateUpdate {

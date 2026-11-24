@@ -9,6 +9,11 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`state-channel` (issues #1009, #1010, #1012): admin MaxChannelLifetime setter, nonce window property tests, and phase transition matrix.**
+  - **Issue #1012**: `StateChannel` gains administrative methods `set_max_channel_lifetime`, `set_admin`, and `get_admin`. `set_max_channel_lifetime` enforces administrator authentication, validates that `max_lifetime >= get_default_challenge_period(&env)` (720 ledgers), updates `DataKey::MaxChannelLifetime` in instance storage, and emits `MaxLifetimeUpdatedEvent`. Covered by `tests/max_lifetime_setter_test.rs`.
+  - **Issue #1009**: Added `tests/nonce_window_proptest.rs` with property-based testing verifying sliding window bitmap replay protection across arbitrary permutations, out-of-order deliveries, and boundary threshold shifts.
+  - **Issue #1010**: Added `tests/phase_transition_matrix_test.rs` exhaustively verifying that all public contract entry points return exact typed `Error` variants when called from invalid channel phases (`Open`, `Closed`, `Disputed`, `Finalized`).
+
 - **`treasury` (issues #645, #647): clamp `claimable` at zero and pin the vesting curve.**
   `VestingSchedule::claimable` now floors at zero when the recorded `claimed`
   exceeds what has vested, as its documentation already promised; the new
