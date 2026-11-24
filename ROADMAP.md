@@ -298,3 +298,9 @@
 - [x] Guard bounty accrual addition in `prune_expired_receipts` using `add_amounts` (#715)
   - `contracts/receipt-shard/src/pruning.rs` — replaces bare `+` with `add_amounts` and explicit expectation
   - `contracts/receipt-shard/tests/prune_bounty_overflow_test.rs` — boundary and overflow tests for bounty accrual
+
+## Issue #939: resolve and pin the USDC mainnet SAC contract ID
+
+- [x] Resolve and pin the USDC mainnet SAC contract ID from Horizon and Circle-published sources (#939)
+  - `docs/MAINNET_DEPLOYMENT.md` — fixed the issuer link to the valid pubnet key and recorded the verified ID with both source URLs and the check date
+  - `deployments/pubnet-usdc-sac.md` — new sourced provenance note carrying the TOKEN value to pass (not a deployment outcome)
