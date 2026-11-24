@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, Bytes, BytesN, Env,
+    Address, Bytes, BytesN, Env, Vec,
 };
 
 mod domain;
@@ -42,6 +42,8 @@ pub enum Error {
     /// A dormancy cancellation was attempted before the authorization's
     /// `expiry + inactivity_timeout` had passed (issue #435).
     NotInactive = 13,
+    /// An authorization has not expired yet and cannot be pruned.
+    NotExpired = 14,
 }
 
 #[contracttype]
@@ -205,14 +207,18 @@ impl UptoAuthorization {
                 .storage()
                 .persistent()
                 .get(&DataKey::Authorization(payment_id.clone()))
-                .unwrap();
+                .ok_or(Error::AuthorizationNotFound)?;
             if existing.expiry > env.ledger().sequence() && !existing.consumed {
                 return Err(Error::AlreadySettled);
             }
         }
 
         // Get the token and approve the allowance.
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let client = token::Client::new(&env, &token_addr);
         client.approve(&from, &env.current_contract_address(), &max_amount, &expiry);
 
@@ -410,7 +416,11 @@ impl UptoAuthorization {
         }
 
         // Transfer tokens directly from buyer to seller.
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(Error::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer_from(
             &env.current_contract_address(), // spender = this contract
@@ -455,10 +465,11 @@ impl UptoAuthorization {
         Ok(())
     }
 
-    /// Prune expired authorizations. Anyone can call this to reclaim storage rent.
-    /// Only removes authorizations that have expired and been consumed (or never
-    /// consumed but expired).
-    pub fn prune_authorizations(env: Env) -> Result<u32, Error> {
+    /// Prune expired authorizations provided by caller in bulk.
+    /// Admin authorization required.
+    /// Only removes authorizations that have expired (`current_ledger > record.expiry`).
+    /// Returns the number of authorizations pruned.
+    pub fn prune_authorizations(env: Env, payment_ids: Vec<BytesN<32>>) -> Result<u32, Error> {
         let admin: Address = env
             .storage()
             .instance()
@@ -466,15 +477,30 @@ impl UptoAuthorization {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
-        let _current_ledger = env.ledger().sequence();
-        let pruned_count: u32 = 0;
+        let current_ledger = env.ledger().sequence();
+        let mut pruned_count: u32 = 0;
 
-        // We can't iterate over storage keys in Soroban, so we rely on
-        // the caller to know which payment_ids to prune. For now, we provide
-        // a method that prunes a specific authorization if it's expired.
-        // This is a limitation of Soroban's storage model.
-        // In practice, the facilitator would maintain an index of payment_ids
-        // and call this for each expired one.
+        for payment_id in payment_ids.iter() {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<_, AuthorizationRecord>(&DataKey::Authorization(payment_id.clone()))
+            {
+                if current_ledger > record.expiry {
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::Authorization(payment_id));
+                    pruned_count += 1;
+                }
+            }
+        }
+
+        if pruned_count > 0 {
+            PruneEvent {
+                count: pruned_count,
+            }
+            .publish(&env);
+        }
 
         env.storage()
             .instance()
@@ -500,7 +526,7 @@ impl UptoAuthorization {
 
         let current_ledger = env.ledger().sequence();
         if current_ledger <= record.expiry {
-            return Err(Error::Expired); // Not expired yet, can't prune
+            return Err(Error::NotExpired); // Not expired yet, can't prune
         }
 
         env.storage()
@@ -576,3 +602,83 @@ mod budget_test;
 mod fuzz_test;
 mod inactivity_test;
 mod test;
+
+#[cfg(test)]
+mod token_storage_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{token::StellarAssetClient, Address, BytesN, Env};
+
+    #[test]
+    fn authorize_and_settle_without_stored_token_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let sac = env.register_stellar_asset_contract_v2(token_admin);
+        let token = sac.address();
+
+        StellarAssetClient::new(&env, &token).mint(&buyer, &10_000_000);
+
+        let contract_id = env.register(UptoAuthorization, ());
+        let client = UptoAuthorizationClient::new(&env, &contract_id);
+        client.initialize(&admin, &token);
+
+        let payment_id = BytesN::from_array(&env, &[1u8; 32]);
+        let cap = 1_000i128;
+        let expiry = 100u32;
+
+        // Lapsed / missing token in instance storage
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::Token);
+        });
+
+        // authorize() returns typed Error::NotInitialized
+        assert_eq!(
+            client.try_authorize(&payment_id, &buyer, &seller, &cap, &expiry),
+            Err(Ok(Error::NotInitialized))
+        );
+
+        // Restore token to authorize, so settle can reach the token read
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&DataKey::Token, &token);
+        });
+        client.authorize(&payment_id, &buyer, &seller, &cap, &expiry);
+
+        // Remove token again before settlement
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::Token);
+        });
+
+        // settle() returns typed Error::NotInitialized
+        assert_eq!(
+            client.try_settle(&payment_id, &500i128),
+            Err(Ok(Error::NotInitialized))
+        );
+    }
+
+    #[test]
+    fn uninitialized_contract_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(UptoAuthorization, ());
+        let client = UptoAuthorizationClient::new(&env, &contract_id);
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let payment_id = BytesN::from_array(&env, &[2u8; 32]);
+
+        assert_eq!(
+            client.try_authorize(&payment_id, &buyer, &seller, &1_000i128, &100u32),
+            Err(Ok(Error::NotInitialized))
+        );
+        assert_eq!(
+            client.try_settle(&payment_id, &500i128),
+            Err(Ok(Error::NotInitialized))
+        );
+    }
+}

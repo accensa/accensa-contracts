@@ -280,3 +280,34 @@
 
 - [x] Give the surviving benchmark entry point `set -euo pipefail` (#737)
   - `fix_common.sh` was deleted by the same #843 cleanup; `benchmark/run.sh` now aborts at the first measurement that fails instead of reporting a green run over a broken suite
+
+## Issue #677: require_active_and_router returns typed error when Router is unset
+
+- [x] Return `Error::NotInitialized` when `DataKey::Router` is absent instead of trapping (#677)
+  - `contracts/receipt-shard/src/consolidation.rs` — returns typed error instead of unwrapping
+  - `contracts/receipt-shard/tests/consolidate_before_init.rs` — tests verify `NotInitialized` when Router key is absent
+
+## Issue #684: DataKey::Token unwrap in refund-vault::set_token into an Error
+
+- [x] Return `Error::NotInitialized` when `DataKey::Token` is absent in `set_token` (#684)
+  - `contracts/refund-vault/src/lib.rs` — returns typed `Error::NotInitialized` instead of unwrapping
+  - `contracts/refund-vault/tests/set_token_uninit_test.rs` — tests verify `NotInitialized` when Token key is absent
+
+## Issue #715: Guard prune_expired_receipts's sum with checked math
+
+- [x] Guard bounty accrual addition in `prune_expired_receipts` using `add_amounts` (#715)
+  - `contracts/receipt-shard/src/pruning.rs` — replaces bare `+` with `add_amounts` and explicit expectation
+  - `contracts/receipt-shard/tests/prune_bounty_overflow_test.rs` — boundary and overflow tests for bounty accrual
+
+## Issue #939: resolve and pin the USDC mainnet SAC contract ID
+
+- [x] Resolve and pin the USDC mainnet SAC contract ID from Horizon and Circle-published sources (#939)
+  - `docs/MAINNET_DEPLOYMENT.md` — fixed the issuer link to the valid pubnet key and recorded the verified ID with both source URLs and the check date
+  - `deployments/pubnet-usdc-sac.md` — new sourced provenance note carrying the TOKEN value to pass (not a deployment outcome)
+
+## Upto-Authorization Improvements
+
+- [x] fix: Report Error for DataKey::Token in settle
+  - `contracts/upto-authorization/src/lib.rs` — returns typed `Error::NotInitialized` instead of unwrapping
+  - `contracts/upto-authorization/tests/settle_token_missing.rs` — tests verify `NotInitialized` when Token key is absent
+
