@@ -9,6 +9,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`treasury`, `refund-vault-factory` (issue #583): return typed admin-guard errors.**
+  Both `require_admin` implementations now return `Error::NotInitialized` when no admin is stored instead of trapping via `.expect(...)`; admin authorization is unchanged. The factory's `set_time_policy_contract` and `set_vdf_policy_contract` now propagate the error through `Result<(), Error>`. Added `admin_guard_test::admin_only_returns_not_initialized_on_a_fresh_instance` in both crates.
+
 - **`receipt-shard` (issue #993): skip no-op prune event.**
   Receipt pruning no longer emits a `ReceiptsPruned` event when 0 batches are
   removed. Successful pruning continues to emit a single event with the pruning results.

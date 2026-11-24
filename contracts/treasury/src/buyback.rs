@@ -112,7 +112,7 @@ pub(crate) fn set_config(
     min_amount_in: i128,
 ) -> Result<(), Error> {
     require_initialized(env)?;
-    require_admin(env);
+    require_admin(env)?;
 
     if min_amount_in <= 0
         || fee_token == governance_token

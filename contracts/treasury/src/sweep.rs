@@ -50,7 +50,7 @@ pub struct RevenueSweptEvent {
 
 /// Configure automated sweeping. Callable only by admin.
 pub fn set_sweep_config(env: &Env, threshold: i128, sweep_interval: u64) -> Result<(), Error> {
-    require_admin(env);
+    require_admin(env)?;
 
     if threshold < 0 {
         return Err(Error::InvalidReserve);

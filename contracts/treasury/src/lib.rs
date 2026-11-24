@@ -273,7 +273,7 @@ impl Treasury {
         duration: u64,
     ) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
 
         if beneficiary == env.current_contract_address() {
             return Err(Error::InvalidSchedule);
@@ -502,7 +502,7 @@ impl Treasury {
     /// [`Error::NotAuthorized`], or [`Error::StrategyAlreadyWhitelisted`].
     pub fn whitelist_strategy(env: Env, strategy: Address) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         strategies::whitelist(&env, strategy)?;
         extend_instance_ttl_default(&env);
         Ok(())
@@ -515,7 +515,7 @@ impl Treasury {
     /// loses the record of funds it can reclaim.
     pub fn revoke_strategy(env: Env, strategy: Address) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         strategies::revoke(&env, strategy)?;
         extend_instance_ttl_default(&env);
         Ok(())
@@ -537,7 +537,7 @@ impl Treasury {
         configs: soroban_sdk::Vec<AllocationConfig>,
     ) -> Result<soroban_sdk::Vec<StrategyAllocation>, Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         let stored = strategies::set_allocations(&env, configs)?;
         extend_instance_ttl_default(&env);
         Ok(stored)
@@ -552,7 +552,7 @@ impl Treasury {
     /// [`Error::InvalidReserve`] above 100%.
     pub fn set_reserve_bps(env: Env, reserve_bps: u32) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         strategies::set_reserve_bps(&env, reserve_bps)?;
         extend_instance_ttl_default(&env);
         Ok(())
@@ -572,7 +572,7 @@ impl Treasury {
     /// strategy call raises (e.g. [`Error::StrategyUnderpaid`]).
     pub fn rebalance_portfolio(env: Env) -> Result<i128, Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         let deployed = strategies::with_lock(&env, || strategies::rebalance(&env))?;
         extend_instance_ttl_default(&env);
         Ok(deployed)
@@ -594,7 +594,7 @@ impl Treasury {
         principal: i128,
     ) -> Result<(i128, i128), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         let recalled = strategies::with_lock(&env, || {
             strategies::recall_strategy(&env, strategy, principal)
         })?;
@@ -640,7 +640,7 @@ impl Treasury {
     /// [`Error::LiquidationNotConfigured`].
     pub fn whitelist_amm(env: Env, amm: Address) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         liquidation::whitelist_amm(&env, amm)?;
         extend_instance_ttl_default(&env);
         Ok(())
@@ -649,7 +649,7 @@ impl Treasury {
     /// Admin-only: de-approve the AMM, disabling fee liquidation.
     pub fn revoke_amm(env: Env) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         liquidation::revoke_amm(&env)?;
         extend_instance_ttl_default(&env);
         Ok(())
@@ -658,7 +658,7 @@ impl Treasury {
     /// Admin-only: set the primary stablecoin fee tokens are liquidated into.
     pub fn set_stable_token(env: Env, token: Address) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         liquidation::set_stable_token(&env, token)?;
         extend_instance_ttl_default(&env);
         Ok(())
@@ -667,7 +667,7 @@ impl Treasury {
     /// Admin-only: set the oracle price feed that bounds liquidation slippage.
     pub fn set_price_feed(env: Env, feed: Address) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         liquidation::set_price_feed(&env, feed)?;
         extend_instance_ttl_default(&env);
         Ok(())
@@ -689,7 +689,7 @@ impl Treasury {
         max_slippage_bps: u32,
     ) -> Result<i128, Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         let received = strategies::with_lock(&env, || {
             liquidation::liquidate_fees(&env, token_in, amount_in, max_slippage_bps)
         })?;
@@ -722,7 +722,7 @@ impl Treasury {
     /// [`Error::DistributionAlreadyInitialized`].
     pub fn initialize_distribution(env: Env, token: Address) -> Result<(), Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         distribution::initialize(&env, token)?;
         extend_instance_ttl_default(&env);
         Ok(())
@@ -737,7 +737,7 @@ impl Treasury {
     /// [`Error::NothingToDistribute`] for a non-positive amount.
     pub fn distribute_yield(env: Env, amount: i128) -> Result<i128, Error> {
         require_initialized(&env)?;
-        require_admin(&env);
+        require_admin(&env)?;
         let accumulator = distribution::distribute_yield(&env, amount)?;
         extend_instance_ttl_default(&env);
         Ok(accumulator)
@@ -831,13 +831,14 @@ pub(crate) fn require_initialized(env: &Env) -> Result<(), Error> {
     }
 }
 
-pub(crate) fn require_admin(env: &Env) {
+pub(crate) fn require_admin(env: &Env) -> Result<(), Error> {
     let admin: Address = env
         .storage()
         .instance()
         .get(&DataKey::Admin)
-        .expect("treasury must be initialized");
+        .ok_or(Error::NotInitialized)?;
     admin.require_auth();
+    Ok(())
 }
 
 fn load_schedule(env: &Env, beneficiary: &Address) -> Result<VestingSchedule, Error> {
@@ -855,4 +856,30 @@ pub(crate) fn bump_ttl(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, DEFAULT_TTL_LOW_WATER, DEFAULT_TTL_BUMP);
+}
+
+#[cfg(test)]
+mod admin_guard_test {
+    use super::{require_admin, Error};
+    use soroban_sdk::{contract, contractimpl, Env};
+
+    #[contract]
+    struct AdminGuardHarness;
+
+    #[contractimpl]
+    impl AdminGuardHarness {
+        pub fn admin_only(env: Env) -> Result<(), Error> {
+            require_admin(&env)
+        }
+    }
+
+    #[test]
+    fn admin_only_returns_not_initialized_on_a_fresh_instance() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract = env.register(AdminGuardHarness, ());
+        let client = AdminGuardHarnessClient::new(&env, &contract);
+
+        assert_eq!(client.try_admin_only(), Err(Ok(Error::NotInitialized)));
+    }
 }
