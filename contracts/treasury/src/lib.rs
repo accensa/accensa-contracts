@@ -46,6 +46,7 @@ use soroban_sdk::{
     Address, Env,
 };
 
+#[allow(unused_must_use)]
 pub mod buyback;
 #[cfg(test)]
 mod buyback_test;
@@ -58,6 +59,7 @@ mod liquidation_test;
 pub mod strategies;
 #[cfg(test)]
 mod strategies_test;
+#[allow(unused_must_use)]
 pub mod sweep;
 #[cfg(test)]
 mod test;
@@ -459,6 +461,7 @@ impl Treasury {
         burn_address: Address,
         min_amount_in: i128,
     ) -> Result<(), Error> {
+        ensure_admin_present(&env)?;
         buyback::set_config(
             &env,
             fee_token,
@@ -829,6 +832,14 @@ pub(crate) fn require_initialized(env: &Env) -> Result<(), Error> {
     } else {
         Err(Error::NotInitialized)
     }
+}
+
+fn ensure_admin_present(env: &Env) -> Result<(), Error> {
+    env.storage()
+        .instance()
+        .get::<_, Address>(&DataKey::Admin)
+        .ok_or(Error::NotInitialized)?;
+    Ok(())
 }
 
 pub(crate) fn require_admin(env: &Env) -> Result<(), Error> {

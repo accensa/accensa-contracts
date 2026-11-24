@@ -542,7 +542,7 @@ mod token_client_missing_test;
 #[cfg(test)]
 mod uninitialized_storage_tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
     use soroban_sdk::{token::StellarAssetClient, Address, Env};
 
     #[test]

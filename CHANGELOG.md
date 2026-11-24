@@ -9,6 +9,12 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
+- **`treasury`, `refund-vault-factory` (issue #583): return typed admin-guard errors.**
+  Both `require_admin` implementations now return `Error::NotInitialized` when no admin is stored instead of trapping via `.expect(...)`; admin authorization is unchanged. The factory's `set_time_policy_contract` and `set_vdf_policy_contract` now propagate the error through `Result<(), Error>`. Added `admin_guard_test::admin_only_returns_not_initialized_on_a_fresh_instance` in both crates.
+
+- **`refund-vault`, `governance`: keep callers and checks compatible with upstream hardening.**
+  `dust_treasury` preserves its prior trap-on-missing-admin behavior while flash-loan fee forwarding now propagates `NotInitialized` from the fallible fee-recipient helper. Liquid-staking `burn` now checks initialization before user state so a fresh instance reports `NotInitialized` instead of `InsufficientBalance`.
+
 - **`treasury` (issues #645, #647): clamp `claimable` at zero and pin the vesting curve.**
   `VestingSchedule::claimable` now floors at zero when the recorded `claimed`
   exceeds what has vested, as its documentation already promised; the new

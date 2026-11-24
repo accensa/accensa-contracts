@@ -80,6 +80,7 @@ CURLMOCK
   eval "$(sed -n '/^validate_pubnet_artifacts()/,/^}/p' "$SCRIPT")"
   eval "$(sed -n '/^parse_args()/,/^# ----/p' "$SCRIPT" | head -n -1)"
   eval "$(sed -n '/^validate_pubnet()/,/^# ----/p' "$SCRIPT" | head -n -1)"
+  export -f sha256_of is_checksum_valid_contract_id validate_pubnet_config probe_pubnet_network validate_pubnet_network validate_pubnet_artifacts parse_args validate_pubnet
 
   NETWORK="testnet"
   IDENTITY="deployer"

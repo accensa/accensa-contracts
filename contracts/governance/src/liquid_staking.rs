@@ -217,6 +217,7 @@ impl LiquidStaking {
             return Err(LiquidStakingError::ZeroAmount);
         }
         sender.require_auth();
+        let exchange_rate: ExchangeRate = load_exchange_rate(&env)?;
 
         // Check lock epoch has expired
         let user_key = LiquidStakingDataKey::User(sender.clone());
@@ -233,9 +234,6 @@ impl LiquidStaking {
         if current_ledger < lock_expiry {
             return Err(LiquidStakingError::LockNotExpired);
         }
-
-        // Get current exchange rate (requires `initialize`)
-        let exchange_rate: ExchangeRate = load_exchange_rate(&env)?;
 
         // Calculate underlying tokens: stACC * exchange_rate / 1e6
         // Using u128 intermediate to avoid overflow

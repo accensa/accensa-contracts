@@ -53,7 +53,9 @@ pub(crate) fn dust_treasury(env: &Env) -> Address {
     env.storage()
         .instance()
         .get(&DataKey::DustTreasury)
-        .unwrap_or_else(|| active_fee_recipient(env))
+        .unwrap_or_else(|| {
+            active_fee_recipient(env).unwrap_or_else(|err| soroban_sdk::panic_with_error!(env, err))
+        })
 }
 
 fn admin(env: &Env) -> Result<Address, Error> {
