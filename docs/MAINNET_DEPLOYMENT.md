@@ -73,11 +73,25 @@ address is network-specific and **must be verified** against the authoritative
 source.
 
 - [ ] Look up the current USDC SAC address on Stellar Mainnet from the
-      [Stellar USDC issuer account](https://stellar.expert/explorer/public/asset/USDC-GA5ZSEJYB37JDE5B6L17IAZEMAZ2Z2KSS6Y72Y2E5M4NOBYPCU6U5AIN)
+      [Stellar USDC issuer account](https://stellar.expert/explorer/public/asset/USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN)
       or the [Circle / Stellar documentation](https://www.stellar.org/developers/guides/issuing-assets.html).
 - [ ] Record the verified address here:
 
-      **Mainnet USDC SAC address:** `______________________________`
+      **Mainnet USDC SAC address:** `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75`
+
+      Verified 2026-11-23 against two independent sources, which agree on
+      the same ID:
+      - Chain data: Horizon's pubnet asset record for `USDC` issued by
+        `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`
+        publishes this `contract_id`:
+        <https://horizon.stellar.org/assets?asset_code=USDC&asset_issuer=GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN>
+      - Issuer-published: Circle's stellar.toml (the `toml` link on that
+        Horizon record) pins the same `USDC` asset pair, from which this
+        SAC ID derives deterministically:
+        <https://circle.com/.well-known/stellar.toml>
+      - Corroborated by Stellar's CCTP docs, whose USDC SAC table lists
+        the same Mainnet address:
+        <https://developers.stellar.org/docs/tokens/cross-chain-transfers>
 
 - [ ] Pass this address as the `TOKEN` environment variable during deployment:
 
