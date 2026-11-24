@@ -1,5 +1,6 @@
 [package]
 name = "upto-authorization"
+description = "Upto-style pre-authorized payment settlement with caps, expiry and slippage bounds for Accensa"
 version = "0.1.0"
 edition = "2021"
 
