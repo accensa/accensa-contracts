@@ -106,6 +106,7 @@ pub struct StateUpdate {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
+    Admin,
     Channel(u64),
     ChannelCount,
     Token,
@@ -210,6 +211,16 @@ pub struct ClaimEvent {
     pub channel_id: u64,
     pub amount: i128,
     pub recipient: Address,
+}
+
+/// Emitted when the administrator updates the maximum channel lifetime.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaxLifetimeUpdatedEvent {
+    #[topic]
+    pub admin: Address,
+    pub previous_lifetime: u32,
+    pub new_lifetime: u32,
 }
 
 /// Default dispute challenge period: ~1 hour at ~5 s/ledger = 720 ledgers.
@@ -827,6 +838,65 @@ impl StateChannel {
             .instance()
             .get(&DataKey::MaxChannelLifetime)
             .unwrap_or(DEFAULT_MAX_CHANNEL_LIFETIME)
+    }
+
+    /// Sets or transfers the contract administrator.
+    ///
+    /// If an administrator has already been configured, this call requires
+    /// authorization from the current administrator. If no administrator has
+    /// been set yet, it requires authorization from `new_admin`.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        if let Some(current_admin) = env.storage().instance().get::<_, Address>(&DataKey::Admin) {
+            current_admin.require_auth();
+        } else {
+            new_admin.require_auth();
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Returns the contract administrator, if configured.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
+    }
+
+    /// Updates the maximum channel lifetime.
+    ///
+    /// Requires authorization from the configured administrator.
+    /// Fails with [`Error::NotInitialized`] if no administrator is set.
+    /// Fails with [`Error::InvalidAmount`] if `max_lifetime` is less than the default challenge period.
+    pub fn set_max_channel_lifetime(env: Env, max_lifetime: u32) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        if max_lifetime < Self::get_default_challenge_period(env.clone()) {
+            return Err(Error::InvalidAmount);
+        }
+
+        let previous_lifetime: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxChannelLifetime)
+            .unwrap_or(DEFAULT_MAX_CHANNEL_LIFETIME);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxChannelLifetime, &max_lifetime);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+
+        MaxLifetimeUpdatedEvent {
+            admin,
+            previous_lifetime,
+            new_lifetime: max_lifetime,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     // ── Cooperative mutual close (issue #412) ────────────────────────────
