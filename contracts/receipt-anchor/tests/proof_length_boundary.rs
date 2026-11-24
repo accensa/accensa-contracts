@@ -6,7 +6,7 @@
 
 use accensa_common::Error;
 use receipt_anchor::{ReceiptAnchor, ReceiptAnchorClient};
-use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, Vec};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Vec};
 
 mod shard_wasm {
     soroban_sdk::contractimport!(file = "../../target/wasm32v1-none/release/receipt_shard.wasm");
@@ -101,7 +101,11 @@ fn proof_length_boundary_table_pins_result_precedence() {
     for row in rows {
         let proof = siblings(&env, row.proof_len);
 
-        let batch_id = if row.existing_batch { existing_batch_id } else { 0 };
+        let batch_id = if row.existing_batch {
+            existing_batch_id
+        } else {
+            0
+        };
         let batch_result = anchor.try_verify_receipt(&SHARD, &batch_id, &leaf, &proof);
         match row.expected_batch {
             Some(Ok(false)) => assert_eq!(
@@ -124,7 +128,11 @@ fn proof_length_boundary_table_pins_result_precedence() {
             _ => unreachable!("invalid batch expectation"),
         }
 
-        let root = if row.known_root { known_root.clone() } else { unknown_root.clone() };
+        let root = if row.known_root {
+            known_root.clone()
+        } else {
+            unknown_root.clone()
+        };
         let root_result = anchor.try_verify_receipt_by_root(&SHARD, &root, &leaf, &proof);
         match row.expected_root {
             Some(Ok(false)) => assert_eq!(
@@ -200,6 +208,4 @@ fn proof_length_boundary_table_pins_result_precedence() {
         ),
         Ok(Ok(false))
     );
-
-    let _ = vec![&env];
 }

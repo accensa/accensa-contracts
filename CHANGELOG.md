@@ -15,6 +15,9 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 - **`refund-vault`, `governance`: keep callers and checks compatible with upstream hardening.**
   `dust_treasury` preserves its prior trap-on-missing-admin behavior while flash-loan fee forwarding now propagates `NotInitialized` from the fallible fee-recipient helper. Liquid-staking `burn` now checks initialization before user state so a fresh instance reports `NotInitialized` instead of `InsufficientBalance`.
 
+- **`receipt-anchor`: pin proof-length precedence.**
+  `verify_receipt` now rejects proofs longer than `MAX_PROOF_LEN` before looking up the batch, so a missing batch with an oversize proof keeps returning `ProofTooLong` as the pinned boundary tests expect.
+
 - **`treasury` (issues #645, #647): clamp `claimable` at zero and pin the vesting curve.**
   `VestingSchedule::claimable` now floors at zero when the recorded `claimed`
   exceeds what has vested, as its documentation already promised; the new
