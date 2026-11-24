@@ -299,6 +299,18 @@
   - `contracts/receipt-shard/src/pruning.rs` — replaces bare `+` with `add_amounts` and explicit expectation
   - `contracts/receipt-shard/tests/prune_bounty_overflow_test.rs` — boundary and overflow tests for bounty accrual
 
+## Issue #939: resolve and pin the USDC mainnet SAC contract ID
+
+- [x] Resolve and pin the USDC mainnet SAC contract ID from Horizon and Circle-published sources (#939)
+  - `docs/MAINNET_DEPLOYMENT.md` — fixed the issuer link to the valid pubnet key and recorded the verified ID with both source URLs and the check date
+  - `deployments/pubnet-usdc-sac.md` — new sourced provenance note carrying the TOKEN value to pass (not a deployment outcome)
+
+## Upto-Authorization Improvements
+
+- [x] fix: Report Error for DataKey::Token in settle
+  - `contracts/upto-authorization/src/lib.rs` — returns typed `Error::NotInitialized` instead of unwrapping
+  - `contracts/upto-authorization/tests/settle_token_missing.rs` — tests verify `NotInitialized` when Token key is absent
+
 ## Issue #942: pin both event-topic shapes per deployed version
 
 - [x] Pin the 0.1.0 legacy and current-source topic tuples for receipt and refund events behind a version-keyed vector file (#942)
