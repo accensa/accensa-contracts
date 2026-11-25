@@ -109,9 +109,10 @@ pub(crate) fn verify_vdf(
     proof: &[u8; 128],
 ) -> Result<(), Error> {
     let n = U1024::from_be_slice(&MODULUS);
+    let divisor = Option::from(NonZero::new(n)).ok_or(Error::NotInitialized)?;
 
     // Reduce the challenge and reject the degenerate cases x ≡ 0, 1, or N-1.
-    let x = U1024::from_be_slice(challenge).rem(&NonZero::new(n).unwrap());
+    let x = U1024::from_be_slice(challenge).rem(&divisor);
     if x <= U1024::ONE || x >= n.wrapping_sub(&U1024::ONE) {
         return Err(Error::InvalidVdfProof);
     }
@@ -124,11 +125,11 @@ pub(crate) fn verify_vdf(
     // and an honest witness is pi = 1, which the primality equation still
     // binds (y == x^r when pi = 1); a zero pi can only satisfy the equation
     // at y ≡ 0, which the y check already rejects.
-    let y = U1024::from_be_slice(output).rem(&NonZero::new(n).unwrap());
+    let y = U1024::from_be_slice(output).rem(&divisor);
     if y <= U1024::ONE || y >= n.wrapping_sub(&U1024::ONE) {
         return Err(Error::InvalidVdfProof);
     }
-    let pi = U1024::from_be_slice(proof).rem(&NonZero::new(n).unwrap());
+    let pi = U1024::from_be_slice(proof).rem(&divisor);
 
     // Challenge prime bound to the transcript (x, y, T), as passed in.
     let ell = derive_challenge(env, challenge, output, delay);
