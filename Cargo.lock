@@ -1669,7 +1669,7 @@ dependencies = [
  "proptest",
  "receipt-shard",
  "sha2 0.10.9",
- "soroban-env-host 30.0.0",
+ "soroban-env-host 30.0.1",
  "soroban-sdk",
 ]
 
@@ -2030,9 +2030,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-builtin-sdk-macros"
-version = "30.0.0"
+version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a8169a705af029de69847302b4e5487305e62b17d9940cb31dd17f20cbab1ec"
+checksum = "3bd91459be794a11fd6eafd7de96a117d0e94ec65f5ef8fc051d1e460d1a41de"
 dependencies = [
  "itertools",
  "proc-macro2",
@@ -2061,15 +2061,15 @@ dependencies = [
 
 [[package]]
 name = "soroban-env-common"
-version = "30.0.0"
+version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64b509d5fdbbf7a8061fb42f92ea62798b1e8ae7c6f007f36474578a4ac31938"
+checksum = "bc5edacd04539c3fa4190d3edd8b525be5693ccf743020db5b48b2aec34ed972"
 dependencies = [
  "crate-git-revision 0.0.9",
  "ethnum",
  "num-derive",
  "num-traits",
- "soroban-env-macros 30.0.0",
+ "soroban-env-macros 30.0.1",
  "soroban-wasmi 29.0.0",
  "static_assertions",
  "stellar-xdr 30.0.0",
@@ -2125,9 +2125,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-env-host"
-version = "30.0.0"
+version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "136f5fa76934f7ad340b57c038ed5da5574a028bedff4ae55bbaf5e3d77fd1dc"
+checksum = "e361f8e5c2fab8dd3a9e268330fbf1056555ee2df9016def15f69ef0089aebf9"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -2153,8 +2153,8 @@ dependencies = [
  "sec1",
  "sha2 0.10.9",
  "sha3",
- "soroban-builtin-sdk-macros 30.0.0",
- "soroban-env-common 30.0.0",
+ "soroban-builtin-sdk-macros 30.0.1",
+ "soroban-env-common 30.0.1",
  "soroban-wasmi 29.0.0",
  "static_assertions",
  "stellar-strkey 1.0.0",
@@ -2178,9 +2178,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-env-macros"
-version = "30.0.0"
+version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d3bd3ac123246c3cf1b28a01003b99684e7eaf00ec569ee5e420fe04715b73c"
+checksum = "cca05a643268799e7022eb693bd13d8d604dc2c2ff5f416b908b2e32b4504bfe"
 dependencies = [
  "itertools",
  "proc-macro2",
