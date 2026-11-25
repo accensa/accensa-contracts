@@ -58,16 +58,16 @@ impl EntryPoint {
 
     /// Returns the permitted lifecycle phase(s) for this entry point.
     pub fn is_phase_permitted(&self, phase: ChannelPhase) -> bool {
-        match (self, phase) {
-            (EntryPoint::UpdateState, ChannelPhase::Open) => true,
-            (EntryPoint::CloseChannel, ChannelPhase::Open) => true,
-            (EntryPoint::Dispute, ChannelPhase::Closed) => true,
-            (EntryPoint::FinalizeDispute, ChannelPhase::Disputed) => true,
-            (EntryPoint::Claim, ChannelPhase::Closed) => true,
-            (EntryPoint::Reclaim, ChannelPhase::Open) => true,
-            (EntryPoint::SubmitCounterEvidence, ChannelPhase::Disputed) => true,
-            _ => false,
-        }
+        matches!(
+            (self, phase),
+            (EntryPoint::UpdateState, ChannelPhase::Open)
+                | (EntryPoint::CloseChannel, ChannelPhase::Open)
+                | (EntryPoint::Dispute, ChannelPhase::Closed)
+                | (EntryPoint::FinalizeDispute, ChannelPhase::Disputed)
+                | (EntryPoint::Claim, ChannelPhase::Closed)
+                | (EntryPoint::Reclaim, ChannelPhase::Open)
+                | (EntryPoint::SubmitCounterEvidence, ChannelPhase::Disputed)
+        )
     }
 
     /// Returns the exact typed error expected when invoking this entry point from an invalid phase.
