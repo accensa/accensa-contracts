@@ -2349,6 +2349,7 @@ dependencies = [
  "accensa-common",
  "budget-macros",
  "ed25519-dalek 3.0.0",
+ "proptest",
  "soroban-sdk",
 ]
 

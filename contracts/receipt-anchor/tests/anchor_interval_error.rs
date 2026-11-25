@@ -49,8 +49,7 @@ fn proof_length_boundary_table_pins_result_precedence() {
     let known_root = bytes(&env, 0x21);
     let unknown_root = bytes(&env, 0x99);
 
-    let existing_batch_id =
-        anchor.anchor_batch(&SHARD, &known_root, &1, &0, &10);
+    let existing_batch_id = anchor.anchor_batch(&SHARD, &known_root, &1, &0, &10);
 
     // 10 nodes against an existing batch: in bounds.
     assert_eq!(
@@ -76,23 +75,13 @@ fn proof_length_boundary_table_pins_result_precedence() {
 
     // Batch lookup first: batch_id = 0 with an in-bound proof returns BatchNotFound.
     assert_eq!(
-        anchor.try_verify_receipt(
-            &SHARD,
-            &0,
-            &leaf,
-            &siblings(&env, MAX_PROOF_LEN),
-        ),
+        anchor.try_verify_receipt(&SHARD, &0, &leaf, &siblings(&env, MAX_PROOF_LEN),),
         Err(Ok(Error::BatchNotFound)),
     );
 
     // An over-bound proof wins before the batch lookup.
     assert_eq!(
-        anchor.try_verify_receipt(
-            &SHARD,
-            &0,
-            &leaf,
-            &siblings(&env, MAX_PROOF_LEN + 1),
-        ),
+        anchor.try_verify_receipt(&SHARD, &0, &leaf, &siblings(&env, MAX_PROOF_LEN + 1),),
         Err(Ok(Error::ProofTooLong)),
     );
 
