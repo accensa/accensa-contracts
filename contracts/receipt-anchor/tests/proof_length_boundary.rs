@@ -6,7 +6,7 @@
 
 use accensa_common::Error;
 use receipt_anchor::{ReceiptAnchor, ReceiptAnchorClient};
-use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, Vec};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Vec};
 
 mod shard_wasm {
     soroban_sdk::contractimport!(file = "../../target/wasm32v1-none/release/receipt_shard.wasm");
@@ -208,6 +208,4 @@ fn proof_length_boundary_table_pins_result_precedence() {
         ),
         Ok(Ok(false))
     );
-
-    let _ = vec![&env];
 }

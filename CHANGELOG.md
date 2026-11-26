@@ -9,10 +9,14 @@ exception: while the project is below `1.0.0`, breaking changes bump the
 
 ## [Unreleased]
 
-- **`state-channel` (issues #1009, #1010, #1012): admin MaxChannelLifetime setter, nonce window property tests, and phase transition matrix.**
-  - **Issue #1012**: `StateChannel` gains administrative methods `set_max_channel_lifetime`, `set_admin`, and `get_admin`. `set_max_channel_lifetime` enforces administrator authentication, validates that `max_lifetime >= get_default_challenge_period(&env)` (720 ledgers), updates `DataKey::MaxChannelLifetime` in instance storage, and emits `MaxLifetimeUpdatedEvent`. Covered by `tests/max_lifetime_setter_test.rs`.
-  - **Issue #1009**: Added `tests/nonce_window_proptest.rs` with property-based testing verifying sliding window bitmap replay protection across arbitrary permutations, out-of-order deliveries, and boundary threshold shifts.
-  - **Issue #1010**: Added `tests/phase_transition_matrix_test.rs` exhaustively verifying that all public contract entry points return exact typed `Error` variants when called from invalid channel phases (`Open`, `Closed`, `Disputed`, `Finalized`).
+- **`treasury`, `refund-vault-factory` (issue #583): return typed admin-guard errors.**
+  Both `require_admin` implementations now return `Error::NotInitialized` when no admin is stored instead of trapping via `.expect(...)`; admin authorization is unchanged. The factory's `set_time_policy_contract` and `set_vdf_policy_contract` now propagate the error through `Result<(), Error>`. Added `admin_guard_test::admin_only_returns_not_initialized_on_a_fresh_instance` in both crates.
+
+- **`refund-vault`, `governance`: keep callers and checks compatible with upstream hardening.**
+  `dust_treasury` preserves its prior trap-on-missing-admin behavior while flash-loan fee forwarding now propagates `NotInitialized` from the fallible fee-recipient helper. Liquid-staking `burn` now checks initialization before user state so a fresh instance reports `NotInitialized` instead of `InsufficientBalance`.
+
+- **`receipt-anchor`: pin proof-length precedence.**
+  `verify_receipt` now rejects proofs longer than `MAX_PROOF_LEN` before looking up the batch, so a missing batch with an oversize proof keeps returning `ProofTooLong` as the pinned boundary tests expect.
 
 - **`treasury` (issues #645, #647): clamp `claimable` at zero and pin the vesting curve.**
   `VestingSchedule::claimable` now floors at zero when the recorded `claimed`

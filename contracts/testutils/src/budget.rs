@@ -66,7 +66,7 @@ mod tests {
             env.crypto().sha256(&data)
         });
 
-        assert_eq!(val.len(), 32);
+        assert_eq!(val.to_bytes().len(), 32);
         assert!(metrics.cpu_instructions > 0);
         assert!(metrics.memory_bytes > 0);
     }
@@ -88,7 +88,7 @@ mod tests {
             let inner_data = Bytes::from_slice(&env, &[5u8; 16]);
             env.crypto().sha256(&inner_data)
         });
-        assert_eq!(result.len(), 32);
+        assert_eq!(result.to_bytes().len(), 32);
         assert!(op_metrics.cpu_instructions > 0);
         assert!(op_metrics.memory_bytes > 0);
     }

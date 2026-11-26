@@ -2919,13 +2919,33 @@ mod budget_test;
 #[cfg(test)]
 mod pre_init_errors {
     use super::*;
+    use crate::test_helpers::vault_init;
     use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Vec};
+
+    fn uninitialized_vault(env: &Env) -> Address {
+        let vault_id = env.register(
+            RefundVault,
+            (vault_init(
+                env,
+                &Address::generate(env),
+                &Address::generate(env),
+                0,
+            ),),
+        );
+        env.as_contract(&vault_id, || {
+            env.storage().instance().remove(&DataKey::Admin);
+            env.storage().instance().remove(&DataKey::Token);
+            env.storage().instance().remove(&DataKey::DomainSeparator);
+            env.storage().instance().remove(&DataKey::RefundWindow);
+        });
+        vault_id
+    }
 
     #[test]
     fn test_uninitialized_refund_fails_with_not_initialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(RefundVault, ());
+        let vault_id = uninitialized_vault(&env);
         let vault = RefundVaultClient::new(&env, &vault_id);
 
         let payment_ref = BytesN::from_array(&env, &[1u8; 32]);
@@ -2938,7 +2958,7 @@ mod pre_init_errors {
     fn test_uninitialized_claim_batch_fails_with_not_initialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(RefundVault, ());
+        let vault_id = uninitialized_vault(&env);
         let vault = RefundVaultClient::new(&env, &vault_id);
 
         let mut claims = Vec::new(&env);
@@ -2958,7 +2978,7 @@ mod pre_init_errors {
     fn test_uninitialized_process_batch_fails_with_not_initialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(RefundVault, ());
+        let vault_id = uninitialized_vault(&env);
         let vault = RefundVaultClient::new(&env, &vault_id);
 
         let mut refunds = Vec::new(&env);
@@ -2978,7 +2998,7 @@ mod pre_init_errors {
     fn test_uninitialized_get_domain_separator_fails_with_not_initialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(RefundVault, ());
+        let vault_id = uninitialized_vault(&env);
         let vault = RefundVaultClient::new(&env, &vault_id);
 
         let res = vault.try_get_domain_separator();
@@ -2989,7 +3009,7 @@ mod pre_init_errors {
     fn test_uninitialized_set_token_fails_with_not_initialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(RefundVault, ());
+        let vault_id = uninitialized_vault(&env);
         let vault = RefundVaultClient::new(&env, &vault_id);
 
         let token = Address::generate(&env);
@@ -3001,7 +3021,7 @@ mod pre_init_errors {
     fn test_uninitialized_deploy_to_yield_fails_with_not_initialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(RefundVault, ());
+        let vault_id = uninitialized_vault(&env);
         let vault = RefundVaultClient::new(&env, &vault_id);
 
         let res = vault.try_deploy_to_yield(&100);
@@ -3012,7 +3032,7 @@ mod pre_init_errors {
     fn test_uninitialized_extend_refund_ttl_fails_with_not_initialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let vault_id = env.register(RefundVault, ());
+        let vault_id = uninitialized_vault(&env);
         let vault = RefundVaultClient::new(&env, &vault_id);
 
         let payment_ref = BytesN::from_array(&env, &[1u8; 32]);

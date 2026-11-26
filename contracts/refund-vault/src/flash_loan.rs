@@ -124,7 +124,7 @@ pub(crate) fn flash_loan(
         return Err(Error::InsufficientFloat);
     }
 
-    let treasury = active_fee_recipient(env);
+    let treasury = active_fee_recipient(env)?;
     if treasury != vault {
         token_client.transfer(&vault, &treasury, &fee);
     }

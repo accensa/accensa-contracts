@@ -624,7 +624,7 @@ impl ReceiptAnchor {
         Self::unwrap_shard_result(ShardClient::new(&env, &shard_addr).try_get_batch(&batch_id))
     }
 
-    /// Verifies `leaf` against the root anchored at `batch_id` in `shard_id`'s stream, delegating the Merkle check to that batch's storage shard; read-only. Returns `Ok(true)`/`Ok(false)` for a well-formed proof, `Error::BatchNotFound` when `batch_id` is `0` or its storage shard was never deployed, `Error::ProofTooLong` when the shard rejects an oversize proof, and `Error::ShardCallFailed` for an unexpected shard answer.
+    /// Verifies `leaf` against the root anchored at `batch_id` in `shard_id`'s stream, delegating the Merkle check to that batch's storage shard; read-only. Returns `Ok(true)`/`Ok(false)` for a well-formed proof, `Error::ProofTooLong` when `proof` exceeds [`MAX_PROOF_LEN`] (checked before the batch lookup), `Error::BatchNotFound` when `batch_id` is `0` or its storage shard was never deployed, and `Error::ShardCallFailed` for an unexpected shard answer.
     pub fn verify_receipt(
         env: Env,
         shard_id: u64,
@@ -632,6 +632,9 @@ impl ReceiptAnchor {
         leaf: BytesN<32>,
         proof: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
+        if proof.len() > MAX_PROOF_LEN {
+            return Err(Error::ProofTooLong);
+        }
         let shard_addr = Self::shard_for_batch(&env, shard_id, batch_id)?;
         Self::unwrap_shard_result(
             ShardClient::new(&env, &shard_addr).try_verify_receipt(&batch_id, &leaf, &proof),

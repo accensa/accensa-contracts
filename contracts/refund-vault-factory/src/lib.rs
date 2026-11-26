@@ -182,26 +182,28 @@ impl RefundVaultFactory {
     }
 
     /// Rotates the default time-policy address shares to future vaults.
-    pub fn set_time_policy_contract(env: Env, address: Option<Address>) {
-        require_admin(&env);
+    pub fn set_time_policy_contract(env: Env, address: Option<Address>) -> Result<(), Error> {
+        require_admin(&env)?;
         match address {
             Some(policy) => env.storage().persistent().set(&KEY_TIME, &policy),
             None => env.storage().persistent().remove(&KEY_TIME),
         }
+        Ok(())
     }
 
     /// Rotates the default VDF-policy address shares to future vaults.
-    pub fn set_vdf_policy_contract(env: Env, address: Option<Address>) {
-        require_admin(&env);
+    pub fn set_vdf_policy_contract(env: Env, address: Option<Address>) -> Result<(), Error> {
+        require_admin(&env)?;
         match address {
             Some(policy) => env.storage().persistent().set(&KEY_VDF, &policy),
             None => env.storage().persistent().remove(&KEY_VDF),
         }
+        Ok(())
     }
 
     /// Swaps the vault `wasm_hash` used for future deployments (admin only).
     pub fn set_vault_wasm(env: Env, vault_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        require_admin(&env);
+        require_admin(&env)?;
         if vault_wasm_hash.to_array().iter().all(|b| *b == 0u8) {
             return Err(Error::InvalidWasmHash);
         }
@@ -319,13 +321,14 @@ fn require_initialized(env: &Env) -> Result<(), Error> {
     }
 }
 
-fn require_admin(env: &Env) {
+fn require_admin(env: &Env) -> Result<(), Error> {
     let admin: Address = env
         .storage()
         .persistent()
         .get(&KEY_ADMIN)
-        .expect("factory must be initialized");
+        .ok_or(Error::NotInitialized)?;
     admin.require_auth();
+    Ok(())
 }
 
 fn next_salt(env: &Env, merchant: &Address) -> BytesN<32> {
@@ -355,3 +358,33 @@ fn is_tracked_vault(env: &Env, address: &Address) -> bool {
 // free of the prebuilt-WASM requirement and the `budget_macros` dev-dependency.
 #[cfg(all(test, feature = "budget-assert"))]
 mod budget_test;
+
+#[cfg(test)]
+mod admin_guard_test {
+    use super::{Error, RefundVaultFactory};
+    use soroban_sdk::{contract, contractimpl, BytesN, Env};
+
+    #[contract]
+    struct AdminGuardHarness;
+
+    #[contractimpl]
+    impl AdminGuardHarness {
+        pub fn set_vault_wasm(env: Env, hash: BytesN<32>) -> Result<(), Error> {
+            RefundVaultFactory::set_vault_wasm(env, hash)
+        }
+    }
+
+    #[test]
+    fn admin_only_returns_not_initialized_on_a_fresh_instance() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract = env.register(AdminGuardHarness, ());
+        let client = AdminGuardHarnessClient::new(&env, &contract);
+        let hash = BytesN::from_array(&env, &[7u8; 32]);
+
+        assert_eq!(
+            client.try_set_vault_wasm(&hash),
+            Err(Ok(Error::NotInitialized))
+        );
+    }
+}
