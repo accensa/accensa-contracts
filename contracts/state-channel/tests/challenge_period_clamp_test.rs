@@ -64,6 +64,9 @@ fn test_challenge_period_clamping_at_open_channel() {
         }
     }
 
-    assert!(found_zero_event, "ChannelOpened event for ch_zero not found");
+    assert!(
+        found_zero_event,
+        "ChannelOpened event for ch_zero not found"
+    );
     assert!(found_max_event, "ChannelOpened event for ch_max not found");
 }

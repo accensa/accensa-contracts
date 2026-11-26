@@ -109,7 +109,7 @@ fn test_watchtower_counter_evidence_end_to_end_and_invalid_signature() {
     assert_eq!(channel_after.balance, 400);
 
     // Advance ledger and finalize dispute to lock in reward payouts
-    s.env.ledger().with_mut(|li|\ {
+    s.env.ledger().with_mut(|li| {
         li.sequence_number = 250;
     });
     s.client.finalize_dispute(&channel_id);
