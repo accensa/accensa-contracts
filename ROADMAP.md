@@ -311,3 +311,8 @@
   - `contracts/upto-authorization/src/lib.rs` — returns typed `Error::NotInitialized` instead of unwrapping
   - `contracts/upto-authorization/tests/settle_token_missing.rs` — tests verify `NotInitialized` when Token key is absent
 
+## Issue #942: pin both event-topic shapes per deployed version
+
+- [x] Pin the 0.1.0 legacy and current-source topic tuples for receipt and refund events behind a version-keyed vector file (#942)
+  - `contracts/receipt-anchor/event-topic-vectors.json` — canonical shapes with provenance per entry plus the named doc/code/snapshot discrepancy
+  - `contracts/receipt-anchor/scripts/build-event-topic-vectors.mjs` — generator emitting the committed `tests/fixtures/event_topic_vectors.rs` fixture both contracts' `event_topic_versions` tests consume

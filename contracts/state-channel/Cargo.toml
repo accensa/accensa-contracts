@@ -22,4 +22,5 @@ budget_macros = { git = "https://github.com/Tollcraft/soroban-budget-assert.git"
 
 [dev-dependencies]
 ed25519-dalek = "3.0"
+proptest = "1.4"
 soroban-sdk = { workspace = true, features = ["testutils"] }
